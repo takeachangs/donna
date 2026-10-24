@@ -82,6 +82,17 @@ def check(tl):
         if lead(o)["status"] != "working" and busy and not o["decisions"]:
             assert (lead(o)["status"], lead(o)["currentAction"]) == ("waiting", "Waiting on " + herd.both(busy)), lead(o)
 
+    # #70: between the last worker's stop and the say the lead is working "Reviewing" (never done/Ready); done workers show a blank action
+    last = max(at(lambda s, i=tl[k][0]["data"]["tool_response"]["agentId"]: (s.get("data", {}).get("agent_id") == i or i == (re.search(r"--agent-id (\S+)", s.get("parent", "")) or [None, None])[1]) and (hk(s, "SubagentStop") or hk(s, "Stop") or hk(s, "PostToolUse", "SubagentHandback"))) for k in spawns)
+    say = at(lambda s: s.get("reply", {}).get("kind") == "say")
+    assert last < say, (last, say)
+    for j in range(last, say):
+        o, st = tl[j][1], tl[j][0]
+        assert lead(o)["status"] == "working" and all(w["currentAction"] == "" for w in o["workers"][1:]), (j, lead(o))
+        if hk(st, "Stop") and not st["data"].get("agent_id") and j > last: assert lead(o)["currentAction"] == "Reviewing", (j, lead(o))  # the brain's own Stop: her turn is over, the result is not
+    assert any(hk(tl[j][0], "Stop") and lead(tl[j][1])["currentAction"] == "Reviewing" for j in range(last, say)), "no Reviewing step"
+    assert all((lead(o)["status"], lead(o)["currentAction"]) != ("done", "Ready") for _, o in tl[last:say + 1]), "Ready before the say"
+
     # say -> a queued briefing naming both workers; the voice speaks it -> presented
     k = at(lambda s: s.get("reply", {}).get("kind") == "say"); b = tl[k][1]["briefings"]
     assert [(x["id"], x["status"]) for x in b] == [(tid, "queued")] and sorted(c["name"] for c in b[0]["contributors"]) == sorted(names), b

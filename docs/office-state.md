@@ -38,11 +38,11 @@ Who is drawn (#44): agents started in this duty period (`since`, below) whose Ag
 `SubagentStart` and no Agent call makes no row: Claude Code's own helpers fire one (`agent_type` "") after the brain's turns. Hooks
 carry no failure signal, so `failed` comes only from the transcript fallback. The brain row is `lead: true`: `waiting`
 while a herd `ask` is open, `working` while its turn runs (last `UserPromptSubmit`/`PostToolUse` after the last `Stop`),
-`waiting` while its workers are still out (#65), else `done`. Its `currentAction` is Donna's narrative (#65; the office shows it as "Donna: …" under the call pill and on her desk):
+`waiting` while its workers are still out (#65), `working` "Reviewing" once every worker has stopped but the task has no `say`/`fail` yet (#70; no flicker to Ready), else `done`. Its `currentAction` is Donna's narrative (#65; the office shows it as "Donna: …" under the call pill and on her desk):
 "Thinking" (a prompt and no tool since), from her last tool "Reading the repo" (Read/Glob/Grep), "Setting up a workspace" (git worktree),
 "Hiring Ava for: <description>" / "Hiring Ava and Ben" (her trailing Agent calls), "Running checks", "Reporting" (herd note/say/fail),
 "Asking you" (ask), "Talking to <to>" (SendMessage), else "Working on it"; when her turn is over "Waiting on Ava and Ben" (workers still
-working), "Waiting for your answer" (open ask) or "Ready". `char-female-a` does not exist in the office's assets: Donna is `char-female-b` (the office's own default),
+working), "Waiting for your answer" (open ask), "Reviewing" (all workers stopped, task not yet said) or "Ready" (task done, or no task). A done/failed worker's `currentAction` is "" (#70). `char-female-a` does not exist in the office's assets: Donna is `char-female-b` (the office's own default),
 workers rotate over the other five keys. Beyond the shape above the producer also fills the arrays the display maps over:
 `Worker.assignmentId`, `Assignment.{artifacts,dependsOn,revision}`, `Briefing.{assignmentId,workerId,deliveryKey,
 artifacts,verification}`; `contributors` are the workers that started between the task and its `say` (exact `name`s), and the first of them is
