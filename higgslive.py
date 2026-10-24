@@ -51,6 +51,8 @@ STATUS = "task_status"   # answered at once by this layer from the herd files; n
 STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the work you sent with {TOOL} is going: the project you're connected to, the agents (workers) "
               "and what each is doing or has finished, running and queued tasks, questions waiting for the user, results not told yet. "
               "Only for the work and the team. It only reports; it does nothing.", "parameters": {"type": "object", "properties": {}}}   # naming files/folders here pulled "what's in my directory" to this tool (2/6 runs)
+HOWS = re.compile(r"\b(how'?s it (going|coming)|how is it (going|coming)|how are (we|they|things) doing|any (update|progress|news)|what'?s the status)\b")   # #12 rehearsal: "How's it going?" got "Still working on that" with no task_status, no names
+STATUS_NUDGE = f"(system) Not played: you answered a question about the work without {STATUS}. Call {STATUS} now and answer from it in one short sentence that names who is on it."
 MECHANICS = f"""## Delegation mechanics
 Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
 same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
@@ -73,7 +75,7 @@ When a task's result arrives while the user is talking or has just asked you som
 When the agent working on a task needs a decision, you will get its question as a note: ask the user plainly in your own words and wait. Their next answer is passed back to the agent automatically; do not call {TOOL} for it, do not repeat the question, just acknowledge.
 Never narrate state changes nobody asked about: a task starting, being queued or being picked up is not news; only results, questions and what the user asks."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now with what the user asked, in their words, then say you've sent it off."
-RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences]"   # user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
+RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences, keeping every name in it]"   # #12 rehearsal: "Leo built the timer page and Mia the styling" came out as "The timer's ready". user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
 QUIET = 2.5       # seconds of silence from everyone before a result is spoken: Oct 24 call, the voice asked the user a question and 6 s later dropped it to say "Done, your page is open"
 RECENT_USER = 3.0  # ...and the user must not have spoken within this long
 HOLD_MAX = 10     # a result held this long goes out anyway (the user may never answer)
@@ -328,7 +330,7 @@ class Conn:
 
     async def _ask(self, question: str, did):
         text = (f"[note] Before the task you sent off can go on, the user has to decide: {question} Ask them this plainly, in your own words, as your own "
-                f"question (never say an agent is asking); wait for their answer; do not call {TOOL} for it, it is passed back automatically.")
+                f"question, the proposal and its details included (never say an agent is asking); wait for their answer; do not call {TOOL} for it, it is passed back automatically.")
         try:
             while True:
                 while not self._idle(time.monotonic()): await asyncio.sleep(0.1)
@@ -412,6 +414,9 @@ class Conn:
             self._emit("session.output_audio.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.delta": self._emit("session.output_transcript.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.done":
+            if not self._relay and self._pending and not st["guarded"] and st.get("status_at") != st["user_at"] and HOWS.search(st["last_user"].lower()):   # a status question answered from memory: dropped unplayed, retried at response.done
+                log.info("GUARD: %r answered without %s — dropped, nudging", ev["transcript"][:60], STATUS)
+                st.update(guarded=True, status_fix=True, spk_until=0.0); self._emit("session.output_audio.discard"); return
             # a task runs whose result has not come in, none went in this turn, and the claim is not backed by one that came in (#55: _told)
             if not self._relay and self.delegation and self._pending - self._arrived and not st["fresh"] and (fixed := fabricated(ev["transcript"], self._told)):   # a result nobody sent (#32)
                 log.info("fabricated: %r → %r", ev["transcript"], fixed)
@@ -436,6 +441,9 @@ class Conn:
                 await self._item("[the task result above arrived during that turn; mention it now in one sentence]"); await self._send({"type": "response.create"})
             calls = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == TOOL and o.get("executor") != "server"][:1]   # server-side tools (web_search, Oct 23) need no output from us. [:1]: 1.0 fires 2-3 near-duplicate calls for one request (9/12, probe/r15/A-tools.md); extras left open cause no error
             status = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == STATUS and o.get("executor") != "server"][:1]
+            if status: st["status_at"] = st["user_at"]
+            if st.pop("status_fix", False) and not calls and not status:
+                st["in_flight"] = True; await self._item(STATUS_NUDGE); await self._send({"type": "response.create"}); return
             if st["fix"] and not calls and not status:
                 st["in_flight"] = True; await self._item(FIX.format(st["fix"])); st["fix"] = None
                 await self._send({"type": "response.create"}); return   # no response.done for the consumer: the fixed reply's is the one
@@ -543,6 +551,7 @@ if __name__ == "__main__":   # self-check: no network
     assert all(ASKED.search(x) for x in ("who built the quiz?", "who's working on the login page?", "get me on the line with her.", "can i talk to maya?"))   # #28
     assert all(THROUGH.search(x) for x in ("get her on the line", "can i talk to maya?", "transfer me", "put me through to maya")) and OFFER.search("i can connect you to her directly.")   # #61
     assert not any(THROUGH.search(x) for x in ("who built the quiz?", "let me talk to you about it", "talk to you later", "how's it going?"))
+    assert all(HOWS.search(x) for x in ("how's it going?", "how is it coming along", "any update?")) and not any(HOWS.search(x) for x in ("how do i run it?", "what's going on with you?"))   # #12
     assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
