@@ -65,12 +65,18 @@ Shell variables do not carry over between commands, so each command sets its own
    - Under a minute of work (a lookup, a one-file read, a small edit): do it yourself, then `say`.
    - Longer: spawn workers. Claude Code: the Agent tool with `run_in_background: true`, `model: "sonnet"`, `name` = a
      first name ("Ava"), `description` = the role ("Writes the game page"), and a complete brief (goal, files, what done
-     looks like, which checks to run, what to report). Independent pieces go out as several agents in one message.
+     looks like, which checks to run, what to report). In a git repo every brief names the task's worktree and says
+     "Work only in <worktree>; never checkout or switch branches in <project dir>." Independent pieces go out as several
+     agents in one message.
      `R <id> note "Ava is writing the page"` once they are out. Wait for their notifications; do not poll, and keep the
      wait loop of step 2 running. An agent without an Agent tool (Codex): do the work yourself.
-   - Git: if the project is a git repo, the task's changes go on a branch `donna/<slug>` (a worktree per worker when
-     several edit at once: `git worktree add ../<repo>-<slug> -b donna/<slug>`), never on main. Push or open a pull
-     request only after `R <id> ask "Want me to open a pull request?"` gets a yes.
+   - Git: if the project is a git repo, NEVER `checkout` or `switch` in the project directory: the person's editor, shell
+     and uncommitted work live there. Every task works in its own worktree, yours included, even a one-file edit:
+     `git worktree add ../<repo>-donna-<slug> -b donna/<slug>` (workers on the task share it, or each gets
+     `../<repo>-donna-<slug>-<name>` on its own branch). Edits and checks run there; nothing lands on main. The `say` names
+     the branch in words ("it's on its own branch"); merge, push or open a pull request only after
+     `R <id> ask "Want me to open a pull request?"` gets a yes. `git worktree remove` it once the PR is merged or the person
+     says drop it.
    - Review before you report: read what the workers changed, run the repo's own checks (tests, build, lint) yourself,
      fix small things or send the worker back. Then ONE result: `R <id> say "Done. The game page is on its own branch and
      the tests pass. Want me to open a pull request?"`; a failure: `R <id> fail "I could not get the tests to run."`
