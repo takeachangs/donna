@@ -20,7 +20,7 @@ root.innerHTML=`<main class="agency-shell">
  </nav>
  <header class="agency-header"><div><p id="scene-context">${t('agency.subtitle')}</p><h1 id="page-title">${t('agency.secretary_office')}</h1></div><button id="connect" class="primary">${t('agency.connect')}</button></header>
  <section class="agency-stage" aria-label="${t('agency.scene')}">
-  <div class="scene-toolbar"><span id="scene-label">${t('agency.secretary_office')}</span><button id="overview" class="quiet-button" aria-label="${t('agency.overview')}">${t('agency.map')}</button></div>
+  <div class="scene-toolbar"><span id="scene-label">${t('agency.secretary_office')}</span><div class="scene-navigation"><button id="zoom-out" class="quiet-button zoom-button" aria-label="${t('agency.zoom_out')}" title="${t('agency.zoom_out')}">−</button><button id="zoom-in" class="quiet-button zoom-button" aria-label="${t('agency.zoom_in')}" title="${t('agency.zoom_in')}">+</button><button id="overview" class="quiet-button" aria-label="${t('agency.overview')}" title="${t('agency.scene_controls')}">${t('agency.map')}</button></div></div>
   <div id="agency-scene"><div id="handoff-status" class="handoff-status" role="status" hidden></div></div><div id="roster" class="agency-roster" aria-label="${t('agency.team')}"></div>
   <div class="agency-caption" aria-live="polite"><strong id="speaker"></strong><p id="caption">${t('agency.welcome')}</p></div>
   <footer class="agency-controls"><div class="agency-secretary-line"><strong id="secretary-name"></strong><span id="execution-health"></span></div>
@@ -189,6 +189,7 @@ async function switchProject(id:string){
  if(connected){switching=true;controls(false);send({type:'switch_project',roomId:id})}else{state=await api<State>(`/agency-api/rooms/${id}`);renderLegacy();usage.clear();await loadUsage();status(t('agency.offline_ready'))}
 }
 el('secretary-room').onclick=()=>setView('secretary');el('command-room').onclick=()=>setView('command');el('overview').onclick=()=>setView('command');el('present-next').onclick=()=>presentBriefing()
+el('zoom-in').onclick=()=>scene?.zoomBy(1/1.25);el('zoom-out').onclick=()=>scene?.zoomBy(1.25)
 el<HTMLSelectElement>('project-select').onchange=e=>void switchProject((e.target as HTMLSelectElement).value).catch(err=>error(String(err)))
 el('new-project').onclick=()=>el<HTMLDialogElement>('project-dialog').showModal();el('project-cancel').onclick=()=>el<HTMLDialogElement>('project-dialog').close()
 el('project-form').onsubmit=e=>{e.preventDefault();void(async()=>{const submit=el('project-form').querySelector<HTMLButtonElement>('[type=submit]')!;submit.disabled=true;el('project-error').hidden=true;try{const p=await api<Project>('/agency-api/projects',{name:el<HTMLInputElement>('project-name').value,brief:el<HTMLTextAreaElement>('project-brief').value});await loadWorkspace();el<HTMLDialogElement>('project-dialog').close();el<HTMLFormElement>('project-form').reset();await switchProject(p.id)}catch(err){el('project-error').hidden=false;el('project-error').textContent=String(err)}finally{submit.disabled=false}})()}
