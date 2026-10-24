@@ -189,10 +189,14 @@ Donna's brain continues the original task and `say`s on the original id.
 ### The hold policy (`higgslive.py` `_speak_loop`)
 
 A result is **held** while any of these is true, and spoken once none is:
-- (a) the voice's last utterance ended with a question and the user has not spoken since;
+- (a) the voice's last utterance was an open question and the user has not spoken since. An open question is one that
+  ends with "?", is at least five words, carries a decision (which, should, do you want, prefer, "blue or …", or), and is
+  not a stock closer ("How can I help you today?", "anything else?", "let me know"); a question the brain sent as an `ask`
+  is open whatever the voice's wording. A result held only for an unanswered question is released after 6 s of silence:
+  the user is not going to answer it;
 - (b) the user spoke (or typed) within the last 3 s;
 - (c) less than 2.5 s of mutual quiet since the later of the voice finishing and the user finishing.
-Any hold ends after 20 s at most. `ask` items skip the hold entirely (they only wait for the voice to be idle) and jump
+Any hold ends after 10 s at most. `ask` items skip the hold entirely (they only wait for the voice to be idle) and jump
 ahead of any held result. While a result is held and the user **starts speaking**, the result is attached to that turn:
 its `function_call_output` is sent at `speech_started`, before the server's own end-of-turn response (Higgs ignores
 `create_response: false`, so the response cannot be delayed; sending at speech start is what gets the output in front of

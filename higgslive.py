@@ -67,7 +67,16 @@ NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now fo
 RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences]"   # user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
 QUIET = 2.5       # seconds of silence from everyone before a result is spoken: Oct 24 call, the voice asked the user a question and 6 s later dropped it to say "Done, your page is open"
 RECENT_USER = 3.0  # ...and the user must not have spoken within this long
-HOLD_MAX = 20     # a result held this long goes out anyway (the user may never answer)
+HOLD_MAX = 10     # a result held this long goes out anyway (the user may never answer)
+QUESTION_MAX = 6  # ...and one held only for an unanswered voice question goes out after this much silence: they are not going to answer
+CLOSER = re.compile(r"\b(how can i help|what can i (do|help)|anything else|what else|what'?s (up|next|on your mind)|need anything|let me know)\b[^?]*\?\s*$")   # a stock closer is not an open question
+TASK_Q = re.compile(r"\b(which|should|do you want|prefer|blue or|or)\b")   # a real question needs a decision in it
+
+
+def open_question(voice: str) -> bool:
+    """The voice's last utterance is a question the user is expected to answer (PR #24 review: "How can I help you today?" held a result 20 s)."""
+    v = voice.strip().lower()
+    return v.endswith("?") and not CLOSER.search(v) and len(v.split()) >= 5 and bool(TASK_Q.search(v))
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
 CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching)|should be running|backend result)")
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat)|let me\s+(creat|mak|check|look|run|open|see)|"
@@ -141,7 +150,7 @@ class Conn:
         self._out: asyncio.Queue = asyncio.Queue()        # translated events for the consumer
         self._spoken: asyncio.Queue = asyncio.Queue()     # (text, delegation_id, note_for, kind) waiting for a quiet moment
         self._st = dict(in_flight=False, user_speaking=False, spk_until=0.0, guarded=False, turn_delegated=False, last_user="", last_voice="", added=None,
-                        user_at=0.0, voice_at=0.0, question=False, att=None, late=False)   # *_at: monotonic; question: the voice's last words were a question; att/late: attached item's ack
+                        user_at=0.0, voice_at=0.0, question=False, asked=False, att=None, late=False)   # *_at: monotonic; question: the voice's last words were a question; asked: an ask was delivered this turn; att/late: attached item's ack
         self._held = None                                 # the queue entry _speak_loop is holding; whoever sets it to None sends it
         self._lock = asyncio.Lock()                       # item(s) + added ack + response.create go out as one unit
         self._asking = 0                                  # asks not yet delivered: results wait behind them
@@ -197,7 +206,7 @@ class Conn:
         await self._send({"type": "input_audio_buffer.append", "audio": base64.b64encode(pcm).decode()})
 
     async def _text(self, content: str):
-        self._st.update(guarded=False, turn_delegated=False, last_user=content, question=False, user_at=time.monotonic())
+        self._st.update(guarded=False, turn_delegated=False, last_user=content, question=False, asked=False, user_at=time.monotonic())
         held, self._held = self._held, None   # a typed turn counts as speech: the held result goes in just before it
         if held: await self._attach(held, False)
         await self._item(content); await self._send({"type": "response.create"})
@@ -247,7 +256,7 @@ class Conn:
                 while not self._idle(time.monotonic()): await asyncio.sleep(0.1)
                 async with self._lock:
                     if not self._idle(time.monotonic()): continue
-                    self._st["question"] = True   # the voice is about to ask: nothing is spoken over the unanswered question
+                    self._st.update(question=True, asked=True)   # the voice is about to ask: nothing is spoken over the unanswered question, whatever its wording
                     await self._send_items([_msg(text)])
                     break
         finally: self._asking -= 1
@@ -268,7 +277,7 @@ class Conn:
                     quiet = now - max(st["spk_until"], st["voice_at"], st["user_at"])
                     why = ("voice question unanswered" if st["question"] else f"user spoke {now - st['user_at']:.0f} s ago" if now - st["user_at"] < RECENT_USER
                            else f"waiting for {QUIET} s of quiet" if quiet < QUIET else None)
-                    if why is None or now - t0 >= HOLD_MAX:
+                    if why is None or now - t0 >= HOLD_MAX or (st["question"] and now - t0 >= QUESTION_MAX):
                         async with self._lock:
                             if self._held is entry and self._ready(time.monotonic()):   # re-check: an ask or an attach may have got in
                                 self._held = None
@@ -309,7 +318,7 @@ class Conn:
 
         if t == "input_audio_buffer.speech_started":
             st.update(user_speaking=True, guarded=False, turn_delegated=False, spk_until=0.0)   # barge-in: the server stops the response; playback is the client's to clear
-            st["question"] = False   # the user is answering it (or ignoring it)
+            st.update(question=False, asked=False)   # the user is answering it (or ignoring it)
             self._emit("session.input_speech_started")
             held, self._held = self._held, None   # the server answers this turn whatever we do (create_response is ignored), so the result goes in before it ends
             if held: await self._attach(held, True)
@@ -322,7 +331,7 @@ class Conn:
             self._emit("session.output_audio.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.delta": self._emit("session.output_transcript.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.done":
-            st["last_voice"], st["question"] = ev["transcript"], ev["transcript"].rstrip().endswith("?"); self._emit("session.output_transcript.done", transcript=ev["transcript"])
+            st["last_voice"], st["question"] = ev["transcript"], st["asked"] or open_question(ev["transcript"]); self._emit("session.output_transcript.done", transcript=ev["transcript"])
         if t == "response.done":
             st["in_flight"] = False; st["voice_at"] = time.monotonic()
             if st["late"]:   # no await on _speak_loop here: in_flight clears in this very function
@@ -479,14 +488,25 @@ if __name__ == "__main__":   # self-check: no network
         await asyncio.sleep(0.3); assert kinds(sent) == ["message", "response.create"] and "light or dark?" in sent[0]["item"]["content"][0]["text"] and c._st["question"], sent
         c._st["in_flight"] = False; await c.input_text.append("dark"); t.cancel()
         assert kinds(sent) == ["message", "response.create", "function_call_output", "message", "response.create"], sent
-    async def cap():    # HOLD_MAX: the user never answers, the result goes out on its own
-        global HOLD_MAX
-        HOLD_MAX = 0.3
+    async def closer():  # a stock closer is not an open question: the result goes out after the quiet beat; a real question holds it
+        for voice, held in (("Hey, how's it going?", False), ("How can I help you today?", False), ("Sure! Anything else I can do for you?", False),
+                            ("Should the page be blue or green?", True), ("Which folder do you want it in?", True)):
+            c, sent, now = mk(); c._st.update(user_at=now - 10, voice_at=now - 10)
+            await c._handle({"type": "response.output_audio_transcript.done", "transcript": voice}); assert c._st["question"] == held, voice
+        c, sent, now = mk(); c._st.update(user_at=now - 10, voice_at=now - 10, asked=True)   # an ask stays open whatever the voice's wording
+        await c._handle({"type": "response.output_audio_transcript.done", "transcript": "Blue or green?"}); assert c._st["question"]
+    async def cap():    # HOLD_MAX / QUESTION_MAX: the user never answers, the result goes out on its own
+        global HOLD_MAX, QUESTION_MAX
+        HOLD_MAX, QUESTION_MAX = 0.3, 10   # the general cap
         try:
-            c, sent, now = mk(); c._st.update(question=True, user_at=now - 10, voice_at=now - 10); t = asyncio.create_task(c._speak_loop())
+            c, sent, now = mk(); c._st.update(user_at=now - 1, voice_at=now - 10); t = asyncio.create_task(c._speak_loop())
             await c.session.commentary.append(content="Done.", delegation_id="d1"); await asyncio.sleep(0.6); t.cancel()
             assert kinds(sent) == ["function_call_output", "message", "response.create"], sent
-        finally: HOLD_MAX = 20
-    async def policy(): await asyncio.gather(hold(), quiet(), ask()); await cap()   # cap flips a global: not alongside the others
+            HOLD_MAX, QUESTION_MAX = 10, 0.3   # a real question nobody answers: released at QUESTION_MAX, long before HOLD_MAX
+            c, sent, now = mk(); c._st.update(question=True, user_at=now - 10, voice_at=now - 10); t = asyncio.create_task(c._speak_loop())
+            await c.session.commentary.append(content="Done.", delegation_id="d1"); await asyncio.sleep(0.15); assert sent == [], sent
+            await asyncio.sleep(0.45); t.cancel(); assert kinds(sent) == ["function_call_output", "message", "response.create"], sent
+        finally: HOLD_MAX, QUESTION_MAX = 10, 6
+    async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer()); await cap()   # cap flips globals: not alongside the others
     t0 = time.monotonic(); asyncio.run(policy()); assert time.monotonic() - t0 < 3
     print("ok")
