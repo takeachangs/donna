@@ -51,6 +51,30 @@ async function until(predicate:()=>boolean){
 }
 
 describe('agency native execution workspace',()=>{
+  it('creates a new project with its initial work already queued, then records a native session',async()=>{
+    const f=fixture(),result=f.workspace.createProject({name:'Quick Notes',brief:'Build a single file notes app.',initial_work:{checkpoint:'Deliver working notes',rationale:'One small feature needs one worker.',workers:[work()]}});
+    expect(result.executionStarted).toBe(true);const assigned=f.workspace.snapshot().assignments.filter(a=>a.projectId===result.project.id);
+    expect(assigned).toHaveLength(1);expect(assigned[0].status).toBe('queued');expect(assigned[0].sessionId).toBeUndefined();
+    const pumping=f.workspace.pump();await until(()=>f.codex.pending.length===1);
+    expect(f.workspace.snapshot().assignments[0].sessionId).toBe(f.codex.pending[0].threadId);f.codex.deliver(0);await pumping;
+    expect(f.workspace.snapshot().assignments[0].status).toBe('review');
+  });
+  it('keeps explicitly empty rooms idle and rejects invalid initial plans before creating a room',()=>{
+    const f=fixture(),idle=f.workspace.createProject({name:'Later',brief:'Do not start yet.',initial_work:null});
+    expect(idle.executionStarted).toBe(false);expect(f.workspace.snapshot().assignments).toHaveLength(0);
+    const before=f.workspace.snapshot(),catalog=f.projects.list();
+    expect(()=>f.workspace.createProject({name:'Missing choice',brief:'Build this'})).toThrow();
+    expect(()=>f.workspace.createProject({name:'Invalid',brief:'Build this',initial_work:{checkpoint:'Build',rationale:'Parallel scopes',workers:[work('one',['two']),work('two',['one'])]}})).toThrow('Cyclic');
+    expect(f.workspace.snapshot()).toEqual(before);expect(f.projects.list()).toEqual(catalog);
+  });
+  it('treats null or empty reuse IDs as new workers while rejecting unknown nonempty IDs',()=>{
+    const f=fixture();
+    for(const reuse_worker_id of [null,'']){
+      const result=f.workspace.delegate({project_id:f.project.id,checkpoint:'Build',rationale:'One worker',workers:[{...work(),reuse_worker_id}]});
+      expect(result.workers).toHaveLength(1);expect(result.workers[0].sessionId).toBeUndefined();
+    }
+    const before=f.workspace.snapshot();expect(()=>delegate(f,[{...work(),reuse_worker_id:'unknown'}])).toThrow('Reused worker');expect(f.workspace.snapshot()).toEqual(before);
+  });
   it('renames a room without changing its work, file snapshots or native session',async()=>{
     const f=fixture();delegate(f);const pumping=f.workspace.pump();await until(()=>f.codex.pending.length===1);f.codex.deliver(0);await pumping;
     const before=f.workspace.snapshot();f.workspace.renameProject(f.project.id,{name:'  Product studio  '});

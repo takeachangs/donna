@@ -53,3 +53,5 @@ Project settings use local rename/delete/restore endpoints. Deletion pauses acti
 - Provider adapters have a common run/result shape. A staged provider must not be presented as verified.
 - Three.js rendering is local. Only six character models and six furniture models are preloaded.
 - Historical candidates, music, world-image, GPU scripts and their dependencies are outside the active repository.
+
+For a new project with executable work, Donna supplies a required `initial_work` choice to `create_project`: a staffing plan queues execution in the same tool call; `null` creates an intentionally idle room. Plans are validated before creating the room. Existing idle projects use `delegate_work`. A queued assignment is distinct from a running native session.

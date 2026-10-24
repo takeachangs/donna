@@ -6,7 +6,7 @@ import {resolve} from 'node:path';
 type UserInput={itemId:string;source:'text'|'voice';text:string};
 export type Job={id:string;mode:'conversation';started:number;cancelled:boolean;rounds:number;input?:UserInput;failedCalls?:Set<string>;failed?:boolean};
 export type VoiceOptions={instructions:()=>string;context:()=>unknown;tools:unknown[];voice:string};
-type CallRow={id:string;roomId:string;agentId:string;voice:string;jobId:string;mode:string;responseId:string;startedAt:string;input?:UserInput;firstAudioMs?:number;completeMs?:number;usage?:any;estimatedUSD?:number;usageMissing?:boolean;status?:string;transcript?:string;file?:string;outputAudioSeconds?:number;tools?:any[]};
+type CallRow={id:string;roomId:string;agentId:string;voice:string;jobId:string;mode:string;responseId:string;startedAt:string;input?:UserInput;firstAudioMs?:number;completeMs?:number;usage?:any;estimatedUSD?:number;usageMissing?:boolean;status?:string;error?:string;transcript?:string;file?:string;outputAudioSeconds?:number;tools?:any[]};
 function wav(pcm:Buffer){const b=Buffer.alloc(44);b.write('RIFF');b.writeUInt32LE(36+pcm.length,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(24000,24);b.writeUInt32LE(48000,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(pcm.length,40);return Buffer.concat([b,pcm]);}
 export function cost(usage:any){if(!usage||!Number.isFinite(usage.input_tokens)||!Number.isFinite(usage.output_tokens))return undefined;const cached=Math.max(0,Math.min(usage.input_tokens,usage.input_token_details?.cached_tokens||usage.input_tokens_details?.cached_tokens||0));return ((usage.input_tokens-cached)*.75+cached*.25+usage.output_tokens*4.5)/1e6;}
 export class HiggsColleague {
@@ -82,8 +82,8 @@ export class HiggsColleague {
   if(e.type==='response.done'){
    const r=this.rows.get(e.response.id);if(!r)return;const {job}=r;
    r.row.usage=e.response.usage;r.row.tools=[];
-   if(e.response.status==='failed')job.failed=true;
-   const calls=(e.response.output||[]).filter((c:any)=>c.type==='function_call');
+   if(e.response.status==='failed'){job.failed=true;r.row.error=String(e.response.status_details?.error?.message||e.response.error?.message||'Higgs could not complete the request. No new work was started by this response.');if(!job.cancelled)this.emit({type:'error',agentId:this.id,message:r.row.error});}
+   const calls=(job.failed?[]:e.response.output||[]).filter((c:any)=>c.type==='function_call');
    let repeatedFailure=false;
    for(const c of calls){
     let result:any,signature=`${c.name}:${c.arguments}`;

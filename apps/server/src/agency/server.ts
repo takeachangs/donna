@@ -64,7 +64,7 @@ wss.on('connection',(client,req)=>{
   if(name==='read_workspace')return {committed:false,...read(args.project_id)};
   if(name==='read_briefing'){const b=workspace.briefing(args.briefing_id);presentation={briefingId:b.id,job,audioComplete:false};view='secretary';emit({type:'view',view});return {committed:false,briefing:{title:b.title,project:workspace.snapshot().projects.find(p=>p.id===b.projectId)?.name,summary:b.summary,files:b.artifacts.map(f=>f.path),verification:b.verification,contributors:b.contributors},note:'Give a short spoken briefing using names, not internal IDs. Playback completion records presentation; it does not accept the work.'};}
   if(name==='set_secretary_identity')return workspace.setSecretary(args);
-  if(name==='create_project'){const p=projects.create(args);workspace.syncProjects();selected=p.id;emit({type:'state',state:room()});return {committed:true,project:p};}
+  if(name==='create_project'){const result=workspace.createProject(args);selected=result.project.id;emit({type:'state',state:room()});return result;}
   if(name==='update_project')return workspace.updateProject(args);
   if(name==='delegate_work')return workspace.delegate(args);
   if(name==='revise_assignment')return workspace.revise(args);

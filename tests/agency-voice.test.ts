@@ -81,6 +81,17 @@ it('does not commit tool results from an interrupted voice response',async()=>{
  expect(JSON.parse(result.item.output).committed).toBe(false);voice.close();
 });
 
+it('surfaces failed provider responses without applying incomplete tools',async()=>{
+ vi.stubEnv('BOSON_API_KEY','offline-fixture');
+ const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);const events:any[]=[],tool=vi.fn();
+ const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,e=>events.push(e),tool,()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({}),tools:secretaryTools,voice:'eleanor'});
+ await voice.connect();const socket=transport.sockets[0];await voice.ask('Build the app');
+ socket.receive({type:'response.created',response:{id:'failed-response'}});
+ socket.receive({type:'response.done',response:{id:'failed-response',status:'failed',status_details:{error:{message:'Provider generation failed'}},output:[{type:'function_call',call_id:'incomplete',name:'delegate_work',arguments:'{}'}]}});
+ expect(tool).not.toHaveBeenCalled();expect(events.some(e=>e.type==='error'&&e.message==='Provider generation failed')).toBe(true);expect(voice.busy).toBe(false);
+ expect(JSON.parse(readFileSync(join(dir,'calls.jsonl'),'utf8')).error).toBe('Provider generation failed');voice.close();
+});
+
 it('resolves the selected project without guessing or silently replacing invalid targets',()=>{
  expect(resolveProjectTarget('read_workspace',{project_id:'selected'},'',[]).project_id).toBeUndefined();
  expect(()=>resolveProjectTarget('delegate_work',{project_id:'selected'},'',[])).toThrow('Unknown project target');

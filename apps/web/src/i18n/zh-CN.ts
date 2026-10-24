@@ -108,7 +108,7 @@ export default {
   'agency.next_step': 'Next step',
   'agency.no_decisions': 'Nothing needs your decision right now.',
   'agency.no_results': 'New deliverables appear here when they are ready to inspect.',
-  'agency.no_work': 'No active assignments. Give your secretary a goal to get started.',
+  'agency.no_work': 'No task assigned. No Codex session has started.',
   'agency.no_completed': 'No accepted results yet.',
   'agency.no_workers': 'Your secretary assigns people when the work needs them.',
   'agency.project_rooms': 'Project rooms',

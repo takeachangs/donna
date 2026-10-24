@@ -5,6 +5,7 @@ import {z} from 'zod';
 import {OfficeStore} from './state.js';
 import {Projects} from './projects.js';
 import {reconcileBriefings,type Briefing} from './briefings.js';
+import {createProjectSchema,workPlanSchema,validateDependencies} from './plans.js';
 
 export type ExecutionStatus='queued'|'working'|'waiting'|'review'|'done'|'paused'|'failed';
 export type Artifact={path:string;url:string;size:number;storage?:string;snapshotAt?:string};
@@ -21,7 +22,7 @@ export interface CodexRunner {
 }
 const now=()=>new Date().toISOString();
 const text=z.string().trim().min(1);
-const planSchema=z.object({project_id:z.string().uuid(),goal:text.max(2000).optional(),checkpoint:text.max(1000),rationale:text.max(1500),workers:z.array(z.object({key:text.regex(/^[a-zA-Z0-9_-]{1,50}$/),title:text.max(180).optional(),role:text.max(100),responsibility:text.max(1500),brief:text.max(6000),acceptance:text.max(2000),reasoning_effort:z.enum(['low','medium']).default('low'),depends_on:z.array(text).max(8).default([]),reuse_worker_id:text.optional()})).min(1).max(4)});
+const planSchema=workPlanSchema.extend({project_id:z.string().uuid()});
 const resultSchema=z.object({name:text.max(40),summary:text.max(12000),artifacts:z.array(text.max(500)).max(30),verification:z.array(z.string().max(3000)).max(20),needsInput:z.string().max(3000).optional()});
 
 /** Product state is an index and compact brief. Native Codex owns conversation history. */
@@ -53,6 +54,14 @@ export class AgencyWorkspace {
  presentBriefing(id:string){const existing=this.data.briefings.find(b=>b.id===id);if(existing?.status==='presented')return {committed:false,briefing:structuredClone(existing)};const b=this.briefing(id),stored=this.data.briefings.find(k=>k.id===b.id)!;stored.status='presented';stored.presentedAt=now();this.log(`Donna presented: ${b.title}`,b.projectId);this.save();return {committed:true,briefing:structuredClone(stored)};}
  private log(message:string,projectId?:string){this.data.activity.push({at:now(),projectId,message});this.data.activity=this.data.activity.slice(-120);}
  private project(id:string){const p=this.data.projects.find(p=>p.id===id);if(!p)throw Error('Unknown project; create or select a registered project first.');if(p.deletedAt)throw Error('Project is in Recently deleted. Restore it before changing work.');return p;}
+ createProject(value:unknown){
+  const input=createProjectSchema.parse(value),plan=input.initial_work;
+  if(plan){validateDependencies(plan.workers);if(plan.workers.some(w=>w.reuse_worker_id))throw Error('A new project needs new workers; do not reuse workers from another room.');}
+  const project=this.projects.create(input);this.syncProjects();
+  if(!plan)return {committed:true,project,executionStarted:false,note:'Empty project created. No assignment or native session has started.'};
+  const result=this.delegate({...plan,project_id:project.id,goal:plan.goal||input.brief||undefined});
+  return {committed:true,project,executionStarted:true,assignments:result.assignments,workers:result.workers,note:'Initial work is queued for real local Codex execution. Do not delegate the same work again.'};
+ }
  renameProject(id:string,value:unknown){this.project(id);const p=this.projects.rename(id,value);this.syncProjects();this.log(`Renamed project to ${p.name}`,id);this.save();return {committed:true,project:p};}
  deleteProject(id:string){const p=this.project(id);for(const a of this.data.assignments.filter(a=>a.projectId===id&&['working','queued','waiting'].includes(a.status))){a.revision++;this.state(a,'paused','Project moved to Recently deleted; files and session retained');}this.projects.setDeleted(id,true);this.syncProjects();this.log(`Moved ${p.name} to Recently deleted`,id);this.save();if(this.current&&this.data.assignments.some(a=>a.id===this.current!.id&&a.projectId===id)&&this.current.threadId)void this.codex.interrupt(this.current.threadId).catch(()=>{});return {committed:true};}
  restoreProject(id:string){const p=this.projects.setDeleted(id,false);this.syncProjects();this.log(`Restored ${p.name}; paused work stays paused`,id);this.save();return {committed:true,project:p};}
@@ -64,10 +73,8 @@ export class AgencyWorkspace {
  setSecretary(value:unknown){const {name}=z.object({name:text.regex(/^[A-Za-z][A-Za-z '-]{0,39}$/)}).parse(value);if(this.data.secretary.name!=='Secretary'&&this.data.secretary.name!==name)throw Error('Secretary identity is already established.');this.data.secretary.name=name;this.save();return {committed:true,secretary:this.data.secretary};}
  updateProject(value:unknown){const a=z.object({project_id:z.string().uuid(),goal:text.max(2000).optional(),checkpoint:text.max(1000).optional(),next_step:text.max(1000).optional()}).parse(value),p=this.project(a.project_id);if(a.goal){p.goal=a.goal;p.memory.outcome=a.goal;}if(a.checkpoint)p.memory.checkpoint=a.checkpoint;if(a.next_step)p.memory.nextStep=a.next_step;p.memory.updatedAt=now();this.log('Updated project brief',p.id);this.save();return {committed:true,project:p};}
  delegate(value:unknown){
-  const a=planSchema.parse(value),p=this.project(a.project_id),keys=new Set(a.workers.map(w=>w.key));
-  if(keys.size!==a.workers.length)throw Error('Assignment keys must be unique');
-  for(const w of a.workers){for(const d of w.depends_on)if(!keys.has(d)||d===w.key)throw Error('Dependencies must refer to other keys in this plan');if(w.reuse_worker_id){const old=this.data.workers.find(k=>k.id===w.reuse_worker_id);if(!old||old.projectId!==p.id||['queued','working','waiting'].includes(old.status))throw Error('Reused worker must belong to this project and be available');}}
-  const visited=new Set<string>(),active=new Set<string>();const visit=(key:string)=>{if(active.has(key))throw Error('Cyclic dependency');if(visited.has(key))return;active.add(key);for(const d of a.workers.find(w=>w.key===key)!.depends_on)visit(d);active.delete(key);visited.add(key);};for(const k of keys)visit(k);
+  const a=planSchema.parse(value),p=this.project(a.project_id);validateDependencies(a.workers);
+  for(const w of a.workers)if(w.reuse_worker_id){const old=this.data.workers.find(k=>k.id===w.reuse_worker_id);if(!old||old.projectId!==p.id||['queued','working','waiting'].includes(old.status))throw Error('Reused worker must belong to this project and be available');}
   const reused=a.workers.flatMap(w=>w.reuse_worker_id?[w.reuse_worker_id]:[]);if(new Set(reused).size!==reused.length)throw Error('Do not assign the same worker twice in one plan');
   const ids=new Map(a.workers.map(w=>[w.key,randomUUID()])),created:Assignment[]=[];
   if(a.goal){p.goal=a.goal;p.memory.outcome=a.goal;}p.memory.checkpoint=a.checkpoint;p.memory.nextStep='Execute the delegated work, then inspect the actual deliverables.';p.memory.latest=`Secretary delegated ${a.workers.length} work package(s). ${a.rationale}`;p.memory.updatedAt=now();
