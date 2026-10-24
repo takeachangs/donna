@@ -52,7 +52,8 @@ uv run bridge.py --ring --backend session --brain ~/projects/app # + the brain: 
 
 ## Contracts that must not drift
 Changing any of these means changing every side in the same commit.
-- `~/.higgs/office.json` shape, `WorkStatus` words, `call.state` words (`docs/office-state.md`): `herd.office()` ↔ `office/`.
+- `~/.higgs/office.json` shape, `WorkStatus` words, `call.state` words (`docs/office-state.md`): `herd.office()` ↔ `office/`, and
+  `higgslive.office_status` (the voice's `task_status`: `workers[].{name,role,status,lead}`, `briefings[].{id,summary,status}`, #43).
 - `~/.higgs/state.json` `{"state": "off|ringing|listening|thinking|speaking", "with": "<name>"}` (`with` while a call is on:
   "donna" or the worker the user was put through to, #28): `bridge.py` writes it every 250 ms, `off` last; `herd.office()`
   reads a file older than 3 s as `off` and turns `with` into `office.json` `call.with` (that worker's id, or "donna").
