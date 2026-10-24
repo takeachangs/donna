@@ -26,6 +26,8 @@ it('configures only the dynamic secretary and supplies current project memory',a
  const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,()=>{},()=>({committed:true}),()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({goal:'Prepare launch',checkpoint:'One clear draft'}),tools:secretaryTools,voice:'eleanor'});
  await voice.connect();const socket=transport.sockets[0],session=socket.sent[0].session;
  expect(session.audio.input.turn_detection).toEqual({type:'server_vad',threshold:.65,silence_duration_ms:800,prefix_padding_ms:300});
+ // without it Higgs sends no input transcripts, so a spoken "bye" never reaches hangsUp (found by npm run e2e:voice)
+ expect(session.audio.input.transcription).toEqual({model:'higgs-stt-3.1'});
  expect(session.instructions).toContain(secretaryInstructions);
  expect(session.instructions).toContain('One clear draft');
  expect(session.tools.map((t:any)=>t.name)).toContain('delegate_work');

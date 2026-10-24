@@ -17,6 +17,7 @@
     "check:repo": "node scripts/check-repo.mjs",
     "doctor": "node scripts/doctor.mjs",
     "soak": "node scripts/soak.mjs",
+    "e2e:voice": "node scripts/e2e-voice.mjs",
     "package:source": "node scripts/package-source.mjs"
   },
   "dependencies": {

@@ -5,6 +5,9 @@ import {resolve} from 'node:path';
 import {log} from './log.js';
 
 const say=log('voice');
+// e2e hooks for scripts/e2e-voice.mjs; off unless set, each fires once per process. The doomed answer is hidden and its items deleted, so the retry sees the user turn last:
+// a retry after a kept assistant item fails 400 "No user input", and response.cancel at response.created makes Higgs drop the response with no response.done.
+const hook={upstream:!!process.env.AGENCY_TEST_UPSTREAM_ERROR_ONCE,doomed:'',idleMs:Number(process.env.AGENCY_TEST_IDLE_CLOSE_MS)||0};
 type UserInput={itemId:string;source:'text'|'voice';text:string};
 export type Job={id:string;mode:'conversation';started:number;cancelled:boolean;rounds:number;input?:UserInput;failedCalls?:Set<string>;failed?:boolean;retried?:boolean};
 export type VoiceState='connecting'|'ready'|'reconnecting'|'closed';
@@ -14,7 +17,7 @@ type CallRow={id:string;roomId:string;agentId:string;voice:string;jobId:string;m
 function wav(pcm:Buffer){const b=Buffer.alloc(44);b.write('RIFF');b.writeUInt32LE(36+pcm.length,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(24000,24);b.writeUInt32LE(48000,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(pcm.length,40);return Buffer.concat([b,pcm]);}
 export function cost(usage:any){if(!usage||!Number.isFinite(usage.input_tokens)||!Number.isFinite(usage.output_tokens))return undefined;const cached=Math.max(0,Math.min(usage.input_tokens,usage.input_token_details?.cached_tokens||usage.input_tokens_details?.cached_tokens||0));return ((usage.input_tokens-cached)*.75+cached*.25+usage.output_tokens*4.5)/1e6;}
 export class HiggsColleague {
- private ws?:WebSocket;private ready=false;private closed=false;private job?:Job;private expectedItem='';private chunks=new Map<string,Buffer[]>();private rows=new Map<string,{row:CallRow;job:Job;started:number}>();private responseCount=0;private _state:VoiceState='connecting';private dropReason='';private reconnecting?:Promise<void>;private retryAt=0;private recent:string[]=[];private carried='';
+ private ws?:WebSocket;private ready=false;private closed=false;private job?:Job;private expectedItem='';private chunks=new Map<string,Buffer[]>();private rows=new Map<string,{row:CallRow;job:Job;started:number}>();private responseCount=0;private _state:VoiceState='connecting';private dropReason='';private reconnecting?:Promise<void>;private retryAt=0;private recent:string[]=[];private carried='';private idle?:ReturnType<typeof setTimeout>;
  constructor(readonly id:string,private roomId:()=>string,private root:string,private emit:(e:any)=>void,private tool:(name:string,args:any,job:Job)=>any,private ended:(id:string,job:Job,audio:boolean)=>void,private barge:()=>void,private options:VoiceOptions){mkdirSync(resolve(root,'audio'),{recursive:true});}
  private voice(){return this.options.voice;}
  private currentContext(){return this.options.context();}
@@ -29,7 +32,7 @@ export class HiggsColleague {
   const ws=this.ws=new WebSocket('wss://api.boson.ai/v1/realtime',{headers:{Authorization:`Bearer ${process.env.BOSON_API_KEY}`},handshakeTimeout:15000});
   await new Promise<void>((resolveReady,reject)=>{
    const timer=setTimeout(()=>reject(Error(`${this.id}: Higgs session update timed out`)),20000);
-   ws.on('open',()=>this.send({type:'session.update',session:{model:'higgs-realtime',output_modalities:['audio'],max_output_tokens:3500,instructions:initialInstructions,audio:{input:{format:{type:'audio/pcm',rate:24000},turn_detection:{type:'server_vad',threshold:.65,silence_duration_ms:Number(process.env.AGENCY_VAD_SILENCE_MS)||800,prefix_padding_ms:300}},output:{format:{type:'audio/pcm',rate:24000},voice:this.voice()}},tools:this.options.tools,tool_choice:'auto'}}));
+   ws.on('open',()=>this.send({type:'session.update',session:{model:'higgs-realtime',output_modalities:['audio'],max_output_tokens:3500,instructions:initialInstructions,audio:{input:{format:{type:'audio/pcm',rate:24000},transcription:{model:'higgs-stt-3.1'},turn_detection:{type:'server_vad',threshold:.65,silence_duration_ms:Number(process.env.AGENCY_VAD_SILENCE_MS)||800,prefix_padding_ms:300}},output:{format:{type:'audio/pcm',rate:24000},voice:this.voice()}},tools:this.options.tools,tool_choice:'auto'}}));
    // Higgs acknowledges its first update as session.created, later ones as
    // session.updated. Verify the echoed instructions, not just the event name.
    ws.on('message',raw=>{try{const e=JSON.parse(raw.toString());if((e.type==='session.updated'||e.type==='session.created')&&e.session?.instructions===initialInstructions&&!this.ready&&!this.closed){this.ready=true;this._state='ready';clearTimeout(timer);resolveReady();if(first){const v=e.session?.audio?.output?.voice||this.voice();say(`session ready (voice ${v}) in ${Date.now()-t0} ms`);this.emit({type:'colleague_ready',agentId:this.id,voice:v});}}if(e.type==='error'&&!this.ready){clearTimeout(timer);reject(Error(String(e.error?.message||'Higgs rejected configuration')));return;}this.receive(e);}catch(err){this.emit({type:'error',agentId:this.id,message:String(err)});}});
@@ -74,7 +77,10 @@ export class HiggsColleague {
  clearInput(){this.send({type:'input_audio_buffer.clear'});}
  truncate(itemId:string,audioEndMs:number){this.send({type:'conversation.item.truncate',item_id:itemId,content_index:0,audio_end_ms:Math.max(0,Math.floor(audioEndMs))});}
  async cancel(){const previous=this.job;if(previous){previous.cancelled=true;this.send({type:'response.cancel'});this.expectedItem='';const start=performance.now();while([...this.rows.values()].some(r=>r.job===previous)&&performance.now()-start<2500)await new Promise(r=>setTimeout(r,20));if(this.job===previous)this.job=undefined;}}
+ private armIdle(){if(!hook.idleMs)return;clearTimeout(this.idle);this.idle=setTimeout(()=>{if(!hook.idleMs||this.closed)return;if(this.job)return this.armIdle();hook.idleMs=0;this.dropReason='idle timeout (AGENCY_TEST_IDLE_CLOSE_MS)';say(this.dropReason);this.ws?.close();},hook.idleMs);this.idle.unref();}
  private receive(e:any){
+  if(hook.upstream){if(e.type==='response.created'&&!hook.doomed)hook.doomed=e.response.id;else if(e.response_id&&e.response_id===hook.doomed)return;else if(e.type==='response.done'&&e.response?.id===hook.doomed){hook.upstream=false;say('injecting upstream_error (AGENCY_TEST_UPSTREAM_ERROR_ONCE)');for(const it of e.response.output||[])this.send({type:'conversation.item.delete',item_id:it.id});e={...e,response:{...e.response,status:'failed',output:[],status_details:{error:{type:'server_error',code:'upstream_error',message:'injected by AGENCY_TEST_UPSTREAM_ERROR_ONCE'}}}};}}
+  if(e.type==='response.done'||e.type==='input_audio_buffer.speech_started')this.armIdle();
   if((e.type==='conversation.item.added'||e.type==='conversation.item.created')&&e.item?.id===this.expectedItem){this.expectedItem='';if(!this.job?.cancelled)this.createResponse();return;}
   if(e.type==='session.idle_timeout'||e.type==='session.max_duration_reached'){this.dropReason=e.type==='session.idle_timeout'?'idle timeout, no user speech for 300 s':'duration cap reached';say(`${this.dropReason}; Higgs will close the session`);return;}
   if(e.type==='error'){
@@ -145,5 +151,5 @@ export class HiggsColleague {
   if(pcm.length){row.file=`audio/${row.id}.wav`;row.outputAudioSeconds=pcm.length/48000;writeFileSync(resolve(this.root,row.file),wav(pcm));}
   appendFileSync(resolve(this.root,'calls.jsonl'),JSON.stringify(row)+'\n');this.rows.delete(id);this.chunks.delete(id);this.emit({type:'usage',row});
  }
- close(){this.closed=true;this._state='closed';if(this.job)this.job.cancelled=true;for(const [id] of this.rows)this.finish(id,'INTERRUPTED');this.ws?.close();}
+ close(){clearTimeout(this.idle);this.closed=true;this._state='closed';if(this.job)this.job.cancelled=true;for(const [id] of this.rows)this.finish(id,'INTERRUPTED');this.ws?.close();}
 }
