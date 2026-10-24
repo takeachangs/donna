@@ -308,7 +308,7 @@ def action(e):  # a worker's last PostToolUse event (or None), in words, at most
          else "Searching the code" if tool in ("Read", "Grep", "Glob", "LS")
          else ("Running checks" if CHECKS.search(c) else "Committing the work" if "git commit" in c else "Running a command") if tool == "Bash"
          else "Looking it up" if tool in ("WebFetch", "WebSearch")
-         else f"Messaging {inp['to']}" if tool == "SendMessage" and inp.get("to") else "Hiring help" if tool == "Agent" else f"Using {tool}")
+         else ("Reporting to Donna" if str(inp.get("to")).lower() in ("team-lead", "lead", "main", "donna") else f"Messaging {inp['to']}") if tool == "SendMessage" and inp.get("to") else "Hiring help" if tool == "Agent" else f"Using {tool}")
     return s[:40]
 
 
@@ -574,6 +574,7 @@ def _selfcheck_office():
     import contextlib, io, tempfile
     assert [action({"tool": t, "input": i}) for t, i in [("Bash", {"command": "cd /private/tmp/x && uv run pytest -q"}), ("Bash", {"command": "cd /private/tmp/x"}),
             ("Read", {"file_path": "/a/b.py"}), ("Grep", {"pattern": "x"})]] == ["Running checks", "Running a command", "Reading b.py", "Searching the code"]
+    assert [action({"tool": "SendMessage", "input": {"to": t}}) for t in ("team-lead", "Maya")] == ["Reporting to Donna", "Messaging Maya"]  # a worker reporting back reads "Reporting to Donna"
     assert len(action({"tool": "Write", "input": {"file_path": "/a/" + "x" * 60}})) == 40  # #65: worker actions in words, at most 40 chars
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["HIGGS_HOME"] = tmp
