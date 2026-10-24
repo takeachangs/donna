@@ -100,6 +100,7 @@ LATER = re.compile(r"\b(when|once|until|till|soon|if|will|not|yet|still|being|go
 FIX = "(system) No result has come in yet; the task is still running. Your last reply was wrong and was not played. Say exactly this and nothing else: \"{}\""
 REPEAT = ("(system) Not played: you already said \"{}\" Never say it again. Answer the user's last words in different words; "   # Oct 24 call: six user turns in 50 s, one answer
           f"if they asked for something, call {TOOL}.")   # each, "Still working on that website and marketing plan for you." (#36)
+NOT_NAMES = set("the and also make please can you your for with that this from into some new all set".split())   # words that name no task
 REPEAT_WINDOW, REPEAT_MIN_WORDS = 60, 2   # ponytail: 2 words catches "Still running." (a loop line); raise it if "Got it." style fillers count as repeats
 
 
@@ -108,15 +109,22 @@ def sentences(voice: str) -> list:
     return [" ".join(re.findall(r"[a-z0-9']+", p.lower().replace("’", "'"))) for p in re.split(r"(?<=[.!?;\]}])\s+", voice.strip())]
 
 
-def fabricated(voice: str) -> str | None:
+def fabricated(voice: str, told=lambda s: False) -> str | None:
     """The reply with its first sentence that reports a result swapped for PENDING_LINE (later ones dropped), or None if it reports none.
-    Reports: a tag read aloud ([NOTE: task finished…], a JSON tool result: Oct 24 rehearsal, 2/4 baseline runs) or a done claim not about later."""
+    Reports: a tag read aloud ([NOTE: task finished…], a JSON tool result: Oct 24 rehearsal, 2/4 baseline runs) or a done claim not about
+    later that `told` (the lower-cased sentence → a result came in for it) does not back."""
     out, used = [], False
     for p in re.split(r"(?<=[.!?;\]}])\s+", voice.strip()):   # "]" too: "[NOTE: …] Hanging up now." keeps the sign-off
         v = p.lower().replace("’", "'")
-        if not (re.search(r"[\[\]{}]", v) or DONE.search(v) and not LATER.search(v)): out.append(p)
+        tag = re.search(r"[\[\]{}]", v)
+        if not (tag or DONE.search(v) and not LATER.search(v)) or not tag and told(v): out.append(p)
         elif not used: out.append(PENDING_LINE); used = True
     return " ".join(out) if used else None
+
+
+def words(text: str) -> set:
+    """The words that can name a task, cut to 4 letters ("backed up" names "a backup"): how a claim is matched to its task (#55)."""
+    return {w[:4] for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in NOT_NAMES}
 
 
 def _for(secs: float) -> str:
@@ -251,7 +259,9 @@ class Conn:
         if kind == "ask":   # the agent needs a decision: not a result, so it skips the queue and the hold
             self._asking += 1; self._tasks.append(asyncio.create_task(self._ask(content, delegation_id))); return
         self._arrived.add(delegation_id)
-        await self._spoken.put((("The task failed: " + content if kind == "fail" else content)[:1500], delegation_id, None, kind))
+        text = "The task failed: " + content if kind == "fail" else content
+        if kind in ("say", "fail") and (task := self._sent.get(delegation_id, ("",))[0]): text = f'Result for "{task.strip()}": {text}'   # with three calls open, a bare "Done." for the first was told as the last (#55); a transfer line is an instruction, not a result
+        await self._spoken.put((text[:1500], delegation_id, None, kind))
 
     async def _thinking(self, content: str, delegation_id: str | None = None):
         # client-side only: as user-role items the model answered the note instead of the user ("Hello." → "Still working on that index.html"), Oct 24 call
@@ -297,7 +307,7 @@ class Conn:
         return [_msg(text)]     # no open call (opener, "still working" note, a second update for the same task): plain text item
 
     def _done(self, did, kind):
-        if kind != "dropped": self._st["fresh"] = True   # the reply that follows may report it
+        if kind != "dropped": self._st.update(fresh=True, result_at=time.monotonic())   # the reply that follows may report it
         if did: self._pending.discard(did)
         self._emit("session.commentary.appended", delegation_id=did, kind=kind)
 
@@ -396,9 +406,8 @@ class Conn:
             self._emit("session.output_audio.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.delta": self._emit("session.output_transcript.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.done":
-            # ponytail: "a task runs and no result came in this turn" stands for "this claim is about the running task"; re-asking about an
-            # earlier finished one while another runs gets the pending line. Upgrade: match the claim against each task's words
-            if not self._relay and self.delegation and self._pending and not st["fresh"] and (fixed := fabricated(ev["transcript"])):   # a result nobody sent (#32)
+            # a task runs whose result has not come in, none went in this turn, and the claim is not backed by one that came in (#55: _told)
+            if not self._relay and self.delegation and self._pending - self._arrived and not st["fresh"] and (fixed := fabricated(ev["transcript"], self._told)):   # a result nobody sent (#32)
                 log.info("fabricated: %r → %r", ev["transcript"], fixed)
                 if not st["guarded"]:   # dropped unplayed; the voice says the fixed line at response.done (one retry per user turn, like GUARD)
                     st.update(guarded=True, fix=fixed, spk_until=0.0); self._emit("session.output_audio.discard"); return
@@ -464,6 +473,15 @@ class Conn:
         self._said += [(s, now) for s in new]
         rep = [s for s in new if s in said]
         return rep, bool(new) and len(rep) == len(new)
+
+    def _told(self, claim: str) -> bool:
+        """A done claim a result backs (#55): it names a task whose result came in (queued or spoken, any turn) over every running one,
+        or names none and a result went in after the last reply the user heard (the user's turn cut that reply short: #49 run)."""
+        w = words(claim); score = {d: len(w & words(t)) for d, (t, _) in self._sent.items()}
+        best = max(score.values(), default=0); top = {d for d, n in score.items() if n == best}
+        if best and top <= self._arrived: return True
+        if best and not top & self._arrived: return False   # names a running task: the #32 case
+        return self._st.get("result_at", 0) > self._st.get("heard_at", 0)   # ponytail: a tie or no task words falls back to timing
 
     def _fake_claim(self) -> bool:
         v = self._st["last_voice"].lower(); self._st["last_voice"] = ""
@@ -693,7 +711,23 @@ if __name__ == "__main__":   # self-check: no network
         c._st.update(guarded=False, last_user=""); sent.clear()
         assert await reply(PENDING_LINE, True) == await reply(PENDING_LINE, True) == ["session.output_transcript.done", "response.done"] and sent == []   # the guard's own line
         await c._attach(("[note] still in progress; tell the user.", None, "d1", "say"), True); assert sent == [] and c._out.empty()   # a still-working note never rides on the user's turn
-    async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer(), stale(), fab(), rep()); await cap()   # cap flips globals: not alongside the others
+    async def told():   # #55: the result for "music" went in, then the user's "Thanks, bye": the goodbye may report it, not the running "notes"
+        c, sent, now = mk(); c.delegation, c._open, c._pending = True, {"d1", "d2"}, {"d1", "d2"}
+        c._sent = {"d1": ("Also zip the music folder.", time.time()), "d2": ("And make a backup of the notes folder.", time.time())}
+        outs = lambda: [(e.type, getattr(e, "transcript", "")) for e in (c._out.get_nowait() for _ in range(c._out.qsize())) if e.type != "raw"]
+        say = lambda v: c._handle({"type": "response.output_audio_transcript.done", "transcript": v})
+        c._st["heard_at"] = time.monotonic(); await c.session.commentary.append(content="Done.", delegation_id="d1")
+        text, did, _, kind = c._spoken.get_nowait(); items = c._items(text, did, cue=True); c._done(did, kind); outs()
+        assert items[0] == {"type": "function_call_output", "call_id": "d1", "output": 'Result for "Also zip the music folder.": Done.'} and len(items) == 2, items
+        await c.input_text.append("Thanks, bye"); assert not c._st["fresh"]   # the user's turn: before #55 the guard swapped a true claim here
+        for v in ("All done!", "The music folder zip is all set. Hanging up now."):   # unnamed: the reply right after the result; named: any time
+            await say(v); assert outs() == [("session.output_transcript.done", v)], v
+        await say("The notes backup is done too. Bye!"); assert outs() == [("session.output_audio.discard", "")]   # names the running task
+        await say("Everything's done. Take care."); assert outs() == [("session.output_transcript.done", f"{PENDING_LINE} Take care.")]   # unnamed, a reply later
+        c, sent, now = mk(); c.delegation, c._pending, c._sent = True, {"d1", "d2"}, {"d1": ("Also zip the music folder.", 0), "d2": ("And make a backup of the notes folder.", 0)}
+        await c._handle({"type": "response.output_audio_transcript.done", "transcript": "The music folder zip is all set. Hanging up now."})   # control: no result came in
+        assert [e.type for e in (c._out.get_nowait() for _ in range(c._out.qsize()))] == ["session.output_audio.discard"]
+    async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer(), stale(), fab(), rep(), told()); await cap()   # cap flips globals: not alongside the others
     STILL_WORKING_AT = 25   # stale() opens a delegation: no "still working" note inside the test
     t0 = time.monotonic(); asyncio.run(policy()); assert time.monotonic() - t0 < 3
     print("ok")
