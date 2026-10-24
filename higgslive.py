@@ -94,9 +94,9 @@ def open_question(voice: str) -> bool:
     v = voice.strip().lower()
     return v.endswith("?") and not CLOSER.search(v) and len(v.split()) >= 5 and bool(TASK_Q.search(v))
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
-CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching|reaching|connecting|transferring|getting|updating|changing|adding|fixing|passing)|should be running|backend result|i'?ll\s+have\s+(the|an|my)\s+agent)")   # the last: "I'll have the agent take a look" (Oct 24 probe)
+CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching|reaching|connecting|transferring|getting|updating|changing|adding|fixing|passing)|should be running|backend result|i'?ll\s+have\s+(the|an|my)\s+agent|opening (it|that|this)|it'?s loading|loading (it |that |this )?up|(pulling|bringing) (it|that|this) up)")   # the last: "I'll have the agent take a look" (Oct 24 probe); #86: "Opening it up", "It's loading up" (14:00 take, no call)
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat|connect|put|transfer)|let me\s+(creat|mak|check|look|run|open|see)|"
-                   r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
+                   r"i can (open|show|pull|bring|load|launch|display|play)\b|i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
                    r"shall i (set|get|start) (that|it|this)|i can (connect|put you through|transfer|have)|(have|get|bring) (him|her|them|\w+) (join|on|in)\b|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
                    r"(i'?ll|i (can|could)|let me)\s+(whip|draft|put (\w+ )?together|set (\w+ )?up|sketch)|"
                    r"(could|can) you (please )?(provide|share|tell me more)|what \W?(this|that|it)\W? refers to|you'?re referring to|need (a bit |some )?more detail)")   # asking permission instead of calling; offering to draft (Oct 24 calls); interviewing about "this" (#43 probe: 7/20)
@@ -205,7 +205,7 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
     return (f"You're in the {proj} project. " if proj else "") + (PATH.sub(r"\1", " ".join(out)) or "No agents are running and nothing has finished since the call started.")
 
 
-ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|come up with|draft|prepare|put together|think up|write up|work out|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|zip(s|ped|ping)?|archiv(e|es|ed|ing)|compress(es|ed|ing)?|bundl(e|es|ed|ing)|packag(e|es|ed|ing)|export(s|ed|ing)?|mov(e|es|ed|ing)|cop(y|ies|ied|ying)|"
+ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show( me)?|pull (it |that |this )?up|bring (it |that |this )?up|load (it|that|this|the|up)|launch|display|preview|play|how many|come up with|draft|prepare|put together|think up|write up|work out|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|zip(s|ped|ping)?|archiv(e|es|ed|ing)|compress(es|ed|ing)?|bundl(e|es|ed|ing)|packag(e|es|ed|ing)|export(s|ed|ing)?|mov(e|es|ed|ing)|cop(y|ies|ied|ying)|"
                    r"add|change|design|plan|style|improve|update (the|it|that|this|my)|(put|turn) (it|this|that)|tell (them|it|someone)|have (them|someone)|"
                    r"who('?s| is| was)? (built|made|wrote|did|working on|worked on|on|in charge of)|on the line|put me through|connect me|talk to|speak (to|with))\b")   # not bare "update"/"have it": "any update?", "do you have it?" ask about a running task; "who built the quiz?" and "get me on the line" go to the brain (#28)
 
@@ -644,6 +644,13 @@ if __name__ == "__main__":   # self-check: no network
         sent.clear(); c._st.update(last_user=user, last_voice=voice, guarded=False, turn_delegated=False, asked=asked)
         asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "message", "content": [{"transcript": voice}]}]}}))
         assert any(e.get("item", {}).get("content", [{}])[0].get("text") == NUDGE for e in sent) == nudged, (user, sent)
+    c._pending = set()   # #86, the 14:00 take verbatim: no task running, three claims to open the page with no call; each one is nudged
+    for user, voice in (("okay, can you open it for me on my browser so i can have a look at it?", "i can open that up for you right now."),
+                        ("hello.", "opening it up for you right now."), ("why are you taking so long?", "it's loading up right now. just a second.")):
+        sent.clear(); c._st.update(last_user=user, last_voice=voice, guarded=False, turn_delegated=False, asked=False)
+        asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "message", "content": [{"transcript": voice}]}]}}))
+        assert any(e.get("item", {}).get("content", [{}])[0].get("text") == NUDGE for e in sent), (user, sent)
+    assert all(ASKED.search(x) for x in ("show me the page", "pull it up", "bring up the site", "launch it", "preview the page", "play the song", "display it"))   # #86
     STILL_WORKING_AT = 0   # a "still working" note queued before or after the result came in is dropped; the result gets the cue
     async def stale_note():
         c, sent = Conn(None, 24000), []
