@@ -32,6 +32,7 @@ While running, the bridge writes ~/.higgs/state.json ({"state": off|ringing|list
 import argparse, asyncio, base64, contextlib, json, logging, os, queue, re, sys, threading, time
 
 SIGN_OFF = "Hanging up now."   # the voice ends every goodbye with this (PROMPT); hearing it closes the call. The only copy: docs and the skill name it, code imports it
+BACK_PROMISE = re.compile(r"\b(i'?ll|let me|i'?m going to) (get|put|take|switch|send) (you|donna) back\b")   # #82: "I'll get you back to Donna right away." is kept, not left hanging
 BACK = "Putting Donna back on."   # #28: a worker's voice ends its part with this (worker_prompt); hearing it puts Donna back on the line
 IDLE_AFTER, NUDGE_AT, WARN_BEFORE = 60, 30, 10   # Mike's idle policy: nudge at 30 s of quiet, a cue at 50 s, hang up at 60 s; never while a task is pending
 NUDGE = "[note] The user has been quiet for a while. Ask once, in a few words, whether they're still there."
@@ -126,10 +127,10 @@ def worker_prompt(name: str, project: str, what: str, recent: str) -> str:
 You're {name}, a developer on {project}. Donna, the user's secretary, just put the user through to you on the phone.{f" You worked on: {what}." if what else ""} Speak for yourself only: first person, one or two short sentences, no file paths, ids or code. There is no set topic.
 
 # Every question
-Every question or request about your work or anything else: call delegate_task with the user's words first, in that same turn, with at most one short holding line ("Let me check my notes." or "One sec."). Then say nothing more until the answer arrives. You know nothing about your work yourself: never answer, explain, guess or give a reason from general knowledge, not even a plausible one. The real {name} answers; the answer arrives as the tool's output: say it in your own words, in first person, as something you did and remember, never as something you looked up. Only greetings, putting Donna back, and repeating what you just said you answer yourself. Anything outside your work is Donna's: offer to put her back.
+Every question or request about your work or anything else: call delegate_task with the user's words first, as they said them (a question stays a question, never turned into a change; the worker answers it), in that same turn, with at most one short holding line ("Let me check my notes." or "One sec."). Then say nothing more until the answer arrives. You know nothing about your work yourself: never answer, explain, guess or give a reason from general knowledge, not even a plausible one. The real {name} answers; the answer arrives as the tool's output: say it in your own words, in first person, as something you did and remember, never as something you looked up. Only greetings, putting Donna back, repeating what you just said, and asking them to say it again when you could not make out their words (no delegate_task for garbled words) you answer yourself. Anything outside your work is Donna's: offer to put her back.
 
 # Back to Donna
-When the user wants Donna back or is done with you ("put Donna back", "that's all", "transfer me back"), say a short goodbye ending with the exact words "{BACK}" When the user says goodbye to the whole call, end with the exact words "{SIGN_OFF}" Never say either in any other situation.
+When the user wants Donna back or is done with you ("put Donna back", "get me back to Donna", "that's all", "transfer me back"), say a short goodbye ending with the exact words "{BACK}" When the user says goodbye to the whole call, end with the exact words "{SIGN_OFF}" Never say either in any other situation.
 
 # The call so far
 {recent}"""
@@ -137,6 +138,8 @@ When the user wants Donna back or is done with you ("put Donna back", "that's al
 if sys.argv[1:2] == ["selftest"]:   # offline: no session, no audio
     assert len(PROMPT) <= 3000 and PROMPT.count(SIGN_OFF) == 1, len(PROMPT)
     wp = worker_prompt("Maya", "the kids site", "Builds the quiz", "user: who built the quiz?")
+    assert "a question stays a question" in wp and "say it again" in wp   # #82
+    assert BACK_PROMISE.search("i'll get you back to donna right away.") and BACK_PROMISE.search("i'll put donna back on for you.") and not any(BACK_PROMISE.search(x) for x in ("let me get back to you on that.", "i can put you back to donna if you like."))
     assert wp.count(BACK) == 1 and wp.count(SIGN_OFF) == 1 and "You worked on: Builds the quiz." in wp and len(wp) < 2000, len(wp)
     done: dict = {}   # idle_action on a fake clock, speech at t=100 (Mike's cases)
     acts = [idle_action(t, 100, 0, False, done) for t in (110, 129, 130, 131, 149, 150, 151, 159, 160, 161)]
@@ -440,6 +443,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                                                  delegation_id=did, kind="transfer")
 
         def check_bye(text):   # not with a worker: "that's all" means back to Donna there
+            if who and higgslive.BACK_WORDS.search(text.lower().replace("’", "'")): st["back"] = True; log("back phrase heard from the user, Donna after this reply")   # #82: "get me back to Donna" got "I'll get you back" and no BACK
             if args.ring and not who and BYE.search(text.lower().replace("’", "'")): st["bye"] = time.monotonic()   # no goodbye prompt: the model answers "bye" itself
 
         async def typed_turn(text):
@@ -537,7 +541,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     secs = st.pop("audio_bytes", 0) / (RATE * 2); words = len(ev.transcript.split())
                     log(f"VOICE ({secs:.1f}s, {words / secs * 60:.0f} wpm):" if secs > 0.5 else "VOICE:", ev.transcript); transcript.append(["assistant", ev.transcript])
                     if SIGN_OFF[:-1].lower() in ev.transcript.lower(): st["bye"] = time.monotonic(); log("sign-off heard, closing after this reply")
-                    elif who and BACK[:-1].lower() in ev.transcript.lower(): st["back"] = True; log("back phrase heard, Donna after this reply")
+                    elif who and (BACK[:-1].lower() in ev.transcript.lower() or BACK_PROMISE.search(ev.transcript.lower()) and not ev.transcript.rstrip().endswith("?")): st["back"] = True; log("back phrase heard, Donna after this reply")
                 elif t == "session.delegation.created":
                     rep = getattr(ev.delegation, "replaces", None)
                     log(f"DELEGATION {ev.delegation.id} @{ev.offset_ms}ms: {ev.delegation.task[:90]}" + (f" (replaces {rep})" if rep else "")); st["delegated"] = True
