@@ -13,6 +13,15 @@ line; deferred replies; code-built status). We borrow the vocabulary and the inv
 - **Workers are the brain's Agent-tool subagents** (named Sonnets, `run_in_background`, one git worktree per task). They
   never talk to the user and `herd.py` does not spawn them; Claude Code dispatches, the hooks report them to the office
   (`docs/office-state.md`).
+- **Codex edition (#66, `bridge.py --brain-engine codex`):** the brain is interactive Codex in tmux `donna` (full access,
+  no hooks; `herd.py new donna --kind codex` records `CODEX_THREAD_ID` as `meta.session`; the tmux typing is its only wake,
+  for phone tasks and for worker results). Workers are herd agents of kind `codex`: `herd.py new Ava --kind codex --project
+  <worktree>` + `herd.py send Ava "<brief>"` starts `herd.py run` in the background, which runs `codex exec --json -s
+  workspace-write -C <worktree>` (medium effort), replies `take`, a `note` per `command_execution`/`file_change` item
+  ("Running npm test", "Editing index.html"), `say` (its last message) or `fail` at exit, saves the thread id in
+  `meta.json` `thread`, and types "Worker Ava finished task <id> (say|fail): …" into the brain's window. Another `send`
+  resumes that thread (`codex exec resume`; one turn at a time per worker, `.run.lock`). `office()` draws them from their
+  herd files (first brief line = role, last note = action). Upgrade if items ever run short: `codex app-server`.
 - **The phone is proactive both ways.** A `say` with nobody on the line rings the user (`bridge.py --ring`); the voice
   opens with "Calling about: …".
 - **One voice per call.** Donna's, unless the user is put through to a worker in that worker's voice (§6).

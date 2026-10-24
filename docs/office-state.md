@@ -67,6 +67,10 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
   (/call step 1) resets. Briefings are the last 10 `say`s of that period, `queued` until a `task.spoken` event names their id
   (`bridge.py` writes it when the result goes into the call, or when a ring call opens with it), then `presented`; the scene
   walks only `queued` ones. Decisions are the period's open asks; activity is the period's last 20 herd events.
+- Codex (#66): no hooks. Each herd agent of kind `codex` (not donna) created this duty period is a worker row: name = the
+  agent's, role/title = its brief's first line, `currentAction` = its last `note` (else "Hired: <role>"), `done`/`failed`
+  from its last `say`/`fail` unless a later send is running. A Codex brain's lead row: `working` while its herd state is
+  working, `waiting` on an open ask, else `done`, its last `note` as the action; the transcript fallback is skipped.
 - Call state: `bridge.py` writes `~/.higgs/state.json` `{"state": "off|ringing|listening|thinking|speaking"}` every
   250 ms, `off` last (Mike's contract); the producer reads a file older than 3 s as `off` (a crashed bridge).
 - Transfer (#28): the state file also carries `"with": "<name>"` while a call is on ("donna", or the worker the person was
