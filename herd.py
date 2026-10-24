@@ -80,7 +80,7 @@ def update(d, **kw):  # merge into status.json
 
 def new(name, kind="session", project=None):
     d = check_name(name)
-    me = {"session": os.environ["CODEX_THREAD_ID"]} if kind == "codex" and os.environ.get("CODEX_THREAD_ID") else {}  # #66: a Codex brain registers itself (no hook): the thread it runs in
+    me = {"session": os.environ["CODEX_THREAD_ID"]} if name == "donna" and kind == "codex" and os.environ.get("CODEX_THREAD_ID") else {}  # #66: a Codex brain registers itself (no hook): the thread it runs in
     if (d / "meta.json").exists():  # /call runs `new donna` on every start
         print(f"herd: {name} exists", file=sys.stderr)
         m = json.loads((d / "meta.json").read_text())
@@ -169,7 +169,7 @@ def send(name, task, context=None, frm="user", tid=None, reply_to=None, transcri
 
 def step(it):  # a `codex exec --json` item -> a note: "Running npm test", "Editing index.html" (bridge.py's codex backend reads the same items)
     if it.get("type") == "command_execution":
-        return "Running " + " ".join(re.sub(r"^\S*sh -lc '(.*)'$", r"\1", it.get("command") or "", flags=re.S).split())[:60]
+        return "Running " + " ".join(re.sub(r"^\S*sh -lc (['\"])(.*)\1$", r"\2", it.get("command") or "", flags=re.S).split())[:60]
     if it.get("type") == "file_change":
         return "Editing " + ", ".join(os.path.basename(c.get("path") or "") for c in it.get("changes") or [])[:60]
 
@@ -668,6 +668,7 @@ def selfcheck_codex():  # #66: a Codex brain registers without a hook; a codex w
                         "for e in [{'type': 'thread.started', 'thread_id': 'th-1'}, {'type': 'item.completed', 'item': {'type': 'error', 'message': 'config warning'}},"
                         " {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'On it.'}},"
                         " {'type': 'item.started', 'item': {'type': 'command_execution', 'command': \"/bin/zsh -lc 'ls   -la'\"}},"
+                        " {'type': 'item.started', 'item': {'type': 'command_execution', 'command': '/bin/zsh -lc \"node --test\"'}},"
                         " {'type': 'item.started', 'item': {'type': 'file_change', 'changes': [{'path': '/w/index.html'}, {'path': '/w/a.css'}]}},"
                         " {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Built the page.'}}]: print(json.dumps(e), flush=True)\n")
         fake.chmod(0o755)
@@ -677,15 +678,15 @@ def selfcheck_codex():  # #66: a Codex brain registers without a hook; a codex w
             new("donna", kind="codex", project=tmp)
             assert rj(root() / "donna" / "meta.json")["session"] == "cx-brain-1"
             new("donna", kind="codex", project=tmp); assert rj(root() / "donna" / "meta.json") | {"since": 0} == rj(root() / "donna" / "meta.json") | {"since": 0, "session": "cx-brain-1", "kind": "codex"}
+            new("Ava", kind="codex", project=tmp); assert "session" not in rj(root() / "Ava" / "meta.json")  # hired from the brain's shell: still not the brain
             del os.environ["CODEX_THREAD_ID"]
-            new("Ava", kind="codex", project=tmp)
             t = send("donna", "make a page"); reply("donna", t, "take", ""); reply("donna", t, "note", "Hiring Ava")
             o = office(); assert o["workers"][0]["status"] == "working" and o["workers"][0]["currentAction"] == "Hiring Ava" and o["workers"][0]["id"] == "brain-cx-brain"
             assert [(w["name"], w["status"], w["currentAction"]) for w in o["workers"][1:]] == [("Ava", "working", "Hired: ")], o["workers"]
             w1 = send("Ava", "Writes the page\nBuild index.html")
             until = lambda f: next((True for _ in range(100) if f() or time.sleep(0.1)), False)
             assert until(lambda: capture("Ava")["tasks"][w1]["state"] == "done"), capture("Ava")
-            assert [(x["kind"], x["text"]) for x in lines(root() / "Ava" / "outbox.jsonl")] == [("take", ""), ("note", "Running ls -la"), ("note", "Editing index.html, a.css"), ("say", "Built the page.")]
+            assert [(x["kind"], x["text"]) for x in lines(root() / "Ava" / "outbox.jsonl")] == [("take", ""), ("note", "Running ls -la"), ("note", "Running node --test"), ("note", "Editing index.html, a.css"), ("say", "Built the page.")]
             assert rj(root() / "Ava" / "meta.json")["thread"] == "th-1"
             o = office(); w = o["workers"][1]; a = o["assignments"][0]
             assert (w["name"], w["role"], w["status"], w["currentAction"]) == ("Ava", "Writes the page", "done", "Editing index.html, a.css"), w
