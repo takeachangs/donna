@@ -1,7 +1,7 @@
 // Personal Agency product copy.
 export default {
-  'agency.title': 'Chamber',
-  'agency.scene': 'Chamber office',
+  'agency.title': 'Huang & Chang Inc',
+  'agency.scene': 'Huang & Chang Inc office',
   'agency.secretary_office': 'Donna’s office',
   'agency.empty_desk': 'Ready for a team',
   'agency.naming': 'Naming itself',
