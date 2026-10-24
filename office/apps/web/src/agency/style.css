@@ -199,9 +199,31 @@ details p {
 #agency-scene canvas:active {
   cursor: grabbing;
 }
+/* Name above every worker and Donna: a small dark pill, readable on any floor. NPC.createLabel sets the inline defaults. */
 #agency-scene .npc-label {
-  display: none !important;
   pointer-events: none !important;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #25231fd9;
+  color: #fff !important;
+  font-size: 11px !important;
+  line-height: 1.4;
+  text-shadow: none !important;
+}
+/* Until the scene has placed it (first frame, or a fresh hire) a label would sit at the top-left corner. */
+#agency-scene .npc-label:not([style*='translate3d']) {
+  display: none !important;
+}
+.npc-badge {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #d4a574;
+  color: #25231f;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
 }
 .handoff-status {
   position: absolute;

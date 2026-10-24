@@ -25,6 +25,9 @@ import {
   entranceRoute,
   donnaLine,
   deskCaption,
+  briefed,
+  briefSpot,
+  hired,
   type ToolCall,
   type Footprint,
   type Point,
@@ -74,6 +77,9 @@ export class AgencyScene implements GameScene {
   private known?: Set<string>;
   /** 'mara' (Donna's screen) and worker id → repaint that screen's second line in place. */
   private captions = new Map<string, (text: string) => void>();
+  /** Provisional ("Being briefed") rows standing by Donna: id → display name; and name → where one last stood, so the real hire walks on from there. */
+  private briefedNames = new Map<string, string>();
+  private standing = new Map<string, Point>();
   private handoffs: Briefing[] = [];
   private seats = new Map<string, number>();
   private tv?: THREE.MeshBasicMaterial;
@@ -349,7 +355,7 @@ export class AgencyScene implements GameScene {
     for (const [i, p] of projects.entries()) {
       if (p.deletedAt) continue;
       const existing = this.rooms.get(p.id),
-        count = this.lastWorkspace?.workers.filter((w) => w.projectId === p.id && !w.lead).length || 0,
+        count = this.lastWorkspace?.workers.filter((w) => w.projectId === p.id && !w.lead && !briefed(w)).length || 0,
         footprint = projectRoom(i, count);
       if (existing && existing.width === footprint.width && existing.x === footprint.x && existing.z === footprint.z) {
         if (existing.group.name !== p.name) {
@@ -394,15 +400,24 @@ export class AgencyScene implements GameScene {
       this.box(r.stations, 0.34, 0.12, 0.2, 2.25, 0.6, 0.4, 0x2f2a25);
     }
     const activeProjects = workspace.projects.filter((p) => !p.deletedAt),
-      activeWorkers = workspace.workers.filter((w) => !w.lead && activeProjects.some((p) => p.id === w.projectId)),
+      activeWorkers = workspace.workers.filter(
+        (w) => !w.lead && !briefed(w) && activeProjects.some((p) => p.id === w.projectId),
+      ),
+      waiting = workspace.workers.filter(briefed),
       signature = JSON.stringify([
         activeProjects.map((p) => [p.id, p.name]),
         activeWorkers.map((w) => [w.id, w.projectId, w.name, w.role, w.characterKey]),
+        waiting.map((w) => [w.id, w.name, w.characterKey]),
       ]);
     if (signature !== this.workerSignature) {
       this.workerSignature = signature;
       // A hire still walking in when the next row lands starts its walk again (the rebuild below drops its trip).
       const entering = new Set([...this.trips].filter(([, t]) => t.entrance).map(([k]) => k));
+      for (const [id, name] of this.briefedNames) {
+        const at = this.npcs.get(id)?.mesh.position;
+        if (at) this.standing.set(name, { x: at.x, z: at.z });
+      }
+      this.briefedNames.clear();
       for (const k of [...this.captions.keys()]) if (k !== 'mara') this.captions.delete(k);
       for (const n of this.npcs.getAll())
         if (n.id !== 'mara') {
@@ -433,20 +448,12 @@ export class AgencyScene implements GameScene {
           // New here and not resting: spawn by the entrance phone and walk to the desk (reduced motion: just there).
           const si = this.seats.get(w.id),
             walk = si === undefined && !reduce && (!known.has(w.id) || entering.has(w.id)),
-            sp = si !== undefined ? loungeSpots[si] : walk ? phoneSpot : home;
+            sp = si !== undefined ? loungeSpots[si] : walk ? (this.standing.get(name) ?? phoneSpot) : home;
+          // The briefed row of the same name stood by Donna: the walk starts from where it stood, once.
+          if (walk) this.standing.delete(name);
           known.add(w.id);
           this.homes.set(w.id, home);
-          this.npcs.createNPCs([
-            {
-              id: w.id,
-              name,
-              color: 0xd4a574,
-              role: 'worker',
-              characterKey: w.characterKey || 'char-male-d',
-              label: name,
-              spawn: { x: sp.x, z: sp.z, y: 0 },
-            },
-          ]);
+          this.spawn(w, name, sp);
           this.npcs.get(w.id)?.lookAtTarget({ x: home.x, z: home.z - 1.65 });
           if (walk)
             this.trips.set(w.id, {
@@ -459,9 +466,19 @@ export class AgencyScene implements GameScene {
             });
         });
       }
+      waiting.forEach((w, i) => {
+        const name = w.name || t('agency.naming'),
+          at = briefSpot(i);
+        this.briefedNames.set(w.id, name);
+        this.spawn(w, name, at);
+        this.npcs.get(w.id)?.lookAtTarget(secretaryPosition);
+      });
     }
     this.captions.get('mara')?.(donna);
-    for (const w of activeWorkers) this.captions.get(w.id)?.(deskCaption(w));
+    for (const w of activeWorkers) {
+      this.captions.get(w.id)?.(deskCaption(w));
+      this.badge(w.id, hired(w));
+    }
     for (const w of workspace.workers) if (!this.trips.has(w.id)) this.workerActivity(w);
     const lead = workspace.workers.filter((w) => w.lead && w.status === 'working'),
       mood = lead.some((w) => workspace.assignments.find((a) => a.id === w.assignmentId)?.kind === 'plan')
@@ -482,6 +499,30 @@ export class AgencyScene implements GameScene {
           this.seen.add(b.id);
           if (b.status === 'queued') this.handoffs.push(b);
         }
+  }
+  private spawn(w: Worker, name: string, at: Point) {
+    this.npcs.createNPCs([
+      {
+        id: w.id,
+        name,
+        color: 0xd4a574,
+        role: 'worker',
+        characterKey: w.characterKey || 'char-male-d',
+        label: name,
+        spawn: { x: at.x, z: at.z, y: 0 },
+      },
+    ]);
+  }
+  /** The small "Hired" chip beside a worker's name while the producer says it was just hired. */
+  private badge(id: string, on: boolean) {
+    const label = this.npcs.get(id)?.labelElement,
+      chip = label?.querySelector('.npc-badge');
+    if (on && label && !chip) {
+      const b = document.createElement('span');
+      b.className = 'npc-badge';
+      b.textContent = t('agency.hired');
+      label.append(b);
+    } else if (!on) chip?.remove();
   }
   ring(on: boolean) {
     const trip = this.trips.get('mara');
@@ -944,8 +985,10 @@ export class AgencyScene implements GameScene {
       }
     }
     for (const n of this.npcs.getAll()) {
-      if (n.labelElement) n.labelElement.style.display = 'none';
-      const room = n.id === 'mara' ? 'secretary' : this.lastWorkspace?.workers.find((w) => w.id === n.id)?.projectId;
+      const room =
+        n.id === 'mara' || this.briefedNames.has(n.id)
+          ? 'secretary'
+          : this.lastWorkspace?.workers.find((w) => w.id === n.id)?.projectId;
       n.mesh.visible =
         this.roomId === 'all' ||
         (!this.trips.has(n.id) && !this.seats.has(n.id) && room === this.roomId) ||

@@ -50,6 +50,7 @@ export default {
   'agency.call_speaking': '正在说话',
   'agency.call_with': '通话中：{name}',
   'agency.donna_line': '{name}：{action}',
+  'agency.hired': '新入职',
   'agency.activity': '动态',
   'agency.checkpoint': '当前阶段',
   'agency.next_step': '下一步',

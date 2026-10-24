@@ -66,6 +66,20 @@ export function entranceRoute(room: Footprint, home: Point): Point[] {
 export function donnaLine(workers: { lead?: boolean; currentAction?: string }[]): string {
   return workers.find((w) => w.lead)?.currentAction?.trim() || '';
 }
+/** A provisional row ("Being briefed"): the brain named someone before its Agent call. No desk, no lounge seat: it stands by Donna's desk. */
+export const briefed = (w: { lead?: boolean; status: string }) => !w.lead && w.status === 'queued';
+/** Where briefed workers stand: in Donna's suite, east and south of her desk, each facing her (secretaryPosition). */
+const briefSpots: Point[] = [
+  { x: 0.1, z: 18.9 },
+  { x: 1.7, z: 19.2 },
+  { x: -1, z: 19.7 },
+  { x: 2.7, z: 18.2 },
+];
+// ponytail: a 5th briefed worker shares the 1st's spot; add spots if the brain names more at once.
+export const briefSpot = (i: number): Point => briefSpots[i % briefSpots.length];
+/** The producer's "Hired: <description>" is the row's action from the spawn until the worker's first tool. */
+export const hired = (w: { status: string; currentAction?: string }) =>
+  w.status === 'working' && /^Hired:/i.test(w.currentAction ?? '');
 /** A desk screen's second line: what the worker is doing while it works, else its role. */
 export function deskCaption(w: { status: string; currentAction?: string; role: string }): string {
   return (w.status === 'working' && w.currentAction?.trim()) || w.role;

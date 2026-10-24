@@ -316,7 +316,7 @@ function adapt(w: Workspace): Workspace {
         contributors,
         workerId:
           desk(b.workerId) ||
-          w.workers.find((k) => !k.lead && k.name === contributors[0]?.name)?.id ||
+          w.workers.find((k) => !k.lead && k.status !== 'queued' && k.name === contributors[0]?.name)?.id ||
           b.workerId ||
           '',
       };

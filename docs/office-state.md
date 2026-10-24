@@ -109,3 +109,9 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
   known ids keep their desk or lounge seat; on page load everyone present counts as seen. Desk screens show the worker's
   `currentAction` while `working` (else the role), Donna's screen her narrative; both repaint in place (no NPC rebuild).
 - The skill gives every new task new first names (a teammate's id is its name, so a reused name is the same row).
+- Earlier signals (#65 follow-up): a task the voice sent and the brain has not taken (`status.json` state `queued`, < 10 min) is a
+  `queued` assignment (`workerId` = the lead) and Donna's line reads "Got it: <task>"; `take` makes it "Reading the repo".
+  A first name (allow-list `herd.FIRST`) in the brain's `note`/`ask` that is not a row yet is a provisional worker
+  `{"id": "brief-<Name>", "status": "queued", "currentAction": "Being briefed", "role": ""}` for up to 10 min; the scene stands it
+  in Donna's suite (no desk, no lounge) until the spawn's row (same name, new id) replaces it and walks to a desk. The skill sends
+  that note just before the Agent calls. The voice's status tool leaves `queued` workers out.
