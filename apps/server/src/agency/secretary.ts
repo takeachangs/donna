@@ -4,6 +4,7 @@ const projectTarget=z.union([z.literal('selected'),z.string().uuid()]).default('
 export function resolveProjectTarget(name:string,args:any,selected:string,projectIds:string[]){
  if(!['read_workspace','update_project','delegate_work','record_decision','prepare_command_room'].includes(name))return args;
  const projectId=!args.project_id||args.project_id==='selected'?selected:args.project_id;
+ if(!projectId&&!projectIds.length&&['read_workspace','prepare_command_room'].includes(name))return {...args,project_id:undefined};
  if(!projectIds.includes(projectId))throw Error('Unknown project target. Use project_id="selected" for the current room, or read_workspace to obtain an exact project ID. Do not retry the same invalid ID.');
  return {...args,project_id:projectId};
 }

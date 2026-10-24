@@ -15,7 +15,7 @@ The client talks to `/agency-api/*` and `/agency-ws`. Only the backend holds the
 
 `artifacts/agency/` is private local runtime data, excluded from Git and source packages:
 
-- `projects.json`: project catalog.
+- `projects.json`: project catalog, names and optional `deletedAt` tombstones. Entries keep their order so floor positions remain stable after delete/restore.
 - `workspace.json`: secretary identity, project memory, assignments, decisions, persistent briefings and activity.
 - `rooms/`: compatible existing project records and old documents.
 - `workspaces/`: actual native execution directories.
@@ -36,7 +36,11 @@ The Office floor is the global view (the internal `command` view identifier rema
 
 Donna uses `read_briefing` to read a queued report. A matching browser audio-clock completion marks it presented only after successful, uncancelled speech. Opening a report alone does not consume it; explicit **I've read this briefing** does. Presentation never accepts an assignment. Histories remain available, and interruption leaves reports queued. Outbound calls and unsolicited meeting requests are future work, not simulated features.
 
+Project settings use local rename/delete/restore endpoints. Deletion pauses active assignments and invalidates late completions before hiding the room. The catalog keeps a tombstone; no workspace, file snapshot or native session is deleted. The model and executor reject writes to deleted projects. Active views and the briefing queue exclude them until restored. Recovery also pauses work when a catalog tombstone was saved before the workspace write.
+
 ## Development and production
+
+`AGENCY_DATA_DIR` can select an isolated local data directory for manual UI checks; it defaults to `artifacts/agency`. The live office data is never used as a disposable fixture.
 
 `npm run dev` starts API port 3003 and Vite port 5183 from one install. It fails clearly if either port is occupied. Frontend hot reload does not restart the execution server or interrupt active tasks.
 

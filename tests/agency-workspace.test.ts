@@ -51,6 +51,34 @@ async function until(predicate:()=>boolean){
 }
 
 describe('agency native execution workspace',()=>{
+  it('renames a room without changing its work, file snapshots or native session',async()=>{
+    const f=fixture();delegate(f);const pumping=f.workspace.pump();await until(()=>f.codex.pending.length===1);f.codex.deliver(0);await pumping;
+    const before=f.workspace.snapshot();f.workspace.renameProject(f.project.id,{name:'  Product studio  '});
+    expect(f.projects.list()[0].name).toBe('Product studio');expect(f.store.load(f.project.id).projectName).toBe('Product studio');
+    expect(f.workspace.snapshot().assignments).toEqual(before.assignments);expect(f.workspace.snapshot().workers).toEqual(before.workers);expect(f.workspace.snapshot().briefings).toEqual(before.briefings);
+    const saved=readFileSync(resolve(f.root,'projects.json'),'utf8');expect(()=>f.workspace.renameProject(f.project.id,{name:' '})).toThrow();expect(readFileSync(resolve(f.root,'projects.json'),'utf8')).toBe(saved);
+  });
+  it('restores deleted projects with the same results and sessions, without reviving them through old registration links',async()=>{
+    const f=fixture();delegate(f);const pumping=f.workspace.pump();await until(()=>f.codex.pending.length===1);f.codex.deliver(0);await pumping;
+    const before=f.workspace.snapshot(),b=f.workspace.briefing();f.workspace.deleteProject(f.project.id);
+    expect(f.projects.list()).toHaveLength(0);expect(f.projects.list(true)[0].deletedAt).toBeTruthy();expect(()=>f.workspace.briefing()).toThrow('No pending');
+    expect(()=>f.projects.register({id:f.project.id,name:'Old bookmark'})).toThrow('Restore');expect(()=>delegate(f)).toThrow('Restore');expect(()=>f.workspace.accept(before.assignments[0].id)).toThrow('Restore');
+    expect(readFileSync(f.workspace.artifact(before.assignments[0].id,'result.md'),'utf8')).toContain('Actual fixture');
+    f.projects.create({name:'A different project'});f.workspace.syncProjects();expect(f.projects.list(true)).toHaveLength(2);
+    f.workspace.restoreProject(f.project.id);expect(f.workspace.briefing().id).toBe(b.id);expect(f.workspace.snapshot().assignments).toEqual(before.assignments);expect(f.workspace.snapshot().workers).toEqual(before.workers);
+    const reopened=new AgencyWorkspace(f.store,f.projects,new ControlledCodex(),()=>{},{autoStart:false});workspaces.push(reopened);expect(reopened.snapshot().projects[0].deletedAt).toBeUndefined();expect(reopened.briefing().id).toBe(b.id);
+  });
+  it('pauses the whole deleted workflow and rejects late completion; restore does not silently resume it',async()=>{
+    const f=fixture();delegate(f,[work(),work('review',['build'])]);const pumping=f.workspace.pump();await until(()=>f.codex.pending.length===1);
+    const session=f.codex.pending[0].threadId;f.workspace.deleteProject(f.project.id);expect(f.codex.interrupted).toContain(session);expect(f.workspace.snapshot().assignments.map(a=>a.status)).toEqual(['paused','paused']);
+    f.codex.deliver(0);await pumping;expect(f.workspace.snapshot().briefings).toHaveLength(0);expect(f.workspace.snapshot().workers[0].sessionId).toBe(session);
+    f.workspace.restoreProject(f.project.id);await f.workspace.pump();expect(f.codex.pending).toHaveLength(1);expect(f.workspace.snapshot().assignments.map(a=>a.status)).toEqual(['paused','paused']);
+  });
+  it('does not run queued work after recovery if the catalog deletion was persisted first',async()=>{
+    const f=fixture();delegate(f);f.projects.setDeleted(f.project.id,true);
+    const runner=new ControlledCodex(),reopened=new AgencyWorkspace(f.store,f.projects,runner,()=>{},{autoStart:false});workspaces.push(reopened);
+    await reopened.recover();await reopened.pump();expect(reopened.snapshot().assignments[0].status).toBe('paused');expect(runner.pending).toHaveLength(0);
+  });
   it('persists a completed delivery at Donna and treats presentation separately from acceptance',async()=>{
     const f=fixture();delegate(f);const pumping=f.workspace.pump();await until(()=>f.codex.pending.length===1);f.codex.deliver(0);await pumping;
     const b=f.workspace.briefing();expect(b.summary).toContain('real local fixture');

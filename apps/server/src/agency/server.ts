@@ -12,7 +12,7 @@ import {secretaryInstructions,secretaryTools,resolveProjectTarget} from './secre
 import {serveWeb} from './static.js';
 import {completedBriefing,type Presentation} from './briefings.js';
 
-const store=new OfficeStore(),root=store.root,projects=new Projects(store),executors=new AgencyExecutors(),codex=executors.codex;
+const store=new OfficeStore(process.env.AGENCY_DATA_DIR?resolve(process.env.AGENCY_DATA_DIR):undefined),root=store.root,projects=new Projects(store),executors=new AgencyExecutors(),codex=executors.codex;
 const clients=new Set<WebSocket>();
 const broadcast=(event:unknown)=>{for(const ws of clients)if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(event));};
 const workspace=new AgencyWorkspace(store,projects,codex,w=>broadcast({type:'workspace',workspace:w}));
@@ -28,6 +28,7 @@ const server=createServer(async(req,res)=>{
   if(parts[0]==='agency-api'&&parts[1]==='briefings'&&parts[2]&&parts[3]==='presented'&&req.method==='POST'){await body(req);return json(res,workspace.presentBriefing(parts[2]));}
   if(u.pathname==='/agency-api/projects/register'&&req.method==='POST'){const p=projects.register(await body(req));workspace.syncProjects();return json(res,p);}
   if(u.pathname==='/agency-api/projects'){if(req.method==='POST'){const p=projects.create(await body(req));workspace.syncProjects();return json(res,p,201);}return json(res,projects.list());}
+  if(parts[0]==='agency-api'&&parts[1]==='projects'&&parts[2]&&req.method==='POST'){const value=await body(req);if(parts[3]==='rename')return json(res,workspace.renameProject(parts[2],value));if(parts[3]==='delete')return json(res,workspace.deleteProject(parts[2]));if(parts[3]==='restore')return json(res,workspace.restoreProject(parts[2]));}
   if(u.pathname==='/agency-api/status'){const providers=await executors.status();return json(res,{available:!!process.env.BOSON_API_KEY,assistants:[workspace.snapshot().secretary],model:'higgs-realtime',codex:providers.codex,providers,execution:'local-codex',maxWorkersPerPlan:4});}
   if(parts[0]==='agency-api'&&parts[1]==='assignments'&&parts[2]){
    const id=parts[2];
@@ -53,10 +54,10 @@ wss.on('connection',(client,req)=>{
  clients.add(client);let selected=projects.list()[0]?.id||'',view='secretary',started=false,ready=false,voice:HiggsColleague|undefined,closed=false;
  let presentation:Presentation|undefined;
  const emit=(event:any)=>{if(!closed&&client.readyState===WebSocket.OPEN)client.send(JSON.stringify(event));};
- const room=()=>store.load(selected||projects.list()[0]?.id);
+ const room=()=>selected?store.load(selected):undefined;
  // Keep old prose out of every turn. Full preserved drafts remain available on
  // an explicit read; current project memory describes the ongoing work.
- const current=()=>({selected_project_id:selected,view,workspace:workspace.snapshot(),legacy:selected?{documents:room().documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
+ const current=()=>({selected_project_id:projects.list().some(p=>p.id===selected)?selected:null,view,workspace:workspace.snapshot(),legacy:selected?{documents:room()!.documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
  const read=(id?:string)=>id?{...current(),project:workspace.snapshot().projects.find(p=>p.id===id),legacy:store.load(id)}:current();
  function tool(name:string,args:any,job:Job):any{
   args=resolveProjectTarget(name,args,selected,projects.list().map(p=>p.id));
@@ -77,8 +78,8 @@ wss.on('connection',(client,req)=>{
   if(e.type==='start'){
    if(started)throw Error('Already started');started=true;
    if(e.roomId){if(!projects.list().some(p=>p.id===e.roomId))throw Error('Select a registered project');selected=e.roomId;}
-   if(!selected)throw Error('Create a project room first');if(['secretary','command','project'].includes(e.view))view=e.view;
-   emit({type:'state',state:room()});emit({type:'workspace',workspace:workspace.snapshot()});emit({type:'focus',agentId:'mara'});
+   if(['secretary','command','project'].includes(e.view))view=e.view;
+   if(selected)emit({type:'state',state:room()});emit({type:'workspace',workspace:workspace.snapshot()});emit({type:'focus',agentId:'mara'});
    voice=new HiggsColleague('mara',()=>selected,root,emit,tool,(_id,job,hasAudio)=>{if(presentation?.job===job)presentation.audioComplete=!job.cancelled&&hasAudio;if(!job.cancelled&&hasAudio)emit({type:'await_playback',jobId:job.id});},()=>{presentation=undefined;emit({type:'interrupted'});},{instructions:()=>secretaryInstructions,context:current,tools:secretaryTools,voice:'eleanor'});
    for(let attempt=0;;attempt++){try{await voice.connect();break;}catch(err){voice.close();if(closed||attempt>=2||!String(err).includes('429'))throw err;emit({type:'connection_retry',attempt:attempt+1});await new Promise(r=>setTimeout(r,4000*(attempt+1)));}}
    if(closed){voice.close();return;}ready=true;emit({type:'ready',model:'higgs-realtime'});return;
@@ -98,5 +99,5 @@ wss.on('connection',(client,req)=>{
  client.on('close',()=>{closed=true;clients.delete(client);voice?.close();});
 });
 void workspace.recover();
-server.listen(Number(process.env.AGENCY_PORT||3003),'127.0.0.1',()=>console.log('Personal Agency API: http://127.0.0.1:'+String(process.env.AGENCY_PORT||3003)));
+server.listen(Number(process.env.AGENCY_PORT||3003),'127.0.0.1',()=>{const address=server.address();console.log('Personal Agency API: http://127.0.0.1:'+(typeof address==='object'&&address?address.port:process.env.AGENCY_PORT||3003));});
 for(const signal of ['SIGINT','SIGTERM'] as const)process.once(signal,()=>{workspace.close();for(const ws of clients)ws.close();server.close();setTimeout(()=>process.exit(0),500).unref();});

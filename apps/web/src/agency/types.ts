@@ -1,5 +1,5 @@
 export type Colleague={id:string;name:string;role:string;voice:string;characterKey:string}
-export type Project={id:string;name:string}
+export type Project={id:string;name:string;deletedAt?:string}
 export type Task={id:string;owner:string;title:string;brief:string;status:string;revision:number;documentId?:string}
 export type Doc={id:string;taskId?:string;title:string;body:string;author:string;revision:number}
 export type State={id:string;revision:number;goal:string;projectName?:string;tasks:Task[];documents:Doc[];meeting:{status:string;queue:string[]};events:{at:string;actor:string;message:string}[]}

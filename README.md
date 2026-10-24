@@ -32,9 +32,10 @@ Open **http://127.0.0.1:3003/**. One server serves the built office, API and Web
 ## How the office works
 
 - **Donna, your secretary**, receives goals, follows project memory and delegates 1–4 useful work packages. Small tasks normally need one worker.
+- The **···** beside a project opens **Project settings** for renaming or recoverable deletion. **Recently deleted** restores the same room, files, reports and native sessions. Deleting pauses active work; restoring keeps it paused.
 - **Project rooms** show real assignments, fixed desks and saved deliverables. **Details** contains the full report, checks and native session reference.
 - **Office floor** is the global view. Project rooms expand along a shared hall, with Donna's suite at the entrance. Workers stay at their desks; a completed workflow triggers a short delivery trip to Donna and back.
-- **Briefing queue** at Donna holds saved results, files and verification. Choose **Read briefing** or connect and **Ask Donna to present next**. Interrupted speech leaves the report queued. Presentation and acceptance are separate: a result remains **Ready for review** until you accept it in its project room.
+- **Briefing queue** at Donna holds saved results, files and verification. The next report is highlighted, followed by a numbered waiting list. Choose **Read report** or **Connect & listen**. Interrupted speech leaves the report queued. Presentation and acceptance are separate: a result remains **Ready for review** until you accept it in its project room.
 - Existing results migrate into the queue without replaying old animations on every reload. **Replay handoff** previews a delivery route without changing the queue. Reduced-motion preferences skip delivery animation.
 - **Stop speaking** interrupts voice. **Pause work** pauses native execution. Closing the browser or changing rooms does not cancel background work.
 - Codex owns detailed conversation history. Resume the exact session using the command shown under execution details; the office keeps concise memory and references.
