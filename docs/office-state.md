@@ -18,6 +18,7 @@ Shape = the office's existing `Workspace` type (`office/apps/web/src/agency/type
                                         // + "with": "<worker id>" | "donna" while a call is on: who the person talks to (#28)
   "secretary": {"id":"mara","name":"Donna","role":"Secretary","voice":"nora","characterKey":"char-female-b"},
   "projects": [{"id":"<cwd slug>","name":"<repo dir name>","goal":"<first task>","memory":{"outcome":"","checkpoint":"","latest":"<last say>","nextStep":"","updatedAt":"<iso>"}}],
+                                        // + one row per team (#83): {"id":"<cwd slug>#<team>","name":"<Team>","goal":"","parentId":"<cwd slug>","memory":{…latest: its last result}}
   "workers": [
     {"id":"brain-<session>","projectId":"<cwd slug>","name":"Donna","role":"Brain","responsibility":"","characterKey":"char-female-b","status":"working","currentAction":"Read dash.py","lead":true},
     {"id":"<agentId>","projectId":"<cwd slug>","name":"<Agent name>","role":"<Agent description>","responsibility":"","characterKey":"char-male-b","voice":"jake","status":"working","currentAction":"Edit herd.py"}
@@ -47,6 +48,14 @@ workers rotate over the other five keys. Beyond the shape above the producer als
 `Worker.assignmentId`, `Assignment.{artifacts,dependsOn,revision}`, `Briefing.{assignmentId,workerId,deliveryKey,
 artifacts,verification}`; `contributors` are the workers that started between the task and its `say` (exact `name`s), and the first of them is
 `workerId`/`assignmentId` (else the lead's id and "").
+
+Teams and rooms (#83): a worker whose Agent `description` starts with "<Team>: " (1–2 capitalized words, "Marketing: writes the
+brand guide") belongs to the team's project row, id `<cwd slug>#<team lowercased>`, name as written; its worker, assignment and
+the briefings it is the first contributor of carry that `projectId`. A brain `note` saying "for a <Team> team" creates the row (so
+the room is drawn before the spawns) and puts the "Being briefed" rows it names in it. Team rows come after the main one in order of
+first appearance and live for the duty period; the main row stays first (the office draws `projects[i]` as `projectRoom(i)`, so the
+first room never moves). A briefing's contributors are the workers of ONE room (that of the first worker started in its window), so a
+team hired while a task runs is not credited with it. The role keeps the prefix, so the voice's status reads "Nova (Marketing: …)".
 
 ## Sources on the brain side (Python, this repo)
 Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed by Claude Code hooks.

@@ -256,7 +256,8 @@ TAIL = 1 << 20  # ponytail: office() reads only the last 1 MB of each events fil
 KEYS = ["char-male-b", "char-female-d", "char-male-a", "char-female-e", "char-male-d"]  # worker looks, by order of first appearance
 FIRST = set("Ava Ben Noah Mia Maya Zoe Leo Eli Ivy Sam Max Lily Owen Ruby Theo Emma Liam Olivia Lucas Ella Jack Ethan Isla Finn Nina Omar Priya Ravi "
              "Sara Sarah Tom Tara Uma Vera Wes Yara Zane Kai Jade Iris Hugo Gina Felix Dan Cleo Bea Alex Adam Anna Jonas Kate Luna Milo Nate Oscar Paul Quinn "
-             "Rosa Sofia Bob Cy Zed Mara Lena Ian Ada Aria Elena Leah Levi Jonah Ezra Hana Kira Rex Tess Joel Ana Ines Mateo".split())  # #65: first names Donna gives workers; ponytail: an allow-list, so "Done." or "Reading" never becomes a worker
+             "Rosa Sofia Bob Cy Zed Mara Lena Ian Ada Aria Elena Leah Levi Jonah Ezra Hana Kira Rex Tess Joel Ana Ines Mateo Nova".split())  # #65: first names Donna gives workers; ponytail: an allow-list, so "Done." or "Reading" never becomes a worker
+TEAM = r"([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*)?)"  # #83: a team's name, 1-2 capitalized words: an Agent description "Marketing: writes the brand guide", a note "Hiring Nova and Sam for a Marketing team: ..."
 VOICES = {"female": ["chloe", "eleanor", "nora"], "male": ["jake", "marcus", "oliver"]}  # #28: by the look's gender, round-robin; nora last: Donna is nora
 
 
@@ -496,6 +497,12 @@ def office(now=None):
     needs = {k: t for k, t in (st.get("tasks") or {}).items() if t.get("state") == "needs_you" and (t.get("ts") or 0) >= since}
     got = {k: t for k, t in (st.get("tasks") or {}).items() if t.get("state") == "queued" and since <= (t.get("ts") or 0) and now - t["ts"] < 600}  # #65: sent by the voice, not taken yet
     lid = f"brain-{sess[:8]}" if sess else "brain"
+    rooms = {}  # #83: a team's room: its name (lower) -> (project id, name as written), in order of first appearance; lives for the duty period
+    room = lambda t: rooms.setdefault(t.lower(), (f"{pid}#{t.lower().replace(' ', '-')}", t))[0] if t else pid
+    hiring = lambda o: (m := re.search(rf"\bfor (?:a |an |the )?{TEAM} team\b", o.get("text") or "")) and m[1]  # a note naming the team it hires for
+    for o in outbox:  # the hiring note comes before the spawns: the room is there for the hires to walk into
+        if o.get("kind") == "note" and (o.get("ts") or 0) >= since: room(hiring(o))
+    team = lambda r: room((m := re.match(TEAM + r": \S", r["desc"] or "")) and m[1])  # the row's project: its description's "<Team>: ", else the brain's
     busy = [name for r, name in vis if stt(r) == "working"]
     ls_ = "waiting" if needs else "working" if lead["t"] > lead["stop"] else "waiting" if busy else "done"  # #65: her workers still out: she waits on them (done when nobody is)
     review = ls_ == "done" and bool(vis) and meta.get("kind") != "codex" and any(t.get("state") == "in_progress" and (t.get("ts") or 0) >= since for t in (st.get("tasks") or {}).values())  # #70: all workers stopped, the task has no say/fail yet: she reviews, not Ready
@@ -511,10 +518,10 @@ def office(now=None):
     for n, (r, name) in enumerate(vis):
         key = KEYS[n % len(KEYS)]
         g = "female" if "female" in key else "male"; seen[g] += 1
-        workers.append({"id": r["id"], "projectId": pid, "name": name, "role": r["desc"] or "", "responsibility": "", "characterKey": key,
+        workers.append({"id": r["id"], "projectId": team(r), "name": name, "role": r["desc"] or "", "responsibility": "", "characterKey": key,
                         "voice": VOICES[g][(seen[g] - 1) % 3], "status": stt(r), "assignmentId": r["id"],
                         "currentAction": (r.get("cur") or action(r["act"]) or f"Hired: {r['desc'] or name}") if stt(r) == "working" else ""})  # #70: blank once done/failed  # #65; cur: a codex worker's last note (#66)
-        asg.append({"id": r["id"], "projectId": pid, "workerId": r["id"], "title": r["desc"] or name, "brief": r["prompt"], "acceptance": "", "status": stt(r),
+        asg.append({"id": r["id"], "projectId": team(r), "workerId": r["id"], "title": r["desc"] or name, "brief": r["prompt"], "acceptance": "", "status": stt(r),
                     "cwd": r["cwd"], **({"summary": r["summary"]} if r["summary"] else {}), "startedAt": iso(r["t0"]), **({"completedAt": iso(r["t1"])} if r["t1"] else {}),
                     "artifacts": [], "dependsOn": [], "revision": 0})
     asg += [{"id": k, "projectId": pid, "workerId": lid, "title": (t.get("task") or "")[:60], "brief": t.get("task") or "", "acceptance": "", "status": "queued",
@@ -525,13 +532,14 @@ def office(now=None):
         for n in re.findall(r"\b[A-Z][a-z]+\b", o.get("text") or ""):
             if n not in FIRST or n.lower() in named: continue
             named.add(n.lower()); key = KEYS[(len(workers) - 1) % len(KEYS)]; g = "female" if "female" in key else "male"; seen[g] += 1
-            workers.append({"id": f"brief-{n}", "projectId": pid, "name": n, "role": "", "responsibility": "", "characterKey": key,
+            workers.append({"id": f"brief-{n}", "projectId": room(hiring(o)), "name": n, "role": "", "responsibility": "", "characterKey": key,
                             "voice": VOICES[g][(seen[g] - 1) % 3], "status": "queued", "assignmentId": "", "currentAction": "Being briefed"})
     sent = {e["id"]: e.get("ts") or 0 for e in hev if e.get("ev") == "task.sent" and "id" in e}
     briefings = []
     for o in says:  # contributors: the workers that started between the task and its say; workerId the first of them (the office walks that desk to Donna), else the lead
         ws = [w for w, (r, _) in zip(workers[1:], vis) if sent.get(o["id"], 0) <= r["t0"] <= o["ts"]]
-        briefings.append({"id": o["id"], "assignmentId": ws[0]["id"] if ws else "", "projectId": pid, "workerId": ws[0]["id"] if ws else lid, "deliveryKey": o["id"],
+        ws = [w for w in ws if w["projectId"] == ws[0]["projectId"]]  # #83: a team hired while this task ran is not its contributor. ponytail: one room per result; a task that hires into two rooms credits the first
+        briefings.append({"id": o["id"], "assignmentId": ws[0]["id"] if ws else "", "projectId": ws[0]["projectId"] if ws else pid, "workerId": ws[0]["id"] if ws else lid, "deliveryKey": o["id"],
                           "title": (o.get("text") or "")[:60], "summary": o.get("text") or "", "artifacts": [], "verification": [], "status": "presented" if o["id"] in spoken else "queued",
                           "createdAt": iso(o["ts"]), "contributors": [{"name": w["name"], "title": "", "summary": ""} for w in ws]})
     decisions = [{"id": k, "projectId": pid, "title": t.get("asked") or "", "context": t.get("task") or "", "status": "open",
@@ -547,11 +555,12 @@ def office(now=None):
     on = (sj.get("with") or "").lower()  # #28: who the person is talking to, by name (bridge.py); the office gets that worker's id, else "donna"
     with_ = next((w["id"] for w in workers[1:] if w["name"].lower() == on and w["status"] != "queued"), "donna") if call != "off" and on else None  # a briefed name has no desk yet (#65)
     prev = rj(h / "office.json").get("revision")
+    mem = lambda i: {"outcome": "", "checkpoint": "", "nextStep": "", **next(({"latest": b["summary"], "updatedAt": b["createdAt"]} for b in reversed(briefings) if b["projectId"] == i),
+                                                                             {"latest": "", "updatedAt": ""})}  # a room's last result (#83: the team's own)
     return {"revision": prev + 1 if isinstance(prev, int) else 0, "call": {"state": call, **({"with": with_} if with_ else {})},
             "secretary": {"id": "mara", "name": "Donna", "role": "Secretary", "voice": "nora", "characterKey": "char-female-b"},
-            "projects": [{"id": pid, "name": os.path.basename(proj.rstrip("/")), "goal": next((m.get("task") or "" for m in inbox if not m.get("in_reply_to")), ""),
-                          "memory": {"outcome": "", "checkpoint": "", "latest": says[-1].get("text") or "" if says else "", "nextStep": "",
-                                     "updatedAt": iso(says[-1]["ts"]) if says else ""}}] if proj else [],
+            "projects": [{"id": pid, "name": os.path.basename(proj.rstrip("/")), "goal": next((m.get("task") or "" for m in inbox if not m.get("in_reply_to")), ""), "memory": mem(pid)}]
+                        + [{"id": i, "name": n, "goal": "", "parentId": pid, "memory": mem(i)} for i, n in rooms.values()] if proj else [],  # #83: a team's room after the main one
             "workers": workers, "assignments": asg, "decisions": decisions, "briefings": briefings, "activity": act}
 
 
