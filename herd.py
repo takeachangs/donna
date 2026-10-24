@@ -119,6 +119,23 @@ def load(d):  # status.json, tasks always present
     return s
 
 
+def tmux_name():  # the brain's tmux session (bridge.py --brain): "donna" for ~/.higgs, its own name for any other HIGGS_HOME, so tests never type into the real one
+    h = home().resolve()
+    return "donna" if h == (Path.home() / ".higgs").resolve() else "donna-" + re.sub(r"[^A-Za-z0-9_-]", "-", h.name)
+
+
+def wake(text):  # #38: an idle brain gets a turn at once: the line is typed into its tmux session, if there is one
+    import subprocess
+    t = f"={tmux_name()}:"  # "=": exact session name (tmux matches prefixes otherwise)
+    try:
+        if subprocess.run(["tmux", "has-session", "-t", t], capture_output=True).returncode == 0:
+            subprocess.run(["tmux", "send-keys", "-t", t, "-l", " ".join(text.split())[:500]], capture_output=True)
+            time.sleep(0.3)  # an Enter right behind the text was taken as part of it and never submitted (Claude Code 2.1.309, 1 of 3)
+            subprocess.run(["tmux", "send-keys", "-t", t, "Enter"], capture_output=True)
+    except OSError:  # no tmux installed
+        pass
+
+
 def send(name, task, context=None, frm="user", tid=None, reply_to=None, transcript=None, replaces=None):  # tid: the caller's id (bridge.py passes the Higgs call_id)
     d = agent_dir(name)
     tid = tid or os.urandom(4).hex()
@@ -138,6 +155,8 @@ def send(name, task, context=None, frm="user", tid=None, reply_to=None, transcri
     if not reply_to:  # an answer is not a task: no unread, no task_id/task overwrite
         s.update(unread=s["unread"] + 1, task_id=tid, task=task)
     settle(d, name, s, "task.sent", id=tid, task=task, **{"from": frm}, **({"in_reply_to": reply_to} if reply_to else {}))
+    if name == "donna":
+        wake(f"Answer to task {reply_to}: {task}" if reply_to else f"Phone task {tid}: {task}")
     return tid
 
 
@@ -256,13 +275,16 @@ def register(ev, d):  # (b) the brain runs /call step 1 (`herd.py new donna`): r
         if p.exists(): write_json(p, {**json.loads(p.read_text()), "session": d["session_id"]})
 
 
+def brain(d):  # the hook input is the registered brain's own (not a subagent's, not another session's)
+    meta = json.loads((root() / "donna" / "meta.json").read_text())
+    if d.get("agent_id"): return False
+    if meta.get("session"): return d["session_id"] == meta["session"]
+    return os.path.realpath(d["cwd"]) == os.path.realpath(meta["project"])  # no session registered yet: match the project dir
+
+
 def inject(ev, d):  # (c) a busy Donna (mid-task) gets new inbox lines as hook context; only the brain's own tool calls may consume them
-    if ev != "PostToolUse" or d.get("agent_id"): return
+    if ev != "PostToolUse" or not brain(d): return
     dd = root() / "donna"
-    meta = json.loads((dd / "meta.json").read_text())
-    if meta.get("session"):
-        if d["session_id"] != meta["session"]: return
-    elif os.path.realpath(d["cwd"]) != os.path.realpath(meta["project"]): return  # no session registered yet: match the project dir
     off = dd / ".hook_offset"
     o = int(off.read_text()) if off.exists() else 0
     with open(dd / "inbox.jsonl", "rb") as f:
@@ -285,10 +307,24 @@ def inject(ev, d):  # (c) a busy Donna (mid-task) gets new inbox lines as hook c
     if msgs: return json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n\n".join(msgs)}})
 
 
-def hook(event, data=None):  # never raises, prints only (c)
+def stop_block(ev, d):  # (d) #38: the brain may not go idle while phone lines sit past the wait loop's .offset (its loop died: nothing would wake it)
+    if ev != "Stop" or d.get("stop_hook_active") or not brain(d): return  # stop_hook_active: it already got one block for this stop
+    dd = root() / "donna"
+    with open(dd / "inbox.jsonl", "rb") as f:
+        f.seek(int((dd / ".offset").read_text())); data = f.read()
+    waiting = []
+    for line in data[:data.rfind(b"\n") + 1].splitlines():
+        try: m = json.loads(line)
+        except ValueError: continue
+        waiting.append(f"answer to task {m['in_reply_to']}: {m['task'][:80]}" if m.get("in_reply_to") else f"{m['id']}: {m['task'][:80].rstrip('.')}")
+    if waiting:
+        return json.dumps({"decision": "block", "reason": f"Phone task(s) waiting: {'; '.join(waiting)}. Handle them (skill step 3), then run the wait loop again."})
+
+
+def hook(event, data=None):  # never raises, prints only (c) and (d)
     try: d = data if data is not None else json.load(sys.stdin)
     except Exception: return
-    for step in (log_event, register, inject, lambda ev, d: write_office()):  # one failing step must not skip the rest
+    for step in (log_event, register, inject, stop_block, lambda ev, d: write_office()):  # one failing step must not skip the rest
         try:
             if isinstance(out := step(event, d), str): print(out)
         except Exception: pass
@@ -492,6 +528,23 @@ def selfcheck_office():  # the brain-side hook and office.json, replayed from a 
         send("donna", "water the plants", context="ctx2")
         assert "Context: ctx2" in json.loads(fire("PostToolUse", tool_name="Read", tool_input={"file_path": "/a/b.py"}))["hookSpecificOutput"]["additionalContext"]
         write_json(mp, {**m, "session": S})
+
+        wo = root() / "donna" / ".offset"; wo.write_text(str(ib.stat().st_size))  # #38: the wait loop printed everything: Donna may stop
+        assert fire("Stop") == ""
+        t5 = send("donna", "fix the login page"); send("donna", "green", reply_to=t2)  # the loop died: these sit past .offset
+        r = json.loads(fire("Stop"))
+        assert r["decision"] == "block" and f"{t5}: fix the login page" in r["reason"] and f"answer to task {t2}: green" in r["reason"] and "wait loop" in r["reason"], r
+        assert fire("Stop", stop_hook_active=True) == "" and fire("Stop", sess="other") == "" and fire("Stop", agent_id=B) == ""  # one block per stop; only the brain
+        wo.write_text(str(ib.stat().st_size)); assert fire("Stop") == ""  # the loop ran again
+        import shutil, subprocess
+        if shutil.which("tmux"):  # send types the task into the brain's tmux session; `cat` stands in for Claude Code
+            n = tmux_name(); assert n.startswith("donna-")  # a temp HIGGS_HOME never names the real "donna"
+            subprocess.run(["tmux", "new-session", "-d", "-s", n, "cat"], check=True)
+            try:
+                tid = send("donna", "check   the\nlogs"); time.sleep(0.3)
+                pane = subprocess.run(["tmux", "capture-pane", "-p", "-t", f"={n}:"], capture_output=True, text=True).stdout
+                assert f"Phone task {tid}: check the logs" in pane, pane
+            finally: subprocess.run(["tmux", "kill-session", "-t", f"={n}"])
 
         so, se = sys.stdin, io.StringIO()  # a hook that fails must never raise or print
         try:

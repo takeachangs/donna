@@ -137,6 +137,13 @@ and reads `herd/donna/outbox.jsonl`, with or without `--ring`; the pre-herd `~/.
 `bridge.py say|note|take|ask|fail` CLI are gone (`herd.py reply donna …` is the reply path). A task still running when the
 user hangs up is released by the bridge at hang-up, so its later `say` rings them (`tests/fake_donna.py --demo` checks it).
 
+Oct 24 (#38): a brain whose wait loop died never woke again (no turn, so no hook). Two wakes now: `herd.py hook Stop` blocks
+the brain's idle stop once (`{"decision":"block"}`, not again while `stop_hook_active`) while inbox lines sit past `.offset`,
+naming them; and `herd.send` to donna types `Phone task <id>: …` (or `Answer to task <id>: …`) into the brain's tmux session
+when there is one (`donna` for `~/.higgs`, `donna-<dir>` for another `HIGGS_HOME`). `bridge.py --brain REPO` starts that
+session (Claude Code with the office hooks, then the skill). With no take 20 s after a task, the bridge logs it and the voice
+tells the user the brain is not answering.
+
 Not Saturday: approvals, context %, more than one level, several voices, real remuda as a backend.
 
 ## 7. The pitch sentence

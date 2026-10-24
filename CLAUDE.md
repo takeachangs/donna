@@ -41,6 +41,7 @@ uv run bridge.py --backend claude --voice nora --out AirPods      # laptop mic i
 uv run bridge.py --backend fake --silent --text "a | b"           # headless check, no mic, no agent credits
 uv run bridge.py --model higgs-realtime-1.5-preview …            # 1.5 preview (default is higgs-realtime)
 uv run bridge.py --ring --backend session --voice nora           # Donna's phone: no call open; a `say` in ~/.higgs/herd/donna/outbox.jsonl rings, Enter calls her
+uv run bridge.py --ring --backend session --brain ~/projects/app # + the brain: Claude Code on /call in tmux `donna` (tmux attach -t donna); new tasks are typed in to wake it
 ```
 `~/.zshrc` exports an `ANTHROPIC_API_KEY` with low credit; `bridge.py` strips it so headless `claude -p` bills the claude.ai login.
 
