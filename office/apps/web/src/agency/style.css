@@ -24,11 +24,7 @@
 body {
   margin: 0;
 }
-button,
-input,
-textarea,
-select,
-a {
+button {
   font: inherit;
 }
 button {
@@ -52,46 +48,12 @@ button:disabled {
   cursor: default;
 }
 button:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
-select:focus-visible,
-a:focus-visible,
 summary:focus-visible {
   outline: 2px solid #8d603a;
   outline-offset: 3px;
 }
-a {
-  color: var(--accent-ink);
-}
-input,
-textarea,
-select {
-  background: #fff;
-  border: 1px solid #d4cec4;
-  border-radius: 8px;
-  color: var(--ink);
-  padding: 11px 13px;
-  min-width: 0;
-}
-textarea {
-  resize: vertical;
-  line-height: 1.5;
-}
 p {
   overflow-wrap: anywhere;
-}
-.primary,
-#send,
-button[type='submit'] {
-  background: var(--gradient-primary);
-  color: #20160d;
-  font-weight: 650;
-  border-color: #c4915e;
-}
-.primary:hover:not(:disabled),
-#send:hover:not(:disabled) {
-  filter: brightness(1.07);
-  background: var(--gradient-primary);
 }
 details {
   border-top: 1px solid var(--line);
@@ -119,39 +81,13 @@ details p {
   font-size: 11px;
   min-height: 28px;
 }
-.execution-details label {
-  font-size: 11px;
-  display: block;
-  margin: 6px 0;
-}
-.session-command {
-  width: 100%;
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
-}
 .token-usage {
   font-size: 11px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-#project-error {
-  border: 1px solid var(--app-brand-primary);
-  background: #fbf0e1;
-  border-radius: 6px;
-  padding: 12px;
-  font-size: 12px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
 [hidden] {
   display: none !important;
-}
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
 }
 .quiet {
   background: transparent;
@@ -188,14 +124,6 @@ details p {
   background: var(--paper);
   border-bottom: 1px solid var(--line);
 }
-.callbar button,
-.callbar summary {
-  min-height: 42px;
-}
-.callbar .quiet,
-.callbar .icon-button {
-  min-height: 40px;
-}
 .brand {
   display: flex;
   align-items: center;
@@ -231,7 +159,7 @@ details p {
   color: var(--accent-ink);
   animation: ring-pulse 1.4s ease-in-out infinite;
 }
-.pill[data-state='on_call'] {
+.pill:is([data-state='listening'], [data-state='thinking'], [data-state='speaking']) {
   background: #e3efe6;
   border-color: #c3dacb;
   color: #2f6b4a;
@@ -240,78 +168,6 @@ details p {
   background: #fbefd9;
   border-color: #ecd5a9;
   color: #8a5a14;
-}
-#connect {
-  flex: none;
-  min-width: 116px;
-  font-size: 15px;
-}
-#connect.is-ringing {
-  background: #79512d;
-  border-color: #594432;
-  color: #fffaf2;
-  animation: ring-pulse 1.4s ease-in-out infinite;
-}
-#mic[aria-pressed='true'] {
-  background: #e7ddcc;
-  border-color: var(--app-brand-primary);
-}
-.caption {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  display: flex;
-  justify-content: flex-end;
-  white-space: nowrap;
-  overflow: hidden;
-  font-size: 14px;
-  mask-image: linear-gradient(to right, transparent, #000 28px);
-}
-#status {
-  color: var(--muted);
-  font-size: 12px;
-}
-#caption:not(:empty) + #status {
-  display: none;
-}
-body:has(#type-instead[open]) .caption {
-  display: block;
-  white-space: normal;
-  max-height: 4.8em;
-  line-height: 1.6;
-  mask-image: none;
-}
-#type-instead {
-  flex: none;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-#type-instead > summary {
-  display: flex;
-  align-items: center;
-  padding: 0 10px;
-  font-size: 11px;
-}
-#command-form {
-  position: absolute;
-  top: 100%;
-  right: 16px;
-  display: flex;
-  gap: 8px;
-  width: min(560px, calc(100vw - 32px));
-  padding: 10px;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 0 0 12px 12px;
-  box-shadow: 0 12px 32px #30241a22;
-}
-#command {
-  flex: 1;
-  background: #faf8f4;
-}
-body[data-ready='false'] #type-instead {
-  display: none;
 }
 .office {
   position: relative;
@@ -332,8 +188,7 @@ body[data-ready='false'] #type-instead {
 #agency-scene canvas:active {
   cursor: grabbing;
 }
-#agency-scene .npc-label,
-#agency-scene .agency-room-label {
+#agency-scene .npc-label {
   display: none !important;
   pointer-events: none !important;
 }
@@ -393,46 +248,6 @@ body[data-drawer='closed'] #drawer {
 .count:empty {
   display: none;
 }
-.toasts {
-  position: fixed;
-  left: 50%;
-  bottom: 16px;
-  z-index: 50;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: min(480px, calc(100vw - 32px));
-  pointer-events: none;
-}
-.toast {
-  pointer-events: auto;
-  padding: 10px 14px;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-left: 4px solid #9c8b75;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px #30241a2a;
-  font-size: 13px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-  animation: toast-in 0.18s ease-out;
-}
-.toast[data-level='error'] {
-  border-left-color: #b4472f;
-}
-.toast[data-level='warn'] {
-  border-left-color: #c58a2c;
-}
-.toast[data-level='info'] {
-  border-left-color: var(--app-brand-primary);
-}
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-}
 dialog {
   background: var(--paper);
   color: var(--ink);
@@ -468,28 +283,6 @@ dialog header button {
   border: 0;
   background: transparent;
 }
-#project-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-#project-form h2 {
-  margin-bottom: 12px;
-}
-#project-form label {
-  font-size: 13px;
-}
-#project-form input,
-#project-form textarea {
-  width: 100%;
-  font-size: 14px;
-}
-.project-dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
-}
 @media (max-width: 700px) {
   .app {
     display: block;
@@ -503,25 +296,6 @@ dialog header button {
   }
   .brand {
     display: none;
-  }
-  .callbar button {
-    padding: 8px 12px;
-  }
-  .caption {
-    order: 1;
-    flex: 1 1 0;
-    min-width: 0;
-    font-size: 13px;
-  }
-  #type-instead {
-    order: 2;
-  }
-  #command-form {
-    right: 12px;
-    width: calc(100vw - 24px);
-  }
-  #connect {
-    min-width: 0;
   }
   .office {
     --scene-h: 55dvh;

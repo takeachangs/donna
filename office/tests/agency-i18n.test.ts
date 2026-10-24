@@ -3,7 +3,6 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import en from '../apps/web/src/i18n/en';
 import zh from '../apps/web/src/i18n/zh-CN';
-import { callControls } from '../apps/web/src/agency/call';
 const walk = (d: string): string[] =>
   readdirSync(d, { withFileTypes: true }).flatMap((e) =>
     e.isDirectory() ? walk(join(d, e.name)) : e.name.endsWith('.ts') ? [join(d, e.name)] : [],
@@ -13,28 +12,24 @@ const used = new Set(
 );
 const E = en as Record<string, string>,
   Z = zh as Record<string, string>;
+// Keys main.ts passes to t() through a variable.
 const dynamic = ['queued', 'working', 'waiting', 'review', 'done', 'paused', 'failed']
   .map((s) => 'agency.status_' + s)
   .concat(
     'agency.badge_review',
-    ['available', 'ringing', 'on_call', 'reconnecting'].map((s) => 'agency.pill_' + s),
+    'agency.read',
+    'agency.unread',
+    'agency.latest',
+    'agency.checkpoint',
+    'agency.next_step',
   );
-const bools = [false, true],
-  ctl = new Set<string>();
-for (const socket of bools)
-  for (const ringing of bools)
-    for (const mic of ['live', 'muted', 'blocked'] as const)
-      for (const reconnecting of bools)
-        for (const v of Object.values(callControls({ socket, ringing, mic, reconnecting })))
-          if (typeof v === 'string' && v.startsWith('agency.')) ctl.add(v);
 describe('i18n', () => {
   for (const [n, D] of [
     ['en', E],
     ['zh-CN', Z],
   ] as const) {
     it(`${n} has every literal t('…') key`, () => expect([...used].filter((k) => !(k in D))).toEqual([]));
-    it(`${n} has the dynamic and call-control keys`, () =>
-      expect([...dynamic, ...ctl].filter((k) => !(k in D))).toEqual([]));
+    it(`${n} has the dynamic keys`, () => expect(dynamic.filter((k) => !(k in D))).toEqual([]));
   }
   it('en and zh-CN have the same keys', () => {
     const a = Object.keys(E),

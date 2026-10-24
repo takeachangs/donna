@@ -1,4 +1,4 @@
-/* Drawer, reports, work cards and project dialogs. Layout of the call bar and office lives in style.css. */
+/* Drawer, reports and work cards. Layout of the call bar and office lives in style.css. */
 .drawer {
   position: absolute;
   top: 12px;
@@ -17,12 +17,6 @@
   font-size: 13px;
   line-height: 1.6;
   overflow: hidden;
-}
-@media (min-width: 701px) {
-  body:has(#type-instead[open]) .drawer {
-    top: 76px;
-    max-height: calc(100% - 88px);
-  }
 }
 .drawer-head {
   position: sticky;
@@ -60,8 +54,7 @@
   text-transform: uppercase;
   color: var(--muted);
 }
-.empty,
-.agency-note {
+.empty {
   font-size: 12px;
   line-height: 1.65;
   color: var(--muted);
@@ -75,10 +68,6 @@
   border: 1px solid var(--app-brand-primary);
   border-radius: 10px;
   background: #fbf4e8;
-}
-.question-item .primary {
-  margin-top: 6px;
-  width: 100%;
 }
 .report-list {
   list-style: none;
@@ -130,9 +119,15 @@
   border-color: var(--accent-ink);
   color: #fffaf2;
 }
-.report-row.is-ringing {
-  border-color: var(--app-brand-primary);
-  animation: ring-pulse 1.4s ease-in-out infinite;
+.activity-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.activity-row {
+  display: grid;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
 }
 .report-title {
   margin: 14px 0 4px;
@@ -146,32 +141,6 @@
   gap: 8px;
   margin-top: 14px;
 }
-.engine-list {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 14px;
-  margin: 14px 0;
-  font-size: 12px;
-}
-.engine-list dt {
-  color: var(--muted);
-}
-.engine-list dd {
-  margin: 0;
-  text-align: right;
-  overflow-wrap: anywhere;
-}
-.engine-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.engine-actions button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
 .work-item {
   min-width: 0;
   margin: 0 0 14px;
@@ -179,12 +148,6 @@
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--paper);
-}
-.item-project {
-  margin: 0 0 9px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--accent-ink);
 }
 .item-title {
   margin: 0;
@@ -246,46 +209,6 @@
   color: var(--muted);
   line-height: 1.6;
 }
-.artifact-group {
-  margin: 15px 0;
-}
-.artifact-heading {
-  margin: 0 0 8px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-.artifact-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-  margin: 0;
-}
-.artifact-link {
-  display: inline-flex;
-  align-items: center;
-  min-height: 40px;
-  max-width: 100%;
-  padding: 8px 10px;
-  border: 1px solid #ded5c7;
-  border-radius: 6px;
-  background: #faf7f1;
-  color: var(--accent-ink);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-  text-decoration: none;
-}
-.artifact-link:hover {
-  background: #f0e5d5;
-  border-color: #cbb49a;
-}
-.artifact-note {
-  margin: 7px 0 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.6;
-}
 .item-actions {
   display: flex;
   flex-wrap: wrap;
@@ -312,10 +235,6 @@
   color: var(--ink);
   text-decoration: underline;
   background: transparent;
-}
-.item-actions button:not(.inspect-result) {
-  background: #eee5d8;
-  border-color: #ddcbb3;
 }
 .brief-row {
   margin: 15px 0;
@@ -365,17 +284,6 @@
   line-height: 1.8;
   white-space: pre-wrap;
 }
-#work-body .verification,
-.drawer-body .verification {
-  padding-left: 20px;
-  margin: 10px 0 25px;
-  font-size: 13px;
-  line-height: 1.8;
-  overflow-wrap: anywhere;
-}
-#work-body .verification li + li {
-  margin-top: 10px;
-}
 #work-body .execution-details {
   margin-top: 24px;
   padding-top: 18px;
@@ -396,98 +304,6 @@
   padding: 12px;
   border-radius: 6px;
   background: #f4f0e9;
-}
-#work-body .session-command {
-  font-size: 12px;
-  line-height: 1.6;
-  padding: 12px;
-}
-.work-error {
-  padding: 12px 14px;
-  border-left: 3px solid var(--app-brand-primary);
-  background: #fbf0e1;
-  font-size: 14px;
-  line-height: 1.7;
-}
-#manage-project-dialog,
-#deleted-projects-dialog {
-  width: min(480px, 94vw);
-}
-#manage-project-dialog header h2,
-#deleted-projects-dialog h2 {
-  font-size: 21px;
-}
-#rename-project-form {
-  margin-top: 24px;
-}
-#rename-project-form label {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-#rename-project-name {
-  width: 100%;
-  font-size: 15px;
-}
-#rename-project-form .agency-note {
-  margin: 9px 0 20px;
-}
-.project-delete {
-  margin-top: 23px;
-  padding: 17px 0 0;
-}
-.project-delete summary {
-  font-size: 12px;
-  color: #8c4834;
-}
-.project-delete > p {
-  font-size: 13px;
-  line-height: 1.7;
-}
-.danger-button {
-  border-color: #d7b6a9;
-  background: #fbf3ee;
-  color: #8c4834;
-  font-size: 12px;
-}
-.danger-button:hover:not(:disabled) {
-  background: #f6e4da;
-}
-.form-error {
-  font-size: 13px;
-  line-height: 1.6;
-  color: #8c4834;
-  margin: 15px 0 0;
-}
-.deleted-project-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 15px;
-  border-top: 1px solid var(--line);
-  padding: 18px 0;
-}
-.deleted-project-row > div {
-  min-width: 0;
-}
-.deleted-project-row strong,
-.deleted-project-row span {
-  display: block;
-  overflow-wrap: anywhere;
-}
-.deleted-project-row strong {
-  font-size: 14px;
-  font-weight: 600;
-}
-.deleted-project-row span {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 5px;
-}
-.deleted-project-row button {
-  font-size: 12px;
-  flex: none;
 }
 @keyframes ring-pulse {
   50% {
@@ -518,8 +334,7 @@
   .drawer-head {
     position: static;
   }
-  .report-open,
-  .question-item .primary {
+  .report-open {
     min-height: 44px;
   }
   #work-dialog {
@@ -531,8 +346,4 @@
   .work-prose {
     font-size: 14px;
   }
-}
-/* A call is a call (#13): while connected, board actions wait until after the call. */
-body[data-call='true'] :is(.item-actions button:not(.inspect-result), #work-body > button) {
-  display: none;
 }
