@@ -488,7 +488,7 @@ def office(now=None):
         call = sj.get("state") or "off"
     except (OSError, ValueError, AttributeError): call, sj = "off", {}
     on = (sj.get("with") or "").lower()  # #28: who the person is talking to, by name (bridge.py); the office gets that worker's id, else "donna"
-    with_ = next((w["id"] for w in workers[1:] if w["name"].lower() == on and w["status"] != "queued"), "donna")  # a briefed name has no desk yet (#65) if call != "off" and on else None
+    with_ = next((w["id"] for w in workers[1:] if w["name"].lower() == on and w["status"] != "queued"), "donna") if call != "off" and on else None  # a briefed name has no desk yet (#65)
     prev = rj(h / "office.json").get("revision")
     return {"revision": prev + 1 if isinstance(prev, int) else 0, "call": {"state": call, **({"with": with_} if with_ else {})},
             "secretary": {"id": "mara", "name": "Donna", "role": "Secretary", "voice": "nora", "characterKey": "char-female-b"},
@@ -562,7 +562,7 @@ def _selfcheck_office():
             "id": B, "projectId": pid, "workerId": B, "title": "Count files", "brief": "Run ls", "acceptance": "", "status": "done", "cwd": proj,
             "summary": "Ran ls: 1 file. The answer is 1.", "startedAt": 0, "completedAt": 0, "artifacts": [], "dependsOn": [], "revision": 0}, a
         assert a["startedAt"] <= a["completedAt"] and a["startedAt"].endswith("+00:00")
-        assert o["secretary"]["characterKey"] == "char-female-b" and o["call"] == {"state": "off"} and o["projects"][0]["goal"] == "build the page"
+        assert o["secretary"]["characterKey"] == "char-female-b" and o["call"] == {"state": "off"} and o["projects"][0]["goal"] == "build the page", (o["call"], o["projects"])
         e = evs()
         assert e[3]["input"] == {"name": "Bob", "description": "Count files", "prompt": "Run ls"} and e[3]["agentId"] == B and "result" not in e[3] and "agent" not in e[3]
         assert e[4]["agent"] == B and e[4]["input"] == {"command": "ls", "description": "List files"} and e[8]["input"]["message"].startswith("Ran ls")
