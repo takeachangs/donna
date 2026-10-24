@@ -38,7 +38,7 @@ URL = "wss://api.boson.ai/v1/realtime?model="
 TOOL = "delegate_task"   # NOT "delegate": the server reserves that name for its own server-side tool (returns executor:"server", adds a `reason` arg; "delegation service not configured")
 TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an agent on the user's computer that can "
             "create or edit files, open pages or files in the browser, run commands, read code, check git, look things up, calculate. "
-            "Use it for ANY request to make, open, run, check, find or compute something. The task is a plain-English request, not a command.",
+            "Use it for ANY request to make, add, change, design, open, run, check, find or compute something. The task is a plain-English request, not a command.",
             "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}
 STATUS = "agent_status"   # answered at once by this layer from the herd files; never left open
 STATUS_DEF = {"type": "function", "name": STATUS, "description": "Says what the agents on the user's computer are doing right now: "
@@ -47,7 +47,9 @@ STATUS_DEF = {"type": "function", "name": STATUS, "description": "Says what the 
 MECHANICS = f"""## Delegation mechanics
 Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
 same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
-After the call, one short sentence that it's underway.
+A request to add, change, design, plan, style or improve something on a page or file is work too: call {TOOL} with your best
+reading of it. If a detail is missing, pick a sensible default, say which, and let the user correct it; never interview the user
+before calling. After the call, one short sentence that it's underway.
 Reply to what the user just said. Mention a running task only if they ask or when its result arrives.
 {TOOL} hands the job to an agent on the user's computer. Describe the task in plain English as a complete request (what, where,
 what the result should be), never as a shell command or code. It runs in the background; its result arrives later as the tool's
@@ -57,10 +59,11 @@ When the user asks how it's going, what's happening or whether something is done
 task is running, even a casual "how's it going" means the task. Never claim progress or results you did not get from a tool."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
-CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending)|should be running|backend result)")
+CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching)|should be running|backend result)")
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send)|let me\s+(creat|mak|check|look|run|open|see)|"
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
-                   r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate)")   # asking permission instead of calling (Oct 24 call)
+                   r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
+                   r"(i'?ll|i (can|could)|let me)\s+(whip|draft|put (\w+ )?together|set (\w+ )?up|sketch))")   # asking permission instead of calling; offering to draft (Oct 24 calls)
 PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c.txt: no paths in speech
 
 
@@ -94,7 +97,8 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
     return PATH.sub(r"\1", " ".join(out)) or "No agents are running and nothing has finished since the call started."
 
 
-ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download)\b")
+ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|"
+                   r"add|change|design|plan|style|improve|update (the|it|that|this|my)|tell (them|it|someone)|have (them|someone))\b")   # not bare "update"/"have it": "any update?", "do you have it?" ask about a running task
 
 
 def _ev(d):
@@ -281,6 +285,10 @@ if __name__ == "__main__":   # self-check: no network
     assert ASKED.search("make me a page") and OFFER.search("i'll create it for you")
     assert all(OFFER.search(x) for x in ("i can't create files myself, but i can delegate that. shall i set that up?", "shall i set that up?",
                                          "want me to delegate that?", "would you like me to hand that off?")) and not OFFER.search("sure, what else?")
+    assert all(OFFER.search(x) for x in ("sure, i can draft a hero section for a tech company. what vibe are we going for?",   # the Oct 24 call, verbatim
+                                         "i'll whip up a hero section with a clean layout", "let me put that together")) and CLAIM.search("i'm putting together the hero section")
+    assert all(ASKED.search(x) for x in ("can you tell them to plan a nice hero section", "add a sleek hero section to it", "update the colors"))
+    assert not any(ASKED.search(x) for x in ("are you done? like.", "any update on that?", "do you have it yet?", "hello"))
     assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
