@@ -1,24 +1,26 @@
 import {randomUUID} from 'node:crypto';
 import {existsSync,mkdirSync,readFileSync,writeFileSync,renameSync,realpathSync,statSync,appendFileSync,copyFileSync,cpSync,readdirSync} from 'node:fs';
-import {resolve,relative,isAbsolute,sep} from 'node:path';
+import {resolve,relative,isAbsolute,sep,basename} from 'node:path';
 import {z} from 'zod';
 import {OfficeStore} from './state.js';
 import {Projects} from './projects.js';
 import {reconcileBriefings,type Briefing} from './briefings.js';
 import {agentEvents,agentName,statusSentence,type AgentEvent,type CrewView} from './transcript.js';
+import {commitAll,gitDir,merge,openPr,push,redact,removeCheckout,report,secretFiles,startJob,useJob,workerCheckout,type JobGit} from './git.js';
 import {createProjectSchema,roomName,workPlanSchema,validateDependencies,goalSchema,parsePlan,lastJson,brainReviewSchema} from './plans.js';
 
 export type ExecutionStatus='queued'|'working'|'waiting'|'review'|'done'|'paused'|'failed';
 export type Artifact={path:string;url:string;size:number;storage?:string;snapshotAt?:string};
 export type Provider='codex'|'claude';
 export type Worker={id:string;projectId:string;provider?:Provider;lead?:true;name?:string;role:string;responsibility:string;characterKey:string;status:ExecutionStatus;sessionId?:string;assignmentId:string;currentAction?:string;actionAt?:string};
-export type Assignment={id:string;projectId:string;workerId:string;provider?:Provider;kind?:'plan'|'review';title:string;brief:string;acceptance:string;status:ExecutionStatus;revision:number;runId?:string;cwd:string;sessionId?:string;dependsOn:string[];reasoningEffort?:'low'|'medium';summary?:string;artifacts:Artifact[];verification?:string[];error?:string;startedAt?:string;completedAt?:string;tokens?:unknown;usageMissing?:boolean;elapsedMs?:number;createdAt?:string;agent?:{toolUseId:string;taskId?:string;brainId:string;model?:string;effort?:string}};
-export type Decision={id:string;projectId:string;title:string;context:string;options?:string[];status:'open'|'decided';decision?:string;reason?:string;createdAt:string;updatedAt:string};
-export type ProjectOverview={id:string;name:string;deletedAt?:string;goal:string;memory:{outcome:string;checkpoint:string;latest:string;nextStep:string;updatedAt:string}};
+export type Assignment={id:string;projectId:string;workerId:string;provider?:Provider;kind?:'plan'|'review';title:string;brief:string;acceptance:string;status:ExecutionStatus;revision:number;runId?:string;cwd:string;sessionId?:string;dependsOn:string[];reasoningEffort?:'low'|'medium';summary?:string;artifacts:Artifact[];verification?:string[];git?:JobGit;network?:true;error?:string;startedAt?:string;completedAt?:string;tokens?:unknown;usageMissing?:boolean;elapsedMs?:number;createdAt?:string;agent?:{toolUseId:string;taskId?:string;brainId:string;model?:string;effort?:string}};
+export type Decision={id:string;projectId:string;title:string;context:string;options?:string[];action?:{kind:'install';command:string}|{kind:'merge';branch:string;worker:string;jobId:string};status:'open'|'decided';decision?:string;reason?:string;createdAt:string;updatedAt:string};
+export type ProjectOverview={id:string;name:string;deletedAt?:string;path?:string;git?:boolean;goal:string;memory:{outcome:string;checkpoint:string;latest:string;nextStep:string;updatedAt:string}};
 export type Workspace={revision:number;secretary:{id:'mara';name:string;role:'Secretary';voice:'eleanor';characterKey:string};projects:ProjectOverview[];workers:Worker[];assignments:Assignment[];decisions:Decision[];briefings:Briefing[];activity:{at:string;projectId?:string;message:string}[];inbox?:{projectId:string;worker:string;text:string;at:string}[]};
+export type Sandbox={write:string[];deny:string[];secrets:string[];network:boolean;addDir:string};
 export interface CodexRunner {
  status():Promise<{available:boolean;authenticated?:boolean;version?:string;error?:string;model?:string;reasoningEffort?:string;modelAvailable?:boolean}>;
- run(input:{cwd:string;prompt:string;threadId?:string;reasoningEffort?:'low'|'medium';onThread?:(id:string)=>void;onEvent?:(event:any)=>void}):Promise<{threadId:string;turnId?:string;text:string;status:'completed'|'failed'|'interrupted';usage?:unknown;error?:string;model?:string;reasoningEffort?:string}>;
+ run(input:{cwd:string;prompt:string;threadId?:string;reasoningEffort?:'low'|'medium';sandbox?:Sandbox;onThread?:(id:string)=>void;onEvent?:(event:any)=>void}):Promise<{threadId:string;turnId?:string;text:string;status:'completed'|'failed'|'interrupted';usage?:unknown;error?:string;model?:string;reasoningEffort?:string}>;
  interrupt(threadId:string):Promise<void>;
  inject?(threadId:string,text:string):boolean;
  close():void;
@@ -35,15 +37,16 @@ const resultSchema=z.object({name:text.max(40),summary:text.max(12000),artifacts
 
 /** Product state is an index and compact brief. Native Codex owns conversation history. */
 export class AgencyWorkspace {
- private data:Workspace;private running=false;private stopped=false;private wake?:ReturnType<typeof setTimeout>;private current?:{id:string;runId:string;threadId?:string};private seen=new Map<string,{files:Set<string>;said?:string}>();
+ private data:Workspace;private dir:string;private office:string;private asks=new Map<string,number>();private running=false;private stopped=false;private wake?:ReturnType<typeof setTimeout>;private current?:{id:string;runId:string;threadId?:string};private seen=new Map<string,{files:Set<string>;said?:string}>();
  constructor(private store:OfficeStore,private projects:Projects,private codex:CodexRunner,private notify:(workspace:Workspace)=>void=()=>{},private options:{autoStart?:boolean;claude?:CodexRunner;brain?:CodexRunner;defaultProvider?:Provider}={}){
+  this.dir=realpathSync(store.root);this.office=resolve(this.dir,'office');
   const p=resolve(store.root,'workspace.json');
   this.data=existsSync(p)?JSON.parse(readFileSync(p,'utf8')):{revision:0,secretary:{id:'mara',name:'Donna',role:'Secretary',voice:'eleanor',characterKey:'char-female-b'},projects:[],workers:[],assignments:[],decisions:[],briefings:[],activity:[]};
   const needsBriefings=!this.data.briefings;this.data.briefings??=[];
   // Adopt the user's chosen name without changing IDs, voices or project history.
   if(['Secretary','Mara'].includes(this.data.secretary.name)){this.data.secretary.name='Donna';this.save();}
   this.syncProjects();
-  for(const p of this.data.projects)if(!p.deletedAt)this.skills(resolve(store.root,'workspaces',p.id));
+  this.skills();
   if(needsBriefings||reconcileBriefings(this.data.briefings,this.data.assignments,this.data.workers))this.save();
  }
  snapshot():Workspace{return structuredClone(this.data);}
@@ -52,7 +55,7 @@ export class AgencyWorkspace {
   for(const p of this.projects.list(true)){
    if(p.deletedAt)for(const a of this.data.assignments.filter(a=>a.projectId===p.id&&['working','queued','waiting'].includes(a.status))){a.revision++;this.state(a,'paused','Project is in Recently deleted; files and session retained');changed=true;}
    const known=this.data.projects.find(k=>k.id===p.id);
-   if(known){if(known.name!==p.name||known.deletedAt!==p.deletedAt){known.name=p.name;known.deletedAt=p.deletedAt;changed=true;}continue;}
+   if(known){if(known.name!==p.name||known.deletedAt!==p.deletedAt||known.path!==p.path||known.git!==p.git){known.name=p.name;known.deletedAt=p.deletedAt;known.path=p.path;known.git=p.git;changed=true;}continue;}
    const old=this.store.load(p.id);
    this.data.projects.push({...p,goal:old.goal,memory:{outcome:old.goal,checkpoint:'Choose the next useful outcome',latest:old.documents.length?`${old.documents.length} preserved local draft(s); not evidence of external execution.`:'No execution has been delegated yet.',nextStep:'Tell the secretary what to accomplish next.',updatedAt:now()}});changed=true;
   }
@@ -66,13 +69,14 @@ export class AgencyWorkspace {
  // ponytail: word-overlap heuristic inside a 2-minute window; a genuinely different follow-up passes, a paraphrase of in-flight work does not.
  private inFlight(goal:string,projectId?:string):Assignment|undefined{return this.data.assignments.find(a=>a.kind&&['queued','working'].includes(a.status)&&(!projectId||a.projectId===projectId)&&(norm(a.brief)===norm(goal)||(!!a.createdAt&&Date.now()-Date.parse(a.createdAt)<120000&&similar(a.brief,goal))));}
  createProject(value:unknown){
-  const input=createProjectSchema.parse(value),goal=input.initial_work;
+  const input=createProjectSchema.parse(value),raw=value as {path?:string;allow_non_git?:boolean},path=typeof raw?.path==='string'&&raw.path.trim()||undefined,goal=input.initial_work;
   if(goal&&!this.options.brain)throw Error('Donna\'s brain is not connected in this office');
   const dup=goal?this.inFlight(goal):undefined;
   if(dup){const p=this.project(dup.projectId);return {committed:false,planning:true,alreadyQueued:true,selected:true,project:{id:p.id,name:p.name},assignment:dup,note:`already queued: this goal is already in progress in "${p.name}", now the selected room. Tell the user it is in progress; do not hand it over again.`};}
-  const project=this.projects.create({name:roomName(input.name,input.brief||goal||''),brief:input.brief.trim()||goal||''});this.syncProjects();
-  const made=`Room "${project.name}" created and now selected; later calls use project_id "selected". `;
-  if(!goal)return {committed:true,selected:true,project,executionStarted:false,note:made+'Empty project created; nothing is queued. If the user asked for work, call delegate_work for this project now, before speaking.'};
+  const name=path&&!input.name?basename(path.replace(/\/+$/,'')).slice(0,80)||roomName(undefined,goal||''):roomName(input.name,input.brief||goal||'');
+  const project=this.projects.create({name,brief:input.brief.trim()||goal||'',path,allow_non_git:raw.allow_non_git});this.syncProjects();
+  const existing='existing' in project,made=existing?`This folder already has the room "${project.name}"; it is now selected and keeps its memory. Later calls use project_id "selected". `:`Room "${project.name}" created and now selected; later calls use project_id "selected". `;
+  if(!goal)return {committed:true,selected:true,project,executionStarted:false,note:made+(existing?'Nothing is queued':'Empty project created; nothing is queued')+'. If the user asked for work, call delegate_work for this project now, before speaking.'};
   const r=this.queue(this.project(project.id),goal);
   return {committed:true,selected:true,project,executionStarted:true,planning:true,assignment:r.assignment,assignments:[r.assignment],note:made+'Donna\'s brain is planning this goal now; workers appear when the plan lands. Do not delegate the same work again.'};
  }
@@ -81,8 +85,11 @@ export class AgencyWorkspace {
  restoreProject(id:string){const p=this.projects.setDeleted(id,false);this.syncProjects();this.log(`Restored ${p.name}; paused work stays paused`,id);this.save();return {committed:true,project:p};}
  private assignment(id:string){const a=this.data.assignments.find(a=>a.id===id);if(!a)throw Error('Unknown assignment');return a;}
  private look(){return looks[this.data.workers.filter(k=>!k.lead).length%4];}
- /** Donna's brain and her subagents read their skills from the workspace they run in. */
- private skills(cwd:string){mkdirSync(cwd,{recursive:true});for(const n of ['donna-brain','donna-worker'])cpSync(resolve(repo,'skills',n),resolve(cwd,'.claude/skills',n),{recursive:true,force:true});}
+ /** Donna's brain and her subagents read their skills from one office folder (--add-dir); a room folder never gets a .claude. */
+ private skills(){for(const n of ['donna-brain','donna-worker'])cpSync(resolve(repo,'skills',n),resolve(this.office,'.claude/skills',n),{recursive:true,force:true});}
+ private wt(p:ProjectOverview){return resolve(this.dir,'worktrees',p.id);}
+ /** Where a room's brain works: the job checkout of a git room, the folder itself for a non-git one, else a private workspace. */
+ private cwd(p:ProjectOverview){if(p.path)return p.git?resolve(this.wt(p),'job'):p.path;const c=resolve(this.store.root,'workspaces',p.id);mkdirSync(c,{recursive:true});return c;}
  private worker(a:Assignment){return this.data.workers.find(w=>w.id===a.workerId)!;}
  private runner(a:Assignment){return a.kind?this.options.brain:a.provider==='claude'?this.options.claude:this.codex;}
  private engines(ps:(Provider|undefined)[]){if(ps.includes('claude')&&!this.options.claude)throw Error('Claude Code is not connected in this office');}
@@ -100,11 +107,11 @@ export class AgencyWorkspace {
   if(dup)return {committed:false,planning:true,alreadyQueued:true,assignment:dup,note:'already queued: this goal is already in progress here. Tell the user it is in progress; do not hand it over again.',progress:this.progress(p.id)};
   return this.queue(p,goal);
  }
- private queue(p:{id:string;memory:ProjectOverview['memory']},goal:string){
+ private queue(p:ProjectOverview,goal:string,network?:true){
   let lead=this.data.workers.find(w=>w.projectId===p.id&&w.lead);
   if(!lead){lead={id:'lead-'+randomUUID(),projectId:p.id,provider:'claude',lead:true,name:this.data.secretary.name,role:'Lead',responsibility:'Plans the team, reviews its results and writes the briefing',characterKey:this.data.secretary.characterKey,status:'queued',assignmentId:''};this.data.workers.push(lead);}
-  const cwd=resolve(this.store.root,'workspaces',p.id);this.skills(cwd);
-  const plan:Assignment={id:randomUUID(),projectId:p.id,workerId:lead.id,provider:'claude',kind:'plan',title:'Plan: '+goal.slice(0,170),brief:goal,acceptance:'A valid plan for this request',status:'queued',revision:1,cwd,sessionId:lead.sessionId,dependsOn:[],reasoningEffort:'medium',artifacts:[],createdAt:now()};
+  const cwd=this.cwd(p);
+  const plan:Assignment={id:randomUUID(),projectId:p.id,workerId:lead.id,provider:'claude',kind:'plan',title:'Plan: '+goal.slice(0,170),brief:goal,acceptance:'A valid plan for this request',status:'queued',revision:1,cwd,sessionId:lead.sessionId,dependsOn:[],reasoningEffort:'medium',artifacts:[],createdAt:now(),...(network&&{network})};
   this.data.assignments.push(plan);Object.assign(lead,{assignmentId:plan.id,status:'queued',currentAction:'Planning queued'});
   Object.assign(p.memory,{latest:`Donna's brain is planning: ${goal.slice(0,300)}`,nextStep:'Wait for the plan; workers appear when it lands.',updatedAt:now()});
   this.log(`Donna's brain is planning: ${goal.slice(0,120)}`,p.id);this.save();this.kick();
@@ -118,7 +125,7 @@ export class AgencyWorkspace {
   const reused=a.workers.flatMap(w=>w.reuse_worker_id?[w.reuse_worker_id]:[]);if(new Set(reused).size!==reused.length)throw Error('Do not assign the same worker twice in one plan');
   const ids=new Map(a.workers.map(w=>[w.key,randomUUID()])),created:Assignment[]=[];
   p.memory.checkpoint=a.checkpoint;p.memory.nextStep='Execute the delegated work, then inspect the actual deliverables.';p.memory.latest=`Donna's brain staffed ${a.workers.length} work package(s). ${a.rationale}`;p.memory.updatedAt=now();
-  const cwd=resolve(this.store.root,'workspaces',p.id);this.skills(cwd);
+  const cwd=this.cwd(p);
   for(const [i,w] of a.workers.entries()){
    const id=ids.get(w.key)!,old=w.reuse_worker_id?this.data.workers.find(k=>k.id===w.reuse_worker_id):undefined,provider:Provider=w.provider??old?.provider??this.options.defaultProvider??'codex';
    const worker:Worker=old||{id:'worker-'+randomUUID(),projectId:p.id,provider,role:w.role,responsibility:w.responsibility,characterKey:this.look(),status:'queued',assignmentId:id};
@@ -132,7 +139,46 @@ export class AgencyWorkspace {
  pause(id:string):{committed:boolean;assignment:Assignment}{const a=this.assignment(id);if(a.agent)return this.pause(a.agent.brainId);this.project(a.projectId);if(a.status==='done')throw Error('Accepted work is already complete');a.revision++;this.state(a,'paused','Paused by the user; files retained');for(const c of this.data.assignments.filter(c=>c.agent?.brainId===id&&c.status==='working'))this.state(c,'paused','Paused with Donna\'s brain; it re-checks this on its next turn');this.log(`Paused: ${a.title}`,a.projectId);this.save();if(this.current?.id===id&&this.current.threadId)void this.runner(a)?.interrupt(this.current.threadId).catch(()=>{});return {committed:true,assignment:a};}
  resume(id:string):{committed:boolean;assignment:Assignment}{const a=this.assignment(id);if(a.agent)return this.resume(a.agent.brainId);this.project(a.projectId);if(!['paused','failed','waiting'].includes(a.status))throw Error('Only paused, failed or waiting work can resume');a.revision++;a.error=undefined;this.state(a,'queued','Queued to resume its native session');this.log(`Queued resume: ${a.title}`,a.projectId);this.save();this.kick();return {committed:true,assignment:a};}
  accept(id:string){const a=this.assignment(id);this.project(a.projectId);if(a.status!=='review')throw Error('Only a delivered result can be accepted');for(const f of a.artifacts)this.artifact(a.id,f.path);this.state(a,'done','Accepted by the user');this.log(`Accepted: ${a.title}`,a.projectId);this.save();return {committed:true,assignment:a};}
- decide(value:unknown){const v=z.object({id:text.optional(),project_id:z.string().uuid(),title:text.max(200).optional(),context:z.string().max(4000).optional(),options:z.array(text.max(500)).max(6).optional(),status:z.enum(['open','decided']),decision:text.max(2000).optional(),reason:z.string().max(3000).optional()}).parse(value);const p=this.project(v.project_id);let d=v.id?this.data.decisions.find(d=>d.id===v.id):undefined;if(v.id&&!d)throw Error('Unknown decision');if(d&&d.projectId!==p.id)throw Error('Wrong decision project');if(v.status==='decided'&&!v.decision)throw Error('A decision needs an explicit outcome');if(!d){if(!v.title)throw Error('A decision title is required');d={id:randomUUID(),projectId:p.id,title:v.title,context:v.context||'',status:v.status,createdAt:now(),updatedAt:now()};this.data.decisions.push(d);}Object.assign(d,{status:v.status,updatedAt:now()});if(v.title)d.title=v.title;if(v.context!==undefined)d.context=v.context;if(v.options)d.options=v.options;if(v.decision)d.decision=v.decision;if(v.reason!==undefined)d.reason=v.reason;this.log(v.status==='decided'?`Decision: ${d.decision}${d.reason?' — '+d.reason:''}`:`Needs a decision: ${d.title}`,p.id);p.memory.updatedAt=now();this.save();return {committed:true,decision:d};}
+ decide(value:unknown){const v=z.object({id:text.optional(),project_id:z.string().uuid(),title:text.max(200).optional(),context:z.string().max(4000).optional(),options:z.array(text.max(500)).max(6).optional(),status:z.enum(['open','decided']),decision:text.max(2000).optional(),reason:z.string().max(3000).optional()}).parse(value);const p=this.project(v.project_id);let d=v.id?this.data.decisions.find(d=>d.id===v.id):undefined;const was=d?.status;if(v.id&&!d)throw Error('Unknown decision');if(d&&d.projectId!==p.id)throw Error('Wrong decision project');if(v.status==='decided'&&!v.decision)throw Error('A decision needs an explicit outcome');if(!d){if(!v.title)throw Error('A decision title is required');d={id:randomUUID(),projectId:p.id,title:v.title,context:v.context||'',status:v.status,createdAt:now(),updatedAt:now()};this.data.decisions.push(d);}Object.assign(d,{status:v.status,updatedAt:now()});if(v.title)d.title=v.title;if(v.context!==undefined)d.context=v.context;if(v.options)d.options=v.options;if(v.decision)d.decision=v.decision;if(v.reason!==undefined)d.reason=v.reason;this.log(v.status==='decided'?`Decision: ${d.decision}${d.reason?' — '+d.reason:''}`:`Needs a decision: ${d.title}`,p.id);p.memory.updatedAt=now();this.save();if(d.action&&was==='open'&&v.status==='decided')this.act(d,p);return {committed:true,decision:d};}
+/** An answered decision that carries an action is applied after it is saved: yes opens the install turn, or takes the worker's side of a conflict. */
+ private act(d:Decision,p:ProjectOverview){
+  const x=d.action!,yes=/^\s*(?:yes|yeah|yep|sure|ok(?:ay)?|go ahead|do it|allow|approve|use|take)\b/i.test(d.decision||'');
+  if(x.kind==='install'){if(yes)this.queue(p,`The user said yes to this install: ${x.command}. Package registries are reachable for this turn only; run it, then finish the job and end with the final JSON.`,true);else{this.log(`Install declined: ${x.command}`,p.id);this.save();}return;}
+  let failed='';
+  if(yes)try{const m=merge(this.assignment(x.jobId).cwd,x.branch,'theirs');if(!m.ok)failed=` The merge still failed in ${m.files.join(', ')}.`;}catch(e){failed=` The merge failed: ${String((e as Error).message).slice(0,200)}.`;}
+  this.queue(p,`The user decided the merge conflict for ${x.worker}'s work: "${d.decision}". The office applied it. Re-check the PROJECT DIRECTORY, run the tests, and end with the final JSON.${failed}`);
+ }
+ /** The latest finished brain step with a job branch; refuses while anything in the room is still running. */
+ private finished(projectId:string){
+  if(this.data.assignments.some(a=>a.projectId===projectId&&inUse.includes(a.status)))throw Error('Work in this room is still in progress; wait for it to finish.');
+  const job=this.data.assignments.filter(a=>a.projectId===projectId&&a.kind&&a.git&&['review','done'].includes(a.status)).at(-1);
+  if(!job)throw Error('There is no finished job branch to open a pull request for.');
+  return job;
+ }
+ /** Push the job branch and open the pull request. The caller has the user's yes. */
+ openPullRequest(projectId:string){
+  const p=this.project(projectId),job=this.finished(p.id),g=job.git!;
+  if(g.prUrl)return {committed:false,url:g.prUrl,note:'already open'};
+  Object.assign(g,report(job.cwd,g.baseSha));
+  const body=redact(`${job.summary||job.title}\n\n## Verification\n${(job.verification||[]).map(v=>`- ${v}`).join('\n')||'None recorded.'}\n\n## Changes\n\`\`\`\n${g.diffStat}\n\`\`\`\n\n## Commits\n${g.commits!.map(c=>`- ${c}`).join('\n')}\n\nOpened by Donna (Chamber) after the user said yes.`);
+  push(g.repo,g.branch);
+  const url=openPr(g.repo,{branch:g.branch,base:g.base,title:job.title,body});
+  for(const x of this.data.assignments)if(x.projectId===p.id&&x.git?.branch===g.branch)x.git.prUrl=url;
+  for(const b of this.data.briefings)if(b.projectId===p.id&&b.git?.branch===g.branch)b.git.prUrl=url;
+  const wt=this.wt(p);if(existsSync(wt))for(const d of readdirSync(wt))if(d!=='job')removeCheckout(g.repo,resolve(wt,d));
+  this.log(`Opened a pull request: ${job.title}`,p.id);this.save();
+  return {committed:true,url,branch:g.branch,note:'Say "the pull request is up" in one short sentence; never read the URL aloud.'};
+ }
+ /** The voice's entry. A confirm only counts when the user spoke after the question was asked, so the model cannot answer for them. */
+ pullRequest(value:unknown,userAt:number){
+  const v=z.object({project_id:z.string().uuid().optional(),confirm:z.boolean().optional()}).parse(value);
+  if(!v.project_id)throw Error('Select the room first.');
+  const p=this.project(v.project_id),g=this.finished(p.id).git!;
+  if(g.prUrl)return {committed:false,url:g.prUrl,note:'already open'};
+  const asked=this.asks.get(p.id);
+  if(!v.confirm||asked===undefined||userAt<=asked){this.asks.set(p.id,Date.now());return {committed:false,needsConfirmation:true,question:`Open a pull request for "${this.finished(p.id).title}" from ${g.branch} into ${g.base}?`,note:'Ask the user exactly this in one short sentence and wait. Call again with confirm true only after they say yes.'};}
+  this.asks.delete(p.id);return this.openPullRequest(p.id);
+ }
  artifact(id:string,path:string,version?:string){const a=this.assignment(id);let files=a.artifacts;if(version){if(!/^[a-f0-9-]{36}$/.test(version))throw Error('Invalid artifact version');const candidate=resolve(this.store.root,'deliveries',a.id,version,'manifest.json');if(!existsSync(candidate))throw Error('Unknown artifact version');const manifest=this.safeFile(resolve(this.store.root,'deliveries'),`${a.id}/${version}/manifest.json`);files=JSON.parse(readFileSync(manifest,'utf8'));}const f=files.find(f=>f.path===path);if(!f)throw Error('Artifact is not listed for this assignment');return f.storage?this.safeFile(resolve(this.store.root,'deliveries'),f.storage):this.safeFile(a.cwd,path);}
  private safeFile(cwd:string,path:string){if(isAbsolute(path)||/^[A-Za-z]:|^\\\\/.test(path))throw Error('Artifact must be relative to the project directory');const base=realpathSync(cwd),file=realpathSync(resolve(cwd,path)),rel=relative(base,file);if(!rel||rel==='..'||rel.startsWith('..'+sep)||isAbsolute(rel))throw Error('Artifact escapes the project directory');if(!statSync(file).isFile())throw Error('Artifact must be a regular file');return file;}
  async recover(){for(const a of this.data.assignments){if(a.status==='working'){a.revision++;this.state(a,'paused',a.agent?"Unknown after restart; Donna's brain re-checks it on its next turn":'Execution host restarted. Resume the saved native session.');this.log(`Host restarted; native session retained for ${a.title}`,a.projectId);}}this.save();this.kick();}
@@ -142,11 +188,13 @@ export class AgencyWorkspace {
    const mine=this.data.workers.filter(k=>k.projectId===p.id&&!k.lead&&k.name),last=(k:Worker)=>this.data.assignments.find(x=>x.id===k.assignmentId)?.title;
    const team=mine.map(k=>({name:k.name,status:k.status,lastTask:last(k)})),others=this.data.workers.filter(k=>k.projectId!==p.id&&!k.lead&&k.name).map(k=>k.name),recent=this.data.assignments.filter(k=>k.projectId===p.id&&!k.kind).slice(-8).map(k=>({title:k.title,status:k.status,summary:k.summary?.slice(0,300),artifacts:k.artifacts.map(f=>f.path)})),decided=this.data.decisions.filter(d=>d.projectId===p.id&&d.status==='decided').slice(-8);
    const restart=this.data.assignments.filter(x=>x.agent&&x.projectId===p.id&&x.status==='paused').map(x=>({name:this.worker(x).name,lastTask:x.title}));
+   const rules=p.path?['CLAUDE.md','AGENTS.md'].filter(f=>existsSync(resolve(a.cwd,f))):[];
+   const where=`${a.git?`REPOSITORY: ${a.git.repo} (the user's checkout; never touch it)\nJOB BRANCH: ${a.git.branch} from ${a.git.base}; PROJECT DIRECTORY is its checkout, read-only for you and the workers: the office commits each worker's checkout and merges it there; never run git commands that write.\nWORKER CHECKOUTS: ${this.wt(p)}/<Name> (one per worker, created by the office when you spawn it; Name = the Agent name)\n`:''}${rules.length?`REPO RULES: ${rules.join(', ')} - read them first and pass the relevant rules into every brief\n`:''}NETWORK: ${a.network?'on for this turn: package registries only':'off - a needed install goes into "install" in your final JSON'}\n`;
    const inbox=this.data.inbox??=[],mail=inbox.filter(m=>m.projectId===p.id);this.data.inbox=inbox.filter(m=>m.projectId!==p.id);
    return `Follow the donna-brain skill.
 PROJECT: ${p.name}\nPROJECT GOAL: ${p.goal}\nMEMORY: ${JSON.stringify(p.memory)}\nPROJECT DIRECTORY: ${a.cwd}
 TEAM IN THIS ROOM: ${JSON.stringify(team)}\nNAMES IN USE IN OTHER ROOMS: ${JSON.stringify(others)}\nRECENT WORK: ${JSON.stringify(recent)}\nDECISIONS: ${JSON.stringify(decided)}
-${restart.length?`RESTART: ${JSON.stringify(restart)}\n`:''}${mail.map(m=>`MESSAGE FOR ${m.worker} (from the user, through Donna's voice): ${m.text}\n`).join('')}REQUEST: ${a.brief}`;
+${where}${restart.length?`RESTART: ${JSON.stringify(restart)}\n`:''}${mail.map(m=>`MESSAGE FOR ${m.worker} (from the user, through Donna's voice): ${m.text}\n`).join('')}REQUEST: ${a.brief}`;
   }
   if(a.kind==='review'){
    const deliveries=a.dependsOn.map(id=>{const d=this.assignment(id),w=this.worker(d);return {worker:w.name,role:w.role,title:d.title,acceptance:d.acceptance,status:d.status,summary:d.summary,artifacts:d.artifacts.map(f=>f.path),verification:d.verification};});
@@ -211,10 +259,18 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
  }
  private endCrew(cs:Assignment[],why:string){for(const c of cs){c.error=why;c.completedAt=now();this.state(c,'failed',why);}}
  private finish(c:Assignment,ok:boolean,report?:string){
-  const s=this.seen.get(c.id);c.summary=(report?.trim()||s?.said||'').slice(0,2000);c.completedAt=now();
-  if(ok)c.artifacts=this.deliver(c,c.runId!,[...(s?.files??[])],true);else c.error=c.summary||'Subagent failed';
+  const s=this.seen.get(c.id),job=c.git&&ok?this.data.assignments.find(x=>x.id===c.agent!.brainId):undefined,name=this.worker(c).name!;let conflict:string[]|undefined;c.summary=(report?.trim()||s?.said||'').slice(0,2000);c.completedAt=now();
+  // Git room: the office commits the worker's checkout and merges it into the job branch; a conflict becomes a decision.
+  if(job)try{const done=commitAll(c.cwd,`${name}: ${c.title}`);c.artifacts=this.deliver(c,c.runId!,done?.files??[...(s?.files??[])],true);const m=merge(job.cwd,c.git!.branch);if(!m.ok)conflict=m.files;}catch(e){ok=false;c.summary=`Could not merge this worker's changes: ${String((e as Error).message).slice(0,300)}`;}
+  else if(ok)c.artifacts=this.deliver(c,c.runId!,[...(s?.files??[])],true);
+  if(!ok)c.error=c.summary||'Subagent failed';
   this.state(c,ok?'review':'failed',"Reported to Donna's brain");this.worker(c).actionAt=now();this.seen.delete(c.id);
-  this.log(`${this.worker(c).name} ${ok?"reported to Donna's brain":'failed'}: ${c.title}`,c.projectId);
+  this.log(`${name} ${ok?"reported to Donna's brain":'failed'}: ${c.title}`,c.projectId);
+  if(conflict){
+   const files=conflict.join(', '),d=this.decide({project_id:c.projectId,title:`Merge conflict: ${name}'s work`,context:`${name}'s changes conflict with the job branch in ${files}. Use ${name}'s version, or keep the current version?`,options:[`Use ${name}'s version`,'Keep the current version'],status:'open'}).decision;
+   d.action={kind:'merge',branch:c.git!.branch,worker:name,jobId:job!.id};
+   const t=this.current?.threadId;if(t)this.options.brain?.inject?.(t,`MERGE CONFLICT: ${name}'s work conflicts in ${files}; it is not merged and the user decides. Say so in your summary.`);
+  }
  }
  private spawn(a:Assignment,ev:Extract<AgentEvent,{kind:'spawn'}>){
   const base=agentName(ev.description,ev.name),id=randomUUID(),lc=(s?:string)=>(s||'').toLowerCase();let w:Worker|undefined;
@@ -224,13 +280,22 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
    else if(k.projectId===a.projectId&&!inUse.includes(k.status))w=k;
   }
   Object.assign(w,{responsibility:ev.description.slice(0,300),status:'working',assignmentId:id,currentAction:`Starting: ${ev.description.slice(0,120)}`,actionAt:now()});
-  this.data.assignments.push({id,projectId:a.projectId,workerId:w.id,provider:'claude',title:ev.description.slice(0,180),brief:ev.prompt.slice(0,6000),acceptance:"Reports back to Donna's brain",status:'working',revision:1,runId:a.runId,cwd:a.cwd,dependsOn:[],artifacts:[],startedAt:now(),createdAt:now(),agent:{toolUseId:ev.toolUseId,brainId:a.id,model:ev.model,effort:ev.effort}});
+  // A git room gives every worker its own checkout, named as the brain was told: <worktrees>/<Name>. ponytail: a job-named or twice-used Name falls back to / shares a dir; the skill asks for unique names.
+  const dir=a.git&&resolve(this.wt(this.project(a.projectId)),(ev.name||agentName(ev.description)).replace(/[^A-Za-z0-9-]/g,'').replace(/^job$/i,'')||'Worker');
+  const row:Assignment={id,projectId:a.projectId,workerId:w.id,provider:'claude',title:ev.description.slice(0,180),brief:ev.prompt.slice(0,6000),acceptance:"Reports back to Donna's brain",status:'working',revision:1,runId:a.runId,cwd:dir||a.cwd,...(dir&&{git:{...a.git!}}),dependsOn:[],artifacts:[],startedAt:now(),createdAt:now(),agent:{toolUseId:ev.toolUseId,brainId:a.id,model:ev.model,effort:ev.effort}};
+  this.data.assignments.push(row);this.checkout(a,row);
   // The brain step lists its crew as it spawns them, so no briefing is cut for one subagent before the brain's own.
   a.dependsOn.push(id);this.seen.set(id,{files:new Set()});this.log(`${w.name} started: ${ev.description.slice(0,120)}`,a.projectId);
  }
+ /** A git-room worker works on a branch off the job branch in its own checkout; idempotent, so a removed checkout comes back. false (and the worker fails) when git refuses. */
+ private checkout(a:Assignment,c:Assignment){
+  if(!a.git||!c.git)return true;
+  try{c.git={...a.git,branch:workerCheckout(a.git.repo,a.git.branch,c.cwd,basename(c.cwd))};return true;}
+  catch(e){this.endCrew([c],`Could not create a checkout: ${String((e as Error).message).slice(0,300)}`);return false;}
+ }
  /** A subagent from an earlier brain turn was resumed with SendMessage: give this turn its own crew row for the same worker. */
  private resumed(a:Assignment,old:Assignment){
-  const id=randomUUID(),row:Assignment={id,projectId:a.projectId,workerId:old.workerId,provider:'claude',title:old.title,brief:"Resumed by Donna's brain",acceptance:old.acceptance,status:'working',revision:1,runId:a.runId,cwd:a.cwd,dependsOn:[],artifacts:[],startedAt:now(),createdAt:now(),agent:{...old.agent!,brainId:a.id}};
+  const id=randomUUID(),row:Assignment={id,projectId:a.projectId,workerId:old.workerId,provider:'claude',title:old.title,brief:"Resumed by Donna's brain",acceptance:old.acceptance,status:'working',revision:1,runId:a.runId,cwd:old.cwd,...(old.git&&{git:{...old.git}}),dependsOn:[],artifacts:[],startedAt:now(),createdAt:now(),agent:{...old.agent!,brainId:a.id}};
   this.data.assignments.push(row);this.worker(old).assignmentId=id;a.dependsOn.push(id);return row;
  }
  /** Turn the brain's live stream into workers: each Agent tool_use is a worker, its events are that worker's actions. */
@@ -243,10 +308,10 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
    if(ev.kind==='note'){say(this.worker(a),ev.text);dirty=true;continue;}
    if(ev.kind==='file'){const r=this.rel(a.cwd,ev.file);if(r)this.seen.get(a.id)?.files.add(r);continue;}
    if(ev.kind==='message'){const w=this.data.workers.find(w=>!w.lead&&w.projectId===a.projectId&&norm(w.name||'')===norm(ev.to));if(w){say(w,`Message from Donna's brain: ${ev.text.slice(0,60)}`);dirty=true;}continue;}
-   if(ev.kind==='task'){const c=byTool(ev.toolUseId),r=c?undefined:byTask(ev.taskId);if(c)c.agent!.taskId=ev.taskId;else if(r){let x=r;if(r.agent!.brainId!==a.id){x=this.resumed(a,r);crew.push(x);}else x.completedAt=undefined;this.seen.set(x.id,{files:new Set()});this.state(x,'working',"Resumed by Donna's brain");this.worker(x).actionAt=now();dirty=true;}continue;}
+   if(ev.kind==='task'){const c=byTool(ev.toolUseId),r=c?undefined:byTask(ev.taskId);if(c)c.agent!.taskId=ev.taskId;else if(r){let x=r;if(r.agent!.brainId!==a.id){x=this.resumed(a,r);crew.push(x);}else x.completedAt=undefined;if(this.checkout(a,x)){this.seen.set(x.id,{files:new Set()});this.state(x,'working',"Resumed by Donna's brain");this.worker(x).actionAt=now();}dirty=true;}continue;}
    const c=ev.kind==='done'?byTask(ev.taskId)||byTool(ev.toolUseId):ev.kind==='action'||ev.kind==='said'?byTool(ev.parent):ev.kind==='result'?byTool(ev.toolUseId):undefined;
    if(!c||c.status!=='working')continue;
-   if(ev.kind==='action'){const rd=ev.file&&this.rel(a.cwd,ev.file);if(rd&&ev.tool!=='Read')this.seen.get(c.id)?.files.add(rd);say(this.worker(c),rd&&ev.file?ev.action.replace(ev.file,rd):ev.action);}
+   if(ev.kind==='action'){const rd=ev.file&&this.rel(c.cwd,ev.file);if(rd&&ev.tool!=='Read')this.seen.get(c.id)?.files.add(rd);say(this.worker(c),rd&&ev.file?ev.action.replace(ev.file,rd):ev.action);}
    else if(ev.kind==='said'){const t=this.seen.get(c.id);if(t)t.said=ev.text;}
    else if(ev.kind==='result')this.finish(c,true,ev.report);
    else if(ev.kind==='done')this.finish(c,ev.ok,this.seen.get(c.id)?.said||ev.report);
@@ -259,21 +324,24 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
   const p=this.project(a.projectId);
   if(a.kind==='plan'&&Array.isArray((lastJson(text) as {workers?:unknown})?.workers)){
    const plan=parsePlan(text),{assignments}=this.staff(a.projectId,plan);
-   const review:Assignment={id:randomUUID(),projectId:a.projectId,workerId:a.workerId,provider:'claude',kind:'review',title:plan.title,brief:a.brief,acceptance:'Every deliverable checked against its acceptance; one briefing written.',status:'queued',revision:1,cwd:a.cwd,sessionId:a.sessionId,dependsOn:assignments.map(x=>x.id),reasoningEffort:'medium',artifacts:[],createdAt:now()};
+   const review:Assignment={id:randomUUID(),projectId:a.projectId,workerId:a.workerId,provider:'claude',kind:'review',title:plan.title,brief:a.brief,acceptance:'Every deliverable checked against its acceptance; one briefing written.',status:'queued',revision:1,cwd:a.cwd,sessionId:a.sessionId,dependsOn:assignments.map(x=>x.id),reasoningEffort:'medium',artifacts:[],createdAt:now(),...(a.git&&{git:structuredClone(a.git)})};
    this.data.assignments.push(review);a.summary=plan.rationale;a.completedAt=now();this.state(a,'done','Plan delivered');
    Object.assign(this.worker(a),{assignmentId:review.id,status:'queued',currentAction:'Waiting for the team to deliver'});
    this.log(`Donna planned ${assignments.length} worker(s) for ${plan.title}`,a.projectId);this.save();return;
   }
-  const r=brainReviewSchema.parse(lastJson(text));
-  if(a.kind==='plan'){this.wrapUp(a);a.title=r.title||a.brief.slice(0,120);}
+  const r=brainReviewSchema.parse(lastJson(text));r.summary=redact(r.summary);r.verification=r.verification.map(redact);
+  if(a.kind==='plan'){this.wrapUp(a);a.title=r.title||a.brief.slice(0,120);}else if(a.git)this.seal(a);
   a.summary=r.summary+(r.needsInput?`\n\nNeeds your input: ${r.needsInput}`:'');a.verification=r.verification;a.completedAt=now();this.state(a,'review','Briefing written; awaiting your review');
   Object.assign(p.memory,{latest:`Donna reviewed: ${r.summary.slice(0,1200)}`,nextStep:r.needsInput||'Hear the briefing and review the deliverables.',updatedAt:now()});
   this.log(`Donna reviewed: ${a.title}`,a.projectId);
   if(r.needsInput)this.decide({project_id:a.projectId,title:`Input needed: ${a.title}`,context:r.needsInput,status:'open'});
+  if(r.install)this.decide({project_id:a.projectId,title:'Allow a package install',context:`Donna's brain wants to run: ${r.install}. Allow it? Package registries open for one turn.`,options:['Yes, allow it','No'],status:'open'}).decision.action={kind:'install',command:r.install};
   this.save();
   const mail=(this.data.inbox??[]).filter(m=>m.projectId===a.projectId);
   if(a.kind==='plan'&&mail.length&&!this.data.assignments.some(x=>x.kind==='plan'&&x.projectId===a.projectId&&x.status==='queued')){this.data.inbox=this.data.inbox!.filter(m=>m.projectId!==a.projectId);this.queue(p,mail.map(m=>`MESSAGE FOR ${m.worker} (from the user, through Donna's voice): ${m.text}`).join('\n'));}
  }
+ /** Commit what the brain left in the job checkout and record what the job changed since its base. */
+ private seal(a:Assignment){commitAll(a.cwd,"Donna's brain: review fixes");Object.assign(a.git!,report(a.cwd,a.git!.baseSha));}
  /** The brain's own turn is over: close out its crew and collect what it and they left in the project directory. */
  private wrapUp(a:Assignment){
   const crew=this.data.assignments.filter(c=>c.agent?.brainId===a.id);
@@ -281,9 +349,24 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
   this.endCrew(this.data.assignments.filter(c=>c.agent&&c.projectId===a.projectId&&c.status==='paused'),'Lost in a restart');
   a.dependsOn=crew.filter(c=>['review','done'].includes(c.status)).map(c=>c.id);
   const covered=new Set(crew.flatMap(c=>c.artifacts.map(f=>f.path))),own=[...(this.seen.get(a.id)?.files??[])],started=Date.parse(a.startedAt||'')||0;
+  if(a.git){this.seal(a);a.artifacts=this.deliver(a,a.runId!,a.git.files!.filter(f=>!covered.has(f)),true);return;}
   // ponytail: walks the whole directory tree once per turn; fine for a hackathon-sized room.
   const extra=readdirSync(a.cwd,{recursive:true}).map(String).filter(f=>!/(^|[\\/])(\.claude|node_modules|\.git)([\\/]|$)/.test(f)&&!covered.has(f)&&!own.includes(f)).filter(f=>{try{const t=statSync(resolve(a.cwd,f));return t.isFile()&&t.mtimeMs>=started;}catch{return false;}}).slice(0,30);
   a.artifacts=this.deliver(a,a.runId!,[...own,...extra],true);
+ }
+ /** A git room's plan step works on a job branch: continue the open one (follow-ups pile onto one PR), else start a fresh one from the user's HEAD. */
+ private openJob(a:Assignment,p:ProjectOverview){
+  const repo=p.path!,jobDir=this.cwd(p),wt=this.wt(p);mkdirSync(wt,{recursive:true});
+  const open=a.git??this.data.assignments.filter(x=>x.id!==a.id&&x.projectId===p.id&&x.kind&&x.git&&!x.git.prUrl).at(-1)?.git;
+  if(open&&useJob(repo,jobDir,open.branch)){a.git={repo,branch:open.branch,base:open.base,baseSha:open.baseSha};return;}
+  if(existsSync(jobDir))commitAll(jobDir,"Donna's brain: unfinished changes");
+  for(const d of readdirSync(wt))if(resolve(wt,d)!==jobDir)removeCheckout(repo,resolve(wt,d));
+  a.git=startJob(repo,jobDir,a.brief.replace(/^\s*(?:please\s+)?attach\b.*?\band\s+/i,'').replace(/\S*\/\S*/g,' '));// ponytail: slug from the goal minus an "attach <path> and" lead and paths
+ }
+ /** What a brain step may write, read and reach. The git dir and the job checkout are denied: only the office writes git and merges, so a worker can write nowhere but its own checkout. */
+ private sandbox(a:Assignment,p:ProjectOverview):Sandbox{
+  if(p.git&&a.git){const wt=this.wt(p);mkdirSync(wt,{recursive:true});return {write:[wt],deny:[gitDir(a.git.repo),a.cwd],secrets:secretFiles([a.git.repo,a.cwd]),network:!!a.network,addDir:this.office};}
+  return {write:[a.cwd],deny:[],secrets:secretFiles([a.cwd]),network:!!a.network,addDir:this.office};
  }
  async pump(){
   if(this.running||this.stopped)return;this.running=true;
@@ -303,8 +386,10 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
     if(!health.available||health.authenticated===false||health.modelAvailable===false){a.error=health.error||`Local ${name} needs authentication`;this.state(a,'failed',a.error);this.log(a.error,a.projectId);this.save();continue;}
     const revision=a.revision,runId=randomUUID();a.runId=runId;a.startedAt=now();a.completedAt=undefined;a.error=undefined;this.current={id:a.id,runId,threadId:a.sessionId};this.state(a,'working',a.kind?(a.kind==='plan'?'Planning the team':'Reviewing the team\'s work'):a.sessionId?`Resuming native ${name} session`:`Creating native ${name} session; agent will name itself`);this.log(`Local ${name} started: ${a.title}`,a.projectId);this.save();const started=performance.now();
     try{
-     const prompt=this.prompt(a);
-     const result=await runner.run({cwd:a.cwd,threadId:a.sessionId,reasoningEffort:a.reasoningEffort||'low',prompt,onThread:id=>{a.sessionId=id;this.worker(a).sessionId=id;if(this.current?.runId===runId)this.current.threadId=id;if(a.status!=='working')void runner.interrupt(id).catch(()=>{});this.save();},onEvent:e=>{if(a.revision!==revision||a.runId!==runId||a.status!=='working')return;if(a.kind){this.observe(a,e.params);return;}const item=e.params?.item;let action:string|undefined;if(e.method==='item/started'&&item?.type==='commandExecution')action=`Running: ${String(item.command||'local command').slice(0,180)}`;if(e.method==='item/started'&&item?.type==='fileChange')action='Updating project files';if(e.method==='claude/assistant'){const blocks=e.params?.message?.content,tool=Array.isArray(blocks)?blocks.find((c:any)=>c?.type==='tool_use'):undefined;if(tool)action=['Edit','Write'].includes(tool.name)?'Updating project files':'Reading project files';}if(action){this.worker(a).currentAction=action;this.save();}}});
+     const room=this.project(a.projectId);
+     if(a.kind==='plan'&&room.git)this.openJob(a,room);
+     const prompt=this.prompt(a),sandbox=a.kind?this.sandbox(a,room):undefined;
+     const result=await runner.run({cwd:a.cwd,threadId:a.sessionId,reasoningEffort:a.reasoningEffort||'low',prompt,...(sandbox&&{sandbox}),onThread:id=>{a.sessionId=id;this.worker(a).sessionId=id;if(this.current?.runId===runId)this.current.threadId=id;if(a.status!=='working')void runner.interrupt(id).catch(()=>{});this.save();},onEvent:e=>{if(a.revision!==revision||a.runId!==runId||a.status!=='working')return;if(a.kind){this.observe(a,e.params);return;}const item=e.params?.item;let action:string|undefined;if(e.method==='item/started'&&item?.type==='commandExecution')action=`Running: ${String(item.command||'local command').slice(0,180)}`;if(e.method==='item/started'&&item?.type==='fileChange')action='Updating project files';if(e.method==='claude/assistant'){const blocks=e.params?.message?.content,tool=Array.isArray(blocks)?blocks.find((c:any)=>c?.type==='tool_use'):undefined;if(tool)action=['Edit','Write'].includes(tool.name)?'Updating project files':'Reading project files';}if(action){this.worker(a).currentAction=action;this.save();}}});
      appendFileSync(resolve(this.store.root,'executions.jsonl'),JSON.stringify({at:now(),assignmentId:a.id,projectId:a.projectId,provider:a.provider||'codex',runId,revision,threadId:result.threadId,turnId:result.turnId,status:result.status,model:result.model,reasoningEffort:result.reasoningEffort,elapsedMs:performance.now()-started,usage:result.usage,usageMissing:result.usage===undefined,error:result.error,usageScope:'Native thread total is cumulative. Do not sum totals from resumed runs.'})+'\n');
      // Pausing or revising the task invalidates an old completion, even if cancellation races.
      if(!this.isCurrent(a,revision,runId))continue;

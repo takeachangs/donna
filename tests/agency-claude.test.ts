@@ -92,8 +92,17 @@ describe('native Claude Code adapter',()=>{
  it('brain mode: skill-visible, sandboxed args; worker mode keeps the restricted args',async()=>{
   const b=JSON.parse((await client([],3000,true).run({cwd:tmpdir(),prompt:'quick'})).text),v=(f:string)=>b.argv[b.argv.indexOf(f)+1];
   expect(v('--append-system-prompt')).toContain('donna-brain');expect(v('--tools').split(',')).toContain('Skill');
-  expect(b.argv).toEqual(expect.arrayContaining(['Edit(./**)','Write(./**)','--input-format','stream-json','--strict-mcp-config','--setting-sources','project','--effort','medium']));
+  expect(b.argv).toEqual(expect.arrayContaining(['Edit(./**)','--input-format','stream-json','--strict-mcp-config','--setting-sources','project','--effort','medium']));
   expect(b.argv).not.toContain('--restricted');expect(b.argv).not.toContain('--safe-mode');expect(b.prompt).toBe('quick');
+  expect(b.argv).not.toContain('Write(./**)');expect(b.argv).not.toContain('--add-dir');
+  const s0=JSON.parse(v('--settings')).sandbox;expect(s0).toMatchObject({enabled:true,filesystem:{allowWrite:[],denyWrite:[],denyRead:[]},network:{allowedDomains:[]}});
+  const sandbox={write:['/w/repo','/w/data'],deny:['/w/repo/.git'],secrets:['/w/repo/.env.local'],network:false,addDir:'/w/office/.claude/skills'};
+  const c=JSON.parse((await client([],3000,true).run({cwd:tmpdir(),prompt:'quick',sandbox})).text),cv=(f:string)=>c.argv[c.argv.indexOf(f)+1],cs=JSON.parse(cv('--settings')).sandbox;
+  expect(cs.filesystem).toEqual({allowWrite:sandbox.write,denyWrite:sandbox.deny,denyRead:sandbox.secrets});expect(cs.network.allowedDomains).toEqual([]);
+  expect(cv('--add-dir')).toBe(sandbox.addDir);expect(c.argv).toEqual(expect.arrayContaining(['Edit(./**)','Edit(//w/repo/**)','Edit(//w/data/**)','--disallowedTools','Bash(git push:*)','Bash(rm -rf:*)','Read(**/.env)','Read(**/*.pem)','Read(//w/repo/.env.local)','Edit(//w/repo/.env.local)','Edit(//w/repo/.git/**)']));expect(c.argv.indexOf('Edit(//w/repo/.git/**)')).toBeGreaterThan(c.argv.indexOf('--disallowedTools'));
+  expect(c.argv[c.argv.indexOf('--disallowedTools')+1+c.argv.slice(c.argv.indexOf('--disallowedTools')+1).findIndex((x:string)=>x.startsWith('--'))]).toBe('--append-system-prompt');
+  const n=JSON.parse((await client([],3000,true).run({cwd:tmpdir(),prompt:'quick',sandbox:{...sandbox,network:true}})).text);
+  expect(JSON.parse(n.argv[n.argv.indexOf('--settings')+1]).sandbox.network.allowedDomains).toContain('registry.npmjs.org');
   const w=JSON.parse((await client().run({cwd:tmpdir(),prompt:'hi'})).text);
   expect(w.argv).toEqual(expect.arrayContaining(['--restricted','--safe-mode']));expect(w.argv).not.toContain('--input-format');
  });

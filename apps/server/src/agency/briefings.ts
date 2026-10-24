@@ -1,7 +1,8 @@
 import {randomUUID} from 'node:crypto';
 import type {Assignment,Artifact,Worker} from './workspace.js';
+import type {JobGit} from './git.js';
 
-export type Briefing={id:string;assignmentId:string;projectId:string;workerId:string;deliveryKey:string;title:string;summary:string;artifacts:Artifact[];verification:string[];createdAt:string;status:'queued'|'presented'|'superseded';presentedAt?:string;contributors:{name:string;title:string;summary:string}[]};
+export type Briefing={id:string;assignmentId:string;projectId:string;workerId:string;deliveryKey:string;title:string;summary:string;artifacts:Artifact[];verification:string[];createdAt:string;status:'queued'|'presented'|'superseded';presentedAt?:string;contributors:{name:string;title:string;summary:string}[];git?:JobGit};
 export type Presentation={briefingId:string;job:{id:string;cancelled:boolean;failed?:boolean};audioComplete:boolean};
 /** Only the browser's completion for this successful, uncancelled speech counts. */
 export function completedBriefing(p:Presentation|undefined,jobId:string){return p&&p.job.id===jobId&&p.audioComplete&&!p.job.cancelled&&!p.job.failed?p.briefingId:undefined;}
@@ -21,7 +22,7 @@ export function reconcileBriefings(queue:Briefing[],assignments:Assignment[],wor
   if(a.status!=='review'||!a.completedAt||!current(a)||assignments.some(d=>d.dependsOn.includes(a.id))||queue.some(b=>b.deliveryKey===currentKey(a)))continue;
   const chain=chainFor(a),crew=chain.filter(d=>!d.kind);
   if(!chain.flatMap(d=>d.artifacts).length)continue;
-  queue.push({id:randomUUID(),assignmentId:a.id,projectId:a.projectId,workerId:(crew.at(-1)||a).workerId,deliveryKey:currentKey(a),title:a.title,summary:a.summary||'',artifacts:structuredClone(chain.flatMap(d=>d.artifacts)),verification:[...(a.verification||[])],createdAt:a.completedAt,status:'queued',contributors:crew.map(d=>({name:workers.find(w=>w.id===d.workerId)?.name||'Worker',title:d.title,summary:d.summary||''}))});changed=true;
+  queue.push({id:randomUUID(),assignmentId:a.id,projectId:a.projectId,workerId:(crew.at(-1)||a).workerId,deliveryKey:currentKey(a),title:a.title,summary:a.summary||'',artifacts:structuredClone(chain.flatMap(d=>d.artifacts)),verification:[...(a.verification||[])],createdAt:a.completedAt,status:'queued',contributors:crew.map(d=>({name:workers.find(w=>w.id===d.workerId)?.name||'Worker',title:d.title,summary:d.summary||''})),...(a.git&&{git:structuredClone(a.git)})});changed=true;
  }
  return changed;
 }

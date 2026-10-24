@@ -209,11 +209,12 @@ describe('Donna\'s brain as orchestrator',()=>{
     expect(f.workspace.message({project_id:f.project.id,worker:'Mika',text:'Thanks, all good'})).toMatchObject({delivered:'queued'});
     const snap=f.workspace.snapshot();expect(snap.assignments).toHaveLength(before+1);expect(snap.assignments.at(-1)).toMatchObject({kind:'plan',status:'queued',brief:"MESSAGE FOR Mika (from the user, through Donna's voice): Thanks, all good"});expect(snap.inbox ?? []).toHaveLength(0);
   });
-  it('installs the skills into every room workspace',async()=>{
-    const f=fixture(),dir=(id:string)=>resolve(f.root,'workspaces',id,'.claude/skills');
-    expect(existsSync(resolve(dir(f.project.id),'donna-brain/SKILL.md'))).toBe(true);expect(existsSync(resolve(dir(f.project.id),'donna-worker/SKILL.md'))).toBe(true);
+  it('installs the skills once into the office folder and never into a room workspace',async()=>{
+    const f=fixture(),skills=resolve(f.root,'office/.claude/skills');
+    expect(existsSync(resolve(skills,'donna-brain/SKILL.md'))).toBe(true);expect(existsSync(resolve(skills,'donna-worker/SKILL.md'))).toBe(true);
     const r=f.workspace.createProject({name:'Fresh',brief:'x',initial_work:'Build x'}) as {project:{id:string}};
-    expect(existsSync(resolve(dir(r.project.id),'donna-brain/SKILL.md'))).toBe(true);
+    for(const id of [f.project.id,r.project.id])expect(existsSync(resolve(f.root,'workspaces',id,'.claude'))).toBe(false);
+    expect(existsSync(resolve(f.root,'workspaces',r.project.id))).toBe(true);
   });
   it('marks working crew paused after a restart, tells the brain, and fails what it never resumes',async()=>{
     const f=fixture(),{pumping}=await running(f);f.brain.emit(0,agent('t1','Build the page',{name:'Mika'}));f.brain.emit(0,agent('t2','Contact form',{name:'Wren'}));f.brain.emit(0,{type:'user',message:{content:[{type:'tool_result',tool_use_id:'t2',content:'done'}]}});

@@ -130,7 +130,7 @@ it('stops identical failed tool retries instead of silently burning all five rou
 it('opens with rule one and routes every tool by its own job',()=>{
  const rule=secretaryInstructions.indexOf('RULE ONE'),follow=secretaryInstructions.indexOf('FOLLOW THROUGH'),routing=secretaryInstructions.slice(secretaryInstructions.indexOf('WHICH TOOL'),follow);
  expect(rule).toBeGreaterThan(-1);expect(rule).toBeLessThan(follow);expect(secretaryInstructions).toContain('Reply to what the user just said');
- for(const t of secretaryTools){if(!['worker_status','message_worker'].includes(t.name))expect(routing).toContain(t.name);expect(t.description).not.toMatch(/\bNOT\b/);for(const o of secretaryTools)if(o!==t)expect(t.description).not.toContain(o.name);}
+ for(const t of secretaryTools){if(!['worker_status','message_worker','open_pull_request'].includes(t.name))expect(routing).toContain(t.name);expect(t.description).not.toMatch(/\bNOT\b/);for(const o of secretaryTools)if(o!==t)expect(t.description).not.toContain(o.name);}
 });
 
 it.each([["bye",true],["Bye!",true],["Goodbye.",true],["good bye",true],["Bye-bye",true],["Okay, thanks, bye!",true],["Thanks Donna, talk later.",true],["talk soon",true],["Talk to you later",true],["Okay, I'll talk to you later.",true],["No, that's it, bye.",true],["See you",true],["Later!",false],["Later, thanks.",false],["gotta go",true],["Bye for now",true],["thanks, bye Donna",true],["make a page that says bye",false],["say goodbye to the old header",false],["yes",false],["no thanks",false],["how's it going?",false],["make a tiny page that says hi",false],["",false],["Byelorussian history",false]])('hangsUp(%j)=%s',(text,want)=>{expect(hangsUp(text)).toBe(want);});
@@ -208,4 +208,12 @@ it('gives the voice worker_status and message_worker, and tells her when to use 
  expect(t('worker_status').parameters.required).toEqual(['worker']);
  expect(t('message_worker').parameters.required).toEqual(['worker','text']);
  expect(secretaryInstructions).toContain('worker_status');expect(secretaryInstructions).toContain('message_worker');
+});
+
+it('gives the voice open_pull_request: confirm optional, selected room by default, and a rule in the instructions',()=>{
+ const t=secretaryTools.find(x=>x.name==='open_pull_request') as any;
+ expect(t).toBeTruthy();expect(t.parameters.required??[]).not.toContain('confirm');expect(t.parameters.properties.confirm).toBeTruthy();
+ expect(t.parameters.properties.project_id.default).toBe('selected');expect(secretaryInstructions).toContain('open_pull_request');
+ expect(resolveProjectTarget('open_pull_request',{project_id:'selected'},'',[]).project_id).toBeUndefined();
+ expect(()=>resolveProjectTarget('open_pull_request',{project_id:'09410879-ca31-495f-8746-025f15b85d30'},'',[])).toThrow('Unknown project target');
 });

@@ -10,10 +10,14 @@ type Options={command?:string;args?:string[];turnTimeoutMs?:number;statusTimeout
 const NOTE='Verified live 2026-10-24 (Claude Code 2.1.309, claude.ai login, sonnet): a new-session file assignment and a resumed follow-up reached review and the briefing queue.';
 // A low-credit ANTHROPIC_API_KEY in the shell would bill the API instead of the claude.ai login; read at spawn time, never import time.
 const cleanEnv=()=>{const env={...process.env};delete env.ANTHROPIC_API_KEY;return env;};
-// Brain mode (Donna's lead session): fixed tool list; the sandbox confines Bash writes to cwd and Edit(./**)/Write(./**) confine the file tools. --restricted/--safe-mode would hide the project skills, so they are not used.
+// Brain mode (Donna's lead session): fixed tool list; the sandbox confines Bash writes to the write dirs and Edit(path) rules confine the file tools (Edit rules cover Write too). --restricted/--safe-mode would hide the project skills, so they are not used.
+// --setting-sources project keeps ~/.claude/CLAUDE.md out of the brain and its subagents while the repo's own CLAUDE.md loads.
+export type BrainSandbox={write:string[];deny:string[];secrets:string[];network:boolean;addDir:string};
 const BRAIN_TOOLS=['Agent','SendMessage','Skill','Read','Edit','Write','Glob','Grep','Bash'];
-const BRAIN_ALLOWED=['Agent','SendMessage','Skill','Bash','Read','Glob','Grep','Edit(./**)','Write(./**)'];
-const BRAIN_SETTINGS=JSON.stringify({sandbox:{enabled:true,autoAllowBashIfSandboxed:true,allowUnsandboxedCommands:false}});
+const BRAIN_ALLOWED=['Agent','SendMessage','Skill','Bash','Read','Glob','Grep','Edit(./**)'];
+const BRAIN_DENIED=['Bash(git push:*)','Bash(rm -rf:*)','Bash(rm -fr:*)','Bash(git reset --hard:*)','Bash(git branch -D:*)','Bash(git clean:*)','Read(**/.env)','Read(**/.env.*)','Read(**/*.pem)','Read(**/*.key)'];
+const REGISTRIES=['registry.npmjs.org','registry.yarnpkg.com','pypi.org','files.pythonhosted.org','crates.io','index.crates.io','static.crates.io','proxy.golang.org','sum.golang.org','rubygems.org'];
+const brainSettings=(s?:BrainSandbox)=>JSON.stringify({sandbox:{enabled:true,autoAllowBashIfSandboxed:true,allowUnsandboxedCommands:false,filesystem:{allowWrite:s?.write??[],denyWrite:s?.deny??[],denyRead:s?.secrets??[]},network:{allowedDomains:s?.network?REGISTRIES:[]}}});
 const userLine=(t:string)=>JSON.stringify({type:'user',message:{role:'user',content:t}})+'\n';
 
 /** Native Claude Code adapter. Claude Code owns the conversation history; the office keeps only the session ID. */
@@ -48,7 +52,7 @@ export class LocalClaudeCode {
   if(info.loggedIn!==true)return {...base,available:true,authenticated:false,error:'Claude Code is not signed in; run `claude auth login`.'};
   return {...base,available:true,authenticated:true};
  }
- async run(input:CodexRun):Promise<CodexResult>{
+ async run(input:CodexRun&{sandbox?:BrainSandbox}):Promise<CodexResult>{
   if(this.closed)throw Error('Claude adapter is closed');
   if(this.busy)throw Error('Claude adapter is already executing');
   if(!isAbsolute(input.cwd))throw Error('Claude requires an absolute project directory');
@@ -58,8 +62,8 @@ export class LocalClaudeCode {
    const cwd=await realpath(input.cwd);if(!(await stat(cwd)).isDirectory())throw Error('Project directory does not exist');
    if(this.closed)throw Error('Claude adapter is closed');
    const sessionId=input.threadId||randomUUID();
-   const effort=input.reasoningEffort||(this.brain?'medium':'low'),b=this.brain,ids=input.threadId?['--resume',sessionId]:['--session-id',sessionId];
-   const args=b?['--print','--output-format','stream-json','--verbose','--input-format','stream-json','--strict-mcp-config','--setting-sources','project','--settings',BRAIN_SETTINGS,'--permission-mode','dontAsk','--tools',BRAIN_TOOLS.join(','),'--allowedTools',...BRAIN_ALLOWED,'--append-system-prompt','Follow the donna-brain skill.',...ids,'--model',this.model,'--effort',effort]
+   const sb=input.sandbox,effort=input.reasoningEffort||(this.brain?'medium':'low'),b=this.brain,ids=input.threadId?['--resume',sessionId]:['--session-id',sessionId];
+   const args=b?['--print','--output-format','stream-json','--verbose','--input-format','stream-json','--strict-mcp-config','--setting-sources','project','--settings',brainSettings(sb),'--permission-mode','dontAsk','--tools',BRAIN_TOOLS.join(','),...(sb?.addDir?['--add-dir',sb.addDir]:[]),'--allowedTools',...BRAIN_ALLOWED,...(sb?.write??[]).map(w=>`Edit(/${w}/**)`),'--disallowedTools',...BRAIN_DENIED,...(sb?.deny??[]).map(d=>`Edit(/${d}/**)`),...(sb?.secrets??[]).flatMap(x=>[`Read(/${x})`,`Edit(/${x})`]),'--append-system-prompt','Follow the donna-brain skill.',...ids,'--model',this.model,'--effort',effort]
     :['--print','--output-format','stream-json','--verbose','--restricted','--safe-mode','--permission-mode','dontAsk','--tools',this.tools.join(','),'--allowedTools',...this.tools,...ids,'--model',this.model,'--effort',effort];
    // Native binary or explicit AGENCY_CLAUDE_BIN; never interpolate a shell command.
    // Restricted + safe mode keeps file tools in cwd and excludes shell, hooks and MCP.
