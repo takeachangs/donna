@@ -30,7 +30,7 @@ Grep this folder first: `grep -rn "<term>" docs/`. Every file is plain markdown 
 | delegation layer design (GPT-Live parity mapping, progress channels) | delegation-design.md |
 | the delegation layer itself (GPT-Live-shaped API on Higgs) | ../higgslive.py; bridge = ../bridge.py |
 | hackathon rules, tracks, judging weights, submission form fields | hackathon.md |
-| **Donna and the herd**: one voice secretary (a Claude Code session) spawning headless workers; remuda-derived contract (dirs, events.jsonl), MacBook ring mode, Saturday order | herd.md |
+| **Donna and the herd**: the mailbox between the voice and the brain (a Claude Code session): reply kinds and task lifecycle, hook reducer, ring mode, transfer | herd.md |
 | **Realtime 1.5 preview: findings, frontier-API gap list, Twilio phone-in design** (Oct 23 team probe; raw in `../probe/r15/`) | realtime-1.5.md |
 | LIVE avatar (lip-sync in a LiveKit room, shipped Oct 23 evening) | models/higgs-avatar/realtime-sessions.md, api-reference/avatar-realtime/*.md |
 | server-side web_search tool in Realtime (shipped Oct 23 evening) | models/higgs-realtime/guides/tool-calling.md#web-search |

@@ -57,7 +57,7 @@ Changing any of these means changing every side in the same commit.
 - `~/.higgs/state.json` `{"state": "off|ringing|listening|thinking|speaking", "with": "<name>"}` (`with` while a call is on:
   "donna" or the worker the user was put through to, #28): `bridge.py` writes it every 250 ms, `off` last; `herd.office()`
   reads a file older than 3 s as `off` and turns `with` into `office.json` `call.with` (that worker's id, or "donna").
-- Herd line shapes (`docs/herd.md` §4, §6, §8). Inbox `{id, task, context, from, ts}` plus `transcript` (`[[role, text]]`,
+- Herd line shapes (`docs/herd.md` §3, §6, §7). Inbox `{id, task, context, from, ts}` plus `transcript` (`[[role, text]]`,
   role `user`/`assistant`, the call's last 12 turns), `in_reply_to` (the answer to an `ask`), `replaces` (a correction),
   `with` (the worker the user is on the line with: the brain forwards to them, #28).
   Outbox `{id, kind: take|note|ask|say|fail|transfer, text, ts}` (`transfer`: text = the worker's name). Writers `bridge.py`, `herd.py`; readers the `/call` skill,
