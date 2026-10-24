@@ -24,15 +24,17 @@ export type NpcState =
   | 'celebrating'
   | 'emoting'
   | 'departing'
+  | 'resting'
 
 const STATE_TRANSITIONS: Record<NpcState, Set<NpcState>> = {
-  idle:        new Set(['walking', 'working', 'thinking', 'celebrating', 'emoting', 'departing']),
+  idle:        new Set(['walking', 'working', 'thinking', 'celebrating', 'emoting', 'departing', 'resting']),
   walking:     new Set(['idle', 'working']),
   working:     new Set(['idle', 'thinking', 'celebrating', 'departing']),
   thinking:    new Set(['idle', 'working', 'celebrating']),
   celebrating: new Set(['idle', 'departing']),
   emoting:     new Set(['idle']),
   departing:   new Set(['idle']),
+  resting:     new Set(['idle']),
 }
 
 export class NPC {
@@ -72,6 +74,8 @@ export class NPC {
   private readingAction: THREE.AnimationAction | null = null
   private frustratedAction: THREE.AnimationAction | null = null
   private dancingAction: THREE.AnimationAction | null = null
+  private sitAction: THREE.AnimationAction | null = null
+  private sipAction: THREE.AnimationAction | null = null
   private currentAction: THREE.AnimationAction | null = null
 
   private glowRing: THREE.Mesh | null = null
@@ -246,6 +250,8 @@ export class NPC {
       this.readingAction = bind('reading')
       this.frustratedAction = bind('frustrated')
       this.dancingAction = bind('dancing')
+      this.sitAction = bind('sit')
+      this.sipAction = bind('sip')
     } else {
       const animMap: Record<string, THREE.AnimationClip> = {}
       for (const clip of clips) animMap[clip.name.toLowerCase()] = clip
@@ -266,6 +272,8 @@ export class NPC {
       const readingClip = find('interact', 'interact-left')
       const frustratedClip = find('emote-no')
       const dancingClip = find('dance')
+      const sitClip = find('sit')
+      const sipClip = find('holding-right')
 
       if (idleClip) this.idleAction = this.mixer.clipAction(idleClip)
       if (walkClip) this.walkAction = this.mixer.clipAction(walkClip)
@@ -275,6 +283,8 @@ export class NPC {
       if (readingClip) this.readingAction = this.mixer.clipAction(readingClip)
       if (frustratedClip) this.frustratedAction = this.mixer.clipAction(frustratedClip)
       if (dancingClip) this.dancingAction = this.mixer.clipAction(dancingClip)
+      if (sitClip) this.sitAction = this.mixer.clipAction(sitClip)
+      if (sipClip) this.sipAction = this.mixer.clipAction(sipClip)
     }
   }
 
@@ -396,6 +406,10 @@ export class NPC {
         this.state = 'walking'
         this.playAnimInternal('walk')
         break
+      case 'resting':
+        this.state = opts?.anim === 'sip' ? 'sip' : 'sit'
+        this.playAnimInternal(this.state)
+        break
     }
   }
 
@@ -410,6 +424,8 @@ export class NPC {
       frustrated: this.frustratedAction ?? this.idleAction,
       dancing: this.dancingAction ?? this.cheerAction,
       thinking: this.idleAction,
+      sit: this.sitAction ?? this.idleAction,
+      sip: this.sipAction ?? this.idleAction,
     }
     const action = map[name] ?? map['idle']
     if (!action) return
@@ -893,6 +909,8 @@ export class NPC {
     this.readingAction = null
     this.frustratedAction = null
     this.dancingAction = null
+    this.sitAction = null
+    this.sipAction = null
     this.currentAction = null
     this.bodyMesh = null
     this.headMesh = null
