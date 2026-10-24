@@ -10,7 +10,7 @@ initLocale();setLocale('en')
 const root=document.querySelector<HTMLDivElement>('#agency-root')!
 root.innerHTML=`<main class="agency-shell">
  <nav class="agency-rail" aria-label="${t('agency.rooms')}">
-  <a class="agency-brand" href="agency.html"><span class="brand-mark" aria-hidden="true">a.</span><span>${t('agency.title')}</span></a>
+  <a class="agency-brand" href="agency.html"><span class="brand-mark" aria-hidden="true">c.</span><span>${t('agency.title')}</span></a>
   <p class="rail-label">${t('agency.workspace')}</p>
   <button id="secretary-room" class="nav-item" aria-pressed="true"><span class="nav-icon" aria-hidden="true">◉</span>${t('agency.secretary_short')}</button>
   <button id="command-room" class="nav-item" aria-pressed="false"><span class="nav-icon" aria-hidden="true">⊞</span>${t('agency.command_room')}</button>

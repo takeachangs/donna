@@ -1,4 +1,6 @@
-# Personal Agency
+# Chamber
+
+**Your personal office for AI work.** Each project has a room; your secretary keeps work moving, and the Command room brings decisions together.
 
 A local personal office: speak to a Higgs secretary, delegate real work to local Codex sessions, and review actual deliverables in project rooms. The Command room brings together decisions and results. Workers name themselves; the secretary chooses the team size.
 

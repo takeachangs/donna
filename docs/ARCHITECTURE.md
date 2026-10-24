@@ -1,6 +1,6 @@
 # Architecture
 
-Personal Agency is a local application with one browser client and one Node server. The room scene is a view of real work, not another agent runtime.
+Chamber is a local application with one browser client and one Node server. The room scene is a view of real work, not another agent runtime.
 
 ## Runtime
 

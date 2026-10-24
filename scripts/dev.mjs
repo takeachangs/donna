@@ -22,5 +22,5 @@ function launch(args){
 // No watcher on the execution server: frontend edits must not interrupt a native task.
 launch(['--import','tsx','apps/server/src/agency/server.ts']);
 launch(['node_modules/vite/bin/vite.js','--config','apps/web/vite.config.ts']);
-console.log('Personal Agency: http://127.0.0.1:5183/');
+console.log('Chamber: http://127.0.0.1:5183/');
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>shutdown());

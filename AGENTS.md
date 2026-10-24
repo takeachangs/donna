@@ -1,4 +1,4 @@
-# Personal Agency
+# Chamber
 
 This repository contains the personal office product only. Read `README.md` and `docs/ARCHITECTURE.md` for the current architecture. Historical experiments are not product requirements.
 
