@@ -109,9 +109,9 @@ Grep this folder first: `grep -rn "<term>" docs/`. Every file is plain markdown 
   requests with no context: a first-turn `delegate_task` in 1/10, and that one filled the blank ("explains the topic of the user's
   request"; the 09:48 call wrote "how the delegate_task function works", her own tool's name); the rest said "I'm on it" with no call
   or interviewed ("Could you please provide more details…"). MECHANICS "the task is the user's request in their own words… a 'this'
-  the call has not explained stays as they said it" + "never ask the user what 'this' is": the call carries their words in 19/20, 0
+  the call has not explained stays as they said it" + "never ask the user what 'this' is": the call carries their words in 18-19 of 20 (two runs), 0
   invented objects, but on the first turn only 4/20 (12 "I'm on it", 4 interviews), so the GUARD's nudge does the rest (interview
-  phrases now count as OFFER; NUDGE says "in their words"). Status words: "how many agents", "the lounge", "any reports", "the office"
+  phrases now count as OFFER, except while an ask is being relayed: "could you tell me…" is how the voice asks; NUDGE says "in their words"). Status words: "how many agents", "the lounge", "any reports", "the office"
   called `task_status` 5/10 → 20/20 once its description named "the agents (workers)… results not told yet" and MECHANICS listed the
   words. "What did I ask you earlier?" went to `task_status` 9/9 even when MECHANICS said `delegate_task` (descriptions win), so the
   status carries the duty period's earlier results. File questions still go to `delegate_task` (6/6); r26 first-turn 12/12.

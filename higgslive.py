@@ -91,7 +91,7 @@ OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|fi
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
                    r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
                    r"(i'?ll|i (can|could)|let me)\s+(whip|draft|put (\w+ )?together|set (\w+ )?up|sketch)|"
-                   r"(could|can) you (please )?(provide|share|clarify|specify|describe|tell me (what|more|the))|what \W?(this|that|it)\W? refers to|need (a bit |some )?more detail)")   # asking permission instead of calling; offering to draft (Oct 24 calls); interviewing about "this" (#43 probe: 7/20)
+                   r"(could|can) you (please )?(provide|share|tell me more)|what \W?(this|that|it)\W? refers to|you'?re referring to|need (a bit |some )?more detail)")   # asking permission instead of calling; offering to draft (Oct 24 calls); interviewing about "this" (#43 probe: 7/20)
 PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c.txt: no paths in speech
 PENDING_LINE = "Still on it; I'll call you when it's done."   # what a reply that reports a result nobody sent is replaced by (#32)
 DONE = re.compile(r"\b(has|have|'s|is|was|are|were)\s+(been\s+)?(now\s+|all\s+)?(ready|live|in place)\b|(?<!you're )(?<!you are )\ball set\b|(?<!we're )(?<!you're )(?<!i'm )\bdone\b|"
@@ -435,7 +435,7 @@ class Conn:
             if status and not calls:
                 st["guarded"] = True; await self._send({"type": "response.create"})   # same socket, so the output is added before the reply is made
                 self._emit("response.done", calls=1, pending=len(self._pending)); return
-            if self.delegation and not calls and self._fake_claim() and not st["guarded"] and not st["turn_delegated"] \
+            if self.delegation and not calls and self._fake_claim() and not st["asked"] and not st["guarded"] and not st["turn_delegated"] \
                     and (not self._pending or self._relay or ASKED.search(st["last_user"].lower())):   # a task is running: "on it" to "are you done?" is no fake claim (Oct 24 call)
                 st["guarded"] = True   # ponytail: one forced retry per user turn, no loop
                 log.info("GUARD: reply claimed or offered a task without calling %s — nudging", TOOL)
@@ -497,8 +497,8 @@ if __name__ == "__main__":   # self-check: no network
     assert CLAIM.search("i've sent that off") and not CLAIM.search("sure, what else?")
     assert all(CLAIM.search(x) for x in ("i've handed that task off", "i've handed off the task", "i'm handing off the request", "got it. i'll have the agent take a look"))
     assert ASKED.search("make me a page") and OFFER.search("i'll create it for you")
-    assert all(OFFER.search(x) for x in ("sure. could you please provide more details about what the diagram should show?", "i'm not sure what \"this\" refers to. could you clarify?", "i can help with that, but i need a bit more detail."))   # #43
-    assert ASKED.search("can you put this into a slide?") and not any(OFFER.search(x) for x in ("sorry, could you say that again?", "should the page be blue or green?"))
+    assert all(OFFER.search(x) for x in ("sure. could you please provide more details about what the diagram should show?", "i'm not sure what \"this\" refers to. could you clarify?", "i can help with that, but i need a bit more detail.", "could you clarify what you're referring to?"))   # #43
+    assert ASKED.search("can you put this into a slide?") and not any(OFFER.search(x) for x in ("sorry, could you say that again?", "sorry, could you clarify that?", "should the page be blue or green?"))
     assert REPLACING.search("Write a poem about dogs, replacing the previous task") and not REPLACING.search("replace the previous header in index.html")
     assert all(OFFER.search(x) for x in ("i can't create files myself, but i can delegate that. shall i set that up?", "shall i set that up?",
                                          "want me to delegate that?", "would you like me to hand that off?")) and not OFFER.search("sure, what else?")
@@ -542,9 +542,10 @@ if __name__ == "__main__":   # self-check: no network
         assert "open it, has been running" in sent[0]["item"]["output"], sent
     c, sent = Conn(None, 24000), []   # GUARD while a task runs: only a new request without a call gets the nudge
     c._send, c.delegation, c._pending = rec, True, {"d1"}
-    for user, voice, nudged in (("are you done? like.", "on it, just a sec while that updates.", False),
-                                ("add a sleek hero section to it", "i'll whip up a hero section with a clean layout.", True)):
-        sent.clear(); c._st.update(last_user=user, last_voice=voice, guarded=False, turn_delegated=False)
+    for user, voice, nudged, asked in (("are you done? like.", "on it, just a sec while that updates.", False, False),
+                                       ("add a sleek hero section to it", "i'll whip up a hero section with a clean layout.", True, False),
+                                       ("make me a page", "could you tell me what colour you'd like, blue or green?", False, True)):   # relaying a worker's ask (#43: interview words are OFFER)
+        sent.clear(); c._st.update(last_user=user, last_voice=voice, guarded=False, turn_delegated=False, asked=asked)
         asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "message", "content": [{"transcript": voice}]}]}}))
         assert any(e.get("item", {}).get("content", [{}])[0].get("text") == NUDGE for e in sent) == nudged, (user, sent)
     STILL_WORKING_AT = 0   # a "still working" note queued before or after the result came in is dropped; the result gets the cue
