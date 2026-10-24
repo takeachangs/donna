@@ -120,7 +120,8 @@ export default {
   'agency.rename_note': 'The room name changes. Its work, files and sessions stay together.',
   'agency.delete_project': 'Delete room…',
   'agency.delete_question': 'Move “{name}” to Recently deleted?',
-  'agency.delete_note': 'The room leaves your floor and active work pauses. Files and reports are kept so you can restore it.',
+  'agency.delete_note':
+    'The room leaves your floor and active work pauses. Files and reports are kept so you can restore it.',
   'agency.move_to_trash': 'Move to Recently deleted',
   'agency.recently_deleted': 'Recently deleted',
   'agency.restore_note': 'Restore a room with its original work. Paused tasks stay paused until you resume them.',
@@ -131,4 +132,4 @@ export default {
   'agency.project_renamed': 'Room name saved.',
   'agency.project_deleted': 'Room moved to Recently deleted. Work is kept.',
   'agency.project_restored': 'Room restored. Paused work stays paused.',
-}
+};

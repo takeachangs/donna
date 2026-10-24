@@ -131,4 +131,4 @@ export default {
   'agency.project_renamed': '房间名称已保存。',
   'agency.project_deleted': '房间已移到“最近删除”，工作已保留。',
   'agency.project_restored': '房间已恢复，已暂停的工作保持暂停。',
-}
+};
