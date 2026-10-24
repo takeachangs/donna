@@ -26,7 +26,7 @@ server-side `_delegate` is a stub; 1.5's version is a thinking-only background m
 - Higgs tool calls are **asynchronous**: a function call can stay open across turns and its output be returned later. The layer leaves the call open and returns the backend's answer as the real `function_call_output`. Docs don't say this.
 - Tool name is `delegate_task`. **Never `delegate`** (or `web_search`): the server hijacks those names and runs them itself.
 - Only `tool_choice: "auto"` works. `response.create` must be bare (a body makes the model greet from scratch). Wait for `conversation.item.added` before requesting a reply to an injected item.
-- Turn detection: server defaults on purpose (`{"type":"server_vad"}`, threshold 0.85) to measure the baseline.
+- Turn detection: `server_vad` (threshold 0.85); `silence_duration_ms` 800 on a live mic (`--silence-ms` overrides): the server's 500, and our 400 tuned on a TTS clip, cut real speech mid-sentence. `--text`/`--wav` keep the server default.
 - Realtime 1.5 preview (`higgs-realtime-1.5-preview`): works, same protocol; `connect(model=…)`. Full findings `docs/realtime-1.5.md`. Caveats: ~2 simultaneous generations per key (one key per live call, retry on `upstream_error`); it sometimes claims a handoff without calling `delegate_task`; its background "thinking" model is not reachable in the API (`_delegate` is still the stub).
 
 ## Running
