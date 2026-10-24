@@ -13,18 +13,12 @@
     "build": "npm run typecheck && vite build --config apps/web/vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:live": "tsx scripts/agency-workspace-live.ts",
     "check:repo": "node scripts/check-repo.mjs",
-    "doctor": "node scripts/doctor.mjs",
-    "soak": "node scripts/soak.mjs",
-    "e2e:voice": "node scripts/e2e-voice.mjs",
     "package:source": "node scripts/package-source.mjs"
   },
   "dependencies": {
-    "dotenv": "17.4.2",
     "three": "0.162.0",
-    "ws": "8.22.0",
-    "zod": "4.6.7"
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
