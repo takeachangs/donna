@@ -45,20 +45,21 @@ STATUS_DEF = {"type": "function", "name": STATUS, "description": "Says what the 
               "who is working on what and for how long, who is idle, what finished. Use it whenever the user asks how it's going, "
               "what's happening, or whether something is done.", "parameters": {"type": "object", "properties": {}}}
 MECHANICS = f"""## Delegation mechanics
-You cannot create, open, read, run, or look up anything yourself; the {TOOL} tool hands the job to an agent that can.
-Call {TOOL} first, then speak. Never say you can't, never ask for confirmation first. Describe the task in plain English as
-a complete request (what, where, what the result should be), never as a shell command or code.
-{TOOL} runs in the background; its result arrives later as the tool's output, often several turns after the call. Right after
-calling it, say in one short sentence that you've handed it off, then ask what else you can help with while it runs. Keep the
-conversation going on whatever the user brings up. Never guess or report the result before the tool's output arrives; when it
-does, bring it up as a natural aside and give the outcome in your own words. Never report an action as done, running, or sent
-unless you called {TOOL}.
+Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
+same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
+After the call, one short sentence that it's underway.
+Reply to what the user just said. Mention a running task only if they ask or when its result arrives.
+{TOOL} hands the job to an agent on the user's computer. Describe the task in plain English as a complete request (what, where,
+what the result should be), never as a shell command or code. It runs in the background; its result arrives later as the tool's
+output, often several turns after the call. Never guess or report the result before it arrives; when it does, bring it up as a
+natural aside and give the outcome in your own words. Never report an action as done, running, or sent unless you called {TOOL}.
 When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; never claim progress or results you did not get from a tool."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
 CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending)|should be running|backend result)")
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send)|let me\s+(creat|mak|check|look|run|open|see)|"
-                   r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html))")
+                   r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
+                   r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate)")   # asking permission instead of calling (Oct 24 call)
 PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c.txt: no paths in speech
 
 
@@ -276,7 +277,9 @@ if __name__ == "__main__":   # self-check: no network
     assert CLAIM.search("i've sent that off") and not CLAIM.search("sure, what else?")
     assert all(CLAIM.search(x) for x in ("i've handed that task off", "i've handed off the task", "i'm handing off the request"))
     assert ASKED.search("make me a page") and OFFER.search("i'll create it for you")
-    assert TOOL in MECHANICS and "[progress" not in MECHANICS and STATUS in MECHANICS
+    assert all(OFFER.search(x) for x in ("i can't create files myself, but i can delegate that. shall i set that up?", "shall i set that up?",
+                                         "want me to delegate that?", "would you like me to hand that off?")) and not OFFER.search("sure, what else?")
+    assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
         os.environ["HIGGS_HOME"], h, now = tmp, Path(tmp) / "herd", time.time()

@@ -65,7 +65,7 @@ async with higgslive.connect(playback=True) as conn:            # BOSON_API_KEY;
 Inside the layer: the function tool is `delegate_task(task)` (`delegate` is reserved server-side). Higgs tool calls are ASYNCHRONOUS (confirmed
 with a Boson engineer + probe, Oct 23): the call stays open while the conversation continues, so the layer returns no output at call time, just a
 bare response.create for the acknowledgement, and the backend's answer later becomes the call's actual output. The mechanics
-prompt (call first, hand-off sentence + offer, never guess, "[progress"/"[result" handling) is appended to the app's instructions; one
+prompt (rule one: call at once, never ask permission; reply to what the user just said; never guess; agent_status for progress) is appended to the app's instructions; one
 nudge per user turn when the voice claims a task without calling; a spoken "taking longer" note at 25 s; `tool_choice` always auto.
 Findings along the way: assistant-role thinking notes make the model continue them and invent results (reverted to user role + delete);
 `create_response: false` is ignored so a classifier cannot gate the reply; `usage` is always null; context window is 32k (models endpoint).
