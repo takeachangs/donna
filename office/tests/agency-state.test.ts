@@ -1,38 +1,66 @@
-import {describe,it,expect} from 'vitest';
-import {mkdtempSync,rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {OfficeStore} from '../apps/server/src/agency/state';
-import {Projects} from '../apps/server/src/agency/projects';
-import {cost} from '../apps/server/src/agency/higgs';
+import { afterEach, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { emptyWorkspace, parseOffice, watchOffice, type Office } from '../apps/server/src/agency/state';
 
-function withStore(test:(store:OfficeStore)=>void){
- const dir=mkdtempSync(join(tmpdir(),'agency-store-'));
- try{test(new OfficeStore(dir))}finally{
-  if(!dir.startsWith(join(tmpdir(),'agency-store-')))throw Error('Unexpected test directory');
-  rmSync(dir,{recursive:true,force:true});
- }
-}
+const dirs: string[] = [];
+afterEach(() => {
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+const tmp = () => {
+  const d = mkdtempSync(join(tmpdir(), 'office-state-'));
+  dirs.push(d);
+  return d;
+};
+/** The producer's write: tmp + rename. */
+const write = (file: string, value: unknown) => {
+  writeFileSync(file + '.tmp', typeof value === 'string' ? value : JSON.stringify(value));
+  renameSync(file + '.tmp', file);
+};
+const until = async (ok: () => boolean) => {
+  for (let i = 0; i < 100 && !ok(); i++) await new Promise((r) => setTimeout(r, 20));
+  expect(ok()).toBe(true);
+};
 
-describe('project persistence and compatibility',()=>{
- it('preserves project records and isolates new projects',()=>withStore(store=>{
-  const projects=new Projects(store),a=projects.create({name:'Launch',brief:'English launch plan'}),b=projects.create({name:'Research'});
-  const saved=store.load(a.id);saved.documents.push({id:'draft',title:'Existing draft',body:'Keep this original document.',author:'iris',revision:2,updatedAt:'2026-10-23T00:00:00Z'});
-  saved.tasks.push({id:'old-task',owner:'iris',title:'Draft',brief:'Legacy task',status:'done',revision:3,documentId:'draft'});
-  store.save(saved);
-  expect(new OfficeStore(store.root).load(a.id)).toEqual(saved);
-  expect(store.load(b.id).documents).toEqual([]);
-  expect(new Projects(store).list()).toEqual([a,b]);
-  projects.register({id:a.id,name:'Duplicate'});expect(projects.list()).toHaveLength(2);
-  expect(store.load(a.id).documents[0].body).toBe('Keep this original document.');
- }));
- it('rejects invalid paths and empty project names',()=>withStore(store=>{
-  expect(()=>store.load('../secret')).toThrow('Invalid');
-  expect(()=>new Projects(store).create({name:' '})).toThrow();
- }));
- it('keeps missing usage distinct from measured zero',()=>{
-  expect(cost(undefined)).toBeUndefined();
-  expect(cost({input_tokens:0,output_tokens:0})).toBe(0);
-  expect(cost({input_tokens:1000,output_tokens:1000,input_token_details:{cached_tokens:200}})).toBeCloseTo(.00515);
- });
+it('shows Donna alone, off the line, for a missing or invalid file', () => {
+  for (const text of ['', '{', '[]', 'null', '42']) expect(parseOffice(text)).toBeUndefined();
+  const file = join(tmp(), 'office.json'),
+    w = watchOffice(file, () => {});
+  expect(w.get()).toEqual({ workspace: emptyWorkspace(), state: 'missing', updated: null });
+  expect(w.get().workspace.secretary.name).toBe('Donna');
+  expect(w.get().workspace.call.state).toBe('off');
+  w.close();
+});
+
+it('fills missing lists, secretary and call from the empty workspace', () => {
+  const w = parseOffice('{"revision":3,"workers":{},"call":"speaking"}')!;
+  expect(w.revision).toBe(3);
+  expect(w.workers).toEqual([]);
+  expect(w.briefings).toEqual([]);
+  expect(w.secretary).toEqual(emptyWorkspace().secretary);
+  expect(w.call).toEqual({ state: 'off' });
+});
+
+it('calls back once now and on every renamed-over write, also in a folder created later, and only on a change', async () => {
+  const file = join(tmp(), 'later', 'office.json'),
+    seen: Office[] = [],
+    w = watchOffice(file, (o) => seen.push(o), 50);
+  expect(seen.map((o) => o.state)).toEqual(['missing']);
+  mkdirSync(join(file, '..'));
+  write(file, { ...emptyWorkspace(), revision: 1, call: { state: 'ringing' } });
+  await until(() => seen.length === 2);
+  expect(seen[1].state).toBe('file');
+  expect(seen[1].workspace.call.state).toBe('ringing');
+  expect(seen[1].updated).toMatch(/^\d{4}-/);
+  write(file, { ...emptyWorkspace(), revision: 2 });
+  await until(() => seen.at(-1)?.workspace.revision === 2);
+  const n = seen.length;
+  write(file, { ...emptyWorkspace(), revision: 2 });
+  await new Promise((r) => setTimeout(r, 200));
+  expect(seen.length).toBe(n);
+  write(file, '{"revision":');
+  await until(() => seen.at(-1)?.state === 'missing');
+  expect(w.get().workspace).toEqual(emptyWorkspace());
+  w.close();
 });
