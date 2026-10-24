@@ -31,7 +31,7 @@ Two processes: Donna (a Claude Code session running `/call`) and the phone (`bri
    ```bash
    uv run herd.py send donna "create notes.txt with today's date in it"
    ```
-   Expected events: `task.sent` → `agent.state working` → `task.note` → `task.done` → `agent.state idle` →
+   Expected events: `task.sent` → `task.taken` (+ `agent.state working`) → `task.note` → `task.done` → `agent.state idle` →
    `call.ring` → `call.answered` → `agent.state on_call` → `voice.speaking`. `bridge.log`:
    ```
    event call.ring {'about': "Done. Notes.txt is created in the project folder with today's date, October 23rd, 2026."}
@@ -43,7 +43,13 @@ Two processes: Donna (a Claude Code session running `/call`) and the phone (`bri
    a `task.sent` with `"from": "voice"` and the same id, Donna works, her `say` is spoken in the same call. A task sent
    with `herd.py send` while the call is live is also spoken in the call (`VOICE: Just got the update: …`); if the call
    has already ended, it rings again.
-6. "How's it going?" is answered from the herd (`task_status → …` in `bridge.log`), not by interrupting Donna.
+6. "How's it going?" is answered from the herd (`task_status → …` in `bridge.log`), not by interrupting Donna. With two
+   tasks given in a row, the second is "waiting in Donna's queue" until her `take`; nothing is said about that unless asked.
+7. A decision mid-task: Donna's `reply donna <id> ask "Blue or green?"` is spoken at once (`→ ask` in `bridge.log`), the
+   voice asks in its own words, and whatever the user says next goes back to her inbox with `in_reply_to` (`answer → donna`
+   in the log). Her `say` then follows the speech policy (`docs/herd.md` §8): held while the voice has an unanswered
+   question or the user is talking (`holding result …`), spoken after 2.5 s of quiet (`→ commentary … after 2.6 s quiet`),
+   or attached to the user's next turn if they start talking first (`→ attached held result …`).
 
 ## Hang up, stop
 - Hang up: say "bye" (or "that's all"), or stay quiet for 60 s. Expected: `call.ended` with `reason` `goodbye` or
@@ -58,3 +64,7 @@ claude --bg --name donna-e2e --permission-mode auto "/call"   # Donna
 uv run herd.py send donna "create notes.txt with today's date in it"
 claude stop <id>; pkill -f "bridge.py --ring"                  # when call.ended reason=silence is in the log
 ```
+The lifecycle without a Claude session: `uv run tests/fake_donna.py --demo` runs a scripted Donna (take → note → ask →
+waits for the answer → say) against `bridge.py --ring --silent --backend session` in a temporary `HIGGS_HOME`, types the
+answer on the bridge's stdin, and prints the `bridge.log` slice. In `--ring --silent`, a non-empty line on stdin is a typed
+user turn.
