@@ -372,22 +372,20 @@ def set_state(s):
     except (SystemExit, Exception) as e: log("set_state failed:", repr(e))
 
 async def watch_outbox():
-    pos = os.path.getsize(OUTBOX) if os.path.exists(OUTBOX) else 0
+    import notifications
+    queued, started = set(), time.time()
     while True:
+        for m in notifications.pending():
+            if m['key'] not in queued and m['id'] not in CLAIMED:
+                queued.add(m['key']); SAYS.put_nowait((m['kind'], m['id'], m['text']))
+        # Transfers are commands for this live call, never callbacks to recover after restart.
+        for m in herd.tail(herd.root()/'donna/outbox.jsonl'):
+            if m.get('kind') == 'transfer' and m.get('ts', 0) >= started and m['id'] not in CLAIMED:
+                k = notifications.key(m)
+                if k in queued: continue
+                queued.add(k)
+                if NOW['call']: SAYS.put_nowait(('transfer', m['id'], m['text']))
         await asyncio.sleep(0.3)
-        try:
-            if (size := os.path.getsize(OUTBOX)) < pos: pos = 0
-            if size == pos: continue
-            with open(OUTBOX, "rb") as f: f.seek(pos); data = f.read()
-        except OSError: pos = 0; continue
-        if b"\n" not in data: continue
-        data = data[:data.rindex(b"\n") + 1]; pos += len(data)   # only complete lines
-        for line in data.splitlines():
-            try:
-                m = json.loads(line)
-                if m.get("kind") == "transfer" and not NOW["call"]: log(f"transfer to {m.get('text')} dropped: nobody is on the line"); continue   # never rings (#28)
-                if m.get("kind") in ("say", "ask", "fail", "transfer") and m.get("text") and m.get("id") not in CLAIMED: SAYS.put_nowait((m["kind"], m["id"], m["text"]))
-            except Exception: continue
 
 async def call(seed: str, transcript: list, who: dict | None = None, opener: str | None = None) -> str:
     """One Higgs session, start to hang-up, or one segment of a call (#28): `who` = the worker the user was put through to
@@ -395,6 +393,9 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
     "transfer:<name>" or "back"."""
     spk: queue.Queue = queue.Queue(); loop = asyncio.get_running_loop()
     st = {"done": False, "pending": 0, "spoke_result": False, "act": time.monotonic(), "play_until": 0.0, "bye": None, "vs": False, "vu": False}   # act: last user word or result; play_until: estimated end of the voice's audio
+    import notifications
+    receipts = {m['id']: m for m in NOW.pop('opening', [])}
+    receipt_epoch, response_spoke = 0, False
     def end(reason):
         if not st["done"]: st.update(done=True, reason=reason)
     turns = TURNS   # transcript: [role, text], role "user"|"assistant" (Mike's shape), kept across segments; the last 12 go with every inbox line
@@ -529,6 +530,11 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
         if not args.text: tasks.append(asyncio.create_task(guard_idle()))
 
         async def events():
+            nonlocal receipt_epoch, response_spoke
+            async def confirm_spoken(messages, until, epoch):
+                while time.monotonic() < until: await asyncio.sleep(0.1)
+                if epoch == receipt_epoch and not st.get('audio_failed'):
+                    for message in messages: notifications.acknowledge(message)
             async for ev in conn:
                 t = ev.type
                 if os.environ.get("DEBUG") and t == "raw": log("  ev:", ev.raw_type)
@@ -542,6 +548,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                 elif t == "error": log("ERROR", ev.error)
                 elif t == "session.closed": log("session closed:", ev.reason); end(ev.reason)
                 elif t == "session.input_speech_started":   # VAD alone (noise can trigger it) does not restart the idle clock: words do
+                    receipt_epoch += 1; receipts.clear(); response_spoke = False
                     st["over"] = time.monotonic() < st["play_until"] + ECHO_TAIL   # began while the voice was audible: its transcript may be her echo (#34)
                     clear_spk(); st["play_until"] = 0.0; log("… user speaking (barge-in: playback cleared)")
                     if args.ring and not st["vu"]: st["vu"] = True; event("voice.user")
@@ -560,6 +567,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     if args.ring and not st["vs"]: st["vs"] = True; event("voice.speaking")
                     if not args.silent: spk.put(base64.b64decode(ev.delta))
                 elif t == "session.output_transcript.done":
+                    response_spoke = bool(ev.transcript.strip())
                     secs = st.pop("audio_bytes", 0) / (RATE * 2); words = len(ev.transcript.split())
                     log(f"VOICE ({secs:.1f}s, {words / secs * 60:.0f} wpm):" if secs > 0.5 else "VOICE:", ev.transcript); transcript.append(["assistant", ev.transcript])
                     if SIGN_OFF[:-1].lower() in ev.transcript.lower(): st["bye"] = time.monotonic(); log("sign-off heard, closing after this reply")
@@ -570,10 +578,16 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     CLAIMED.add(ev.delegation.id); tasks.append(asyncio.create_task(run_delegation(ev.delegation.id, ev.delegation.task, rep)))
                 elif t == "session.commentary.appended" and ev.kind == "transfer": st["switch"] = time.monotonic()   # the put-through line is going out
                 elif t == "session.commentary.appended" and ev.delegation_id:
-                    if ev.kind in ("say", "fail"): event("task.spoken", id=ev.delegation_id)   # office: that briefing is presented (#31)
+                    if ev.kind in ("say", "fail", "ask"):
+                        message = next((m for m in notifications.pending() if m['id'] == ev.delegation_id), None)
+                        if message: receipts[ev.delegation_id] = message
                     if ev.kind != "dropped": st["spoke_result"] = True; st["act"] = time.monotonic()   # a result restarts the idle clock
                     elif args.text and not turns and st["spoke_result"] and not st["pending"]: st["done"] = True   # the corrected result was already spoken
                 elif t == "response.done":
+                    if response_spoke and receipts:
+                        tasks.append(asyncio.create_task(confirm_spoken(list(receipts.values()), st['play_until'] if not args.silent else time.monotonic(), receipt_epoch)))
+                        receipts.clear()
+                    response_spoke = False
                     st["vs"] = False
                     if st["bye"] and not ev.calls: end("goodbye")   # #12 rehearsal: "Open a pull request. Thanks, bye" closed on the call's response, before any goodbye was said
                     elif st.get("switch"): end(st["next"])
@@ -656,8 +670,9 @@ async def main():
                 if g[0] == "ask": SAYS.put_nowait(g)   # asked aloud by says() once the session is up
             about = " ".join(" ".join(t for k, _, t in got if k != "ask").split())
             event("call.ring", about=about or " ".join(t for _, _, t in got)); NOW["ringing"] = True
-            for k, sid, _ in got:
-                if k != "ask": event("task.spoken", id=sid)   # the opener delivers it (asks are put by says() once the session is up)
+            import notifications
+            opening_ids = {sid for k, sid, _ in got if k != 'ask'}
+            NOW['opening'] = [m for m in notifications.pending() if m['id'] in opening_ids]
             if about: seed = f"{CALLING_ABOUT} {about}\n{seed}".strip()
         event("call.answered"); set_state("on_call"); reason = "interrupted"
         try: reason = await phone(seed, opener)

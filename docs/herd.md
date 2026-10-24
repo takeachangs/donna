@@ -9,6 +9,30 @@ parent task: planning acknowledgements remain open, and worker results wake the 
 Workers use an OS file lock (fcntl on Unix, msvcrt on Windows), UTF-8 and stdin prompts. This is
 still the CLI implementation; app-server live steering remains an optional future upgrade.
 
+The voice receives the attached project identity on every call, including when `context.txt`
+is absent. Both the voice and `/call` interpret "here" as that repository and its task
+worktrees, not sibling folders or the saved agent-app project catalogue. This is a project
+selection/prompt contract; it does not turn the orchestrator's full-access CLI into an OS
+filesystem jail. Models must not expand a lookup outside the attached project.
+
+## Result delivery and restart
+
+After review, register a file with `herd.py result donna <task-id> <file> --title "Page"`.
+The helper accepts only the attached repository or one of its Git worktrees, snapshots the
+file in local result storage and adds an Open result link to its report. Registration can
+also attach a file to a completed task without changing its native session or creating
+another completion. HTML must be standalone, with embedded styles and scripts.
+
+`notifications.py` derives pending speech from the saved outbox and task/project state.
+The phone recovers unspoken results after restart instead of starting at EOF. Acknowledgements
+live in `herd/donna/notification-acks.json`; `task.spoken` is emitted only after a response
+containing the result has finished its playback window. A connection failure, interrupted
+speech or speaker failure leaves the result pending for the next restart. Delivery is
+at-least-once across a crash at the acknowledgement boundary. Already resolved questions,
+superseded requests and other projects do not ring; transfers remain live-call commands.
+Identical reports for the same registered file can acknowledge their refinement task IDs
+with one callback. Saying goodbye or using Hang up keeps the service armed; Ctrl+C stops it.
+
 Reference: `warmblood-kr/remuda` and `warmblood-kr/remuda-butler` (verbs `new/ls/send/capture/close`; mail with a `Next:` reply
 line; deferred replies; code-built status). We borrow the vocabulary and the invariants, not the Rust/Lua/Matrix.
 

@@ -1,21 +1,24 @@
 """Offline regressions for attached project scope and result delivery."""
 import ast
+import asyncio
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import herd
+import notifications
 
 
 def bridge_function(name, **values):
     """Load a pure bridge helper without starting the phone or importing audio."""
     source = Path(herd.__file__).with_name('bridge.py').read_text(encoding='utf-8')
-    node = next(n for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+    node = next(n for n in ast.walk(ast.parse(source)) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
     scope = dict(os=os, herd=herd, **values)
     exec(compile(ast.Module(body=[node], type_ignores=[]), 'bridge.py', 'exec'), scope)
     return scope[name]
@@ -71,6 +74,72 @@ class ProjectFlow(unittest.TestCase):
         outside.write_text('private', encoding='utf-8')
         with self.assertRaises(SystemExit): herd.result('donna', tid, outside)
         with self.assertRaises(SystemExit): herd.result('donna', 'missing-task', outside)
+
+    def finish(self, text='The page is ready. Use Open result in the report.'):
+        with patch.object(herd, 'wake'): tid = herd.send('donna', 'Update the page')
+        herd.reply('donna', tid, 'say', text)
+        return tid
+
+    def test_restart_recovers_unspoken_result_and_ack_prevents_replay(self):
+        tid = self.finish()
+        async def boot(expect_result):
+            queue = asyncio.Queue()
+            watch = bridge_function('watch_outbox', asyncio=asyncio, time=time, SAYS=queue, CLAIMED=set(), NOW={'call':None})
+            task = asyncio.create_task(watch())
+            try:
+                if expect_result:
+                    item = await asyncio.wait_for(queue.get(), 1)
+                    self.assertEqual(item[1], tid)
+                else:
+                    with self.assertRaises(asyncio.TimeoutError): await asyncio.wait_for(queue.get(), .4)
+            finally:
+                task.cancel()
+                try: await task
+                except asyncio.CancelledError: pass
+        asyncio.run(boot(True))
+        self.assertEqual(herd.office()['briefings'][-1]['status'], 'queued')
+        asyncio.run(boot(True))  # a crash before speech must not lose the result
+        notifications.acknowledge(notifications.pending()[0])
+        self.assertEqual(herd.office()['briefings'][-1]['status'], 'presented')
+        asyncio.run(boot(False))
+
+    def test_resolved_questions_replacements_and_other_projects_do_not_ring(self):
+        with patch.object(herd, 'wake'):
+            ask = herd.send('donna', 'Pick a color')
+            herd.reply('donna', ask, 'ask', 'Blue?')
+            self.assertEqual(len(notifications.pending()), 1)
+            herd.send('donna', 'Yes', reply_to=ask)
+            self.assertEqual(notifications.pending(), [])
+            old = self.finish('Old version ready')
+            herd.send('donna', 'Do the new version', replaces=old)
+            self.assertEqual(notifications.pending(), [])
+            self.finish('This project result')
+        meta = herd.root()/'donna/meta.json'
+        herd.write_json(meta, {**herd.rj(meta), 'project':str(self.base/'other-project')})
+        self.assertEqual(notifications.pending(), [])
+
+    def test_same_artifact_and_report_are_announced_once_for_refinement(self):
+        first, second = self.finish(), self.finish()
+        page=self.project/'index.html'; page.write_text('<p>One reviewed deliverable</p>')
+        for tid in (first,second): herd.result('donna',tid,page)
+        messages=notifications.pending()
+        self.assertEqual(len(messages),1)
+        self.assertEqual({r['id'] for r in messages[0]['receipts']},{first,second})
+        notifications.acknowledge(messages[0])
+        self.assertEqual(notifications.pending(),[])
+        self.assertTrue(all(b['status']=='presented' for b in herd.office()['briefings']))
+
+    def test_interrupted_or_failed_audio_is_not_acknowledged(self):
+        self.finish(); message=notifications.pending()[0]
+        for epoch, failed in ((0,False),(1,True)):
+            confirm=bridge_function('confirm_spoken',asyncio=asyncio,time=time,notifications=notifications,
+                                    receipt_epoch=1,st={'audio_failed':failed})
+            asyncio.run(confirm([message],time.monotonic(),epoch))
+            self.assertEqual(len(notifications.pending()),1)
+        confirm=bridge_function('confirm_spoken',asyncio=asyncio,time=time,notifications=notifications,
+                                receipt_epoch=1,st={})
+        asyncio.run(confirm([message],time.monotonic()+.02,1))
+        self.assertEqual(notifications.pending(),[])
 
 
 if __name__ == '__main__': unittest.main()
