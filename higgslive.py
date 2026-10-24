@@ -18,14 +18,14 @@
             elif ev.type == "session.output_audio.delta":
                 play(base64.b64decode(ev.delta))
         await conn.input_audio.append(pcm16_24k_bytes)
-        await conn.session.thinking.append(content="reading the config", delegation_id=did)   # silent: kept here for agent_status
+        await conn.session.thinking.append(content="reading the config", delegation_id=did)   # silent: kept here for task_status
         await conn.session.commentary.append(content="Done, it's open.", delegation_id=did)   # spoken, when the voice is free
         await conn.session.instructions.append(content="The user is now on the pricing page.")
 
 How it maps: the voice model calls a function tool; this layer leaves the call OPEN (Higgs tool calls are asynchronous: the
 conversation continues with the output outstanding), requests one response so the model acknowledges, and emits
 `session.delegation.created`. Thinking appends never reach Higgs (as conversation items the model answered them instead of
-the user); the layer keeps the latest one per delegation for `agent_status`. The first commentary append for a delegation waits until the voice is idle, the user is quiet and playback has
+the user); the layer keeps the latest one per delegation for `task_status`. The first commentary append for a delegation waits until the voice is idle, the user is quiet and playback has
 drained, then returns the real `function_call_output` plus a one-line cue and requests one response. Instructions appends re-send session.update.
 """
 import asyncio, base64, json, logging, os, re, time
@@ -41,10 +41,9 @@ TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an 
             "Use it for ANY request to make, add, change, design, open, run, check, find or compute something, including what is in a "
             "file, folder or directory. The task is a plain-English request, not a command.",
             "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}
-STATUS = "agent_status"   # answered at once by this layer from the herd files; never left open
-STATUS_DEF = {"type": "function", "name": STATUS, "description": "Says how the tasks already sent are going: "
-              "who is working on what and for how long, who is idle, what finished. Use it when the user asks how it's going "
-              f"or whether something is done. Never for files, folders, the directory or what anything contains: that is {TOOL}.", "parameters": {"type": "object", "properties": {}}}
+STATUS = "task_status"   # answered at once by this layer from the herd files; never left open
+STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the tasks you sent with {TOOL} are going: which are running, "
+              "for how long, latest progress, which finished. Only for tasks; never for files, folders or the computer.", "parameters": {"type": "object", "properties": {}}}
 MECHANICS = f"""## Delegation mechanics
 Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
 same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
@@ -126,8 +125,8 @@ class Conn:
         self._pending: set[str] = set()                   # delegations with no commentary yet
         self._arrived: set[str] = set()                   # delegations whose result came in (queued or spoken): their "still working" note is stale
         self._open: set[str] = set()                      # function calls whose output we have not returned yet
-        self._notes: dict = {}                            # delegation id → its latest progress note, for agent_status only
-        self._sent: dict = {}                             # delegation id → (task, epoch) for agent_status
+        self._notes: dict = {}                            # delegation id → its latest progress note, for task_status only
+        self._sent: dict = {}                             # delegation id → (task, epoch) for task_status
         self._instructions = ""
         self._t0 = time.monotonic()
         self._tasks: list[asyncio.Task] = []
@@ -320,7 +319,7 @@ if __name__ == "__main__":   # self-check: no network
         assert "donna is idle." in s and "donna finished make hello.txt: written to hello.txt" in s and "old" not in s, s
         assert "open the page, has been running for a few seconds" in s and "/" not in s and "{" not in s, s
         assert "finished" not in status_summary(now, (), now)   # done before the call: not reported
-        c, sent = Conn(None, 24000), []   # thinking.append sends Higgs nothing; agent_status still reports the note
+        c, sent = Conn(None, 24000), []   # thinking.append sends Higgs nothing; task_status still reports the note
         async def rec(ev): sent.append(ev)
         c._send, c._sent, c._open = rec, {"d1": ("make index.html", now)}, {"d1"}
         asyncio.run(c.session.thinking.append(content="writing index.html", delegation_id="d1"))

@@ -57,7 +57,7 @@ async with higgslive.connect(playback=True) as conn:            # BOSON_API_KEY;
                             # session.output_audio.delta {delta b64} | session.input_transcript.done | session.output_transcript.delta/.done
                             # session.input_speech_started (barge-in: clear your playback) | session.commentary.appended | session.closed | error
     await conn.input_audio.append(pcm16)                                   # conn.input_text.append(str) for typed turns
-    await conn.session.thinking.append(content, delegation_id)             # silent; never sent to Higgs, the latest note per task feeds agent_status
+    await conn.session.thinking.append(content, delegation_id)             # silent; never sent to Higgs, the latest note per task feeds task_status
     await conn.session.commentary.append(content, delegation_id)           # spoken; waits for idle voice + quiet user + drained playback + 1 s,
                                                                            # then returns the REAL function_call_output for the still-open call + bare response.create
     await conn.session.instructions.append(content)                        # session.update with the amended prompt
@@ -65,7 +65,7 @@ async with higgslive.connect(playback=True) as conn:            # BOSON_API_KEY;
 Inside the layer: the function tool is `delegate_task(task)` (`delegate` is reserved server-side). Higgs tool calls are ASYNCHRONOUS (confirmed
 with a Boson engineer + probe, Oct 23): the call stays open while the conversation continues, so the layer returns no output at call time, just a
 bare response.create for the acknowledgement, and the backend's answer later becomes the call's actual output. The mechanics
-prompt (rule one: call at once, never ask permission; reply to what the user just said; never guess; agent_status for progress) is appended to the app's instructions; one
+prompt (rule one: call at once, never ask permission; reply to what the user just said; never guess; task_status for progress) is appended to the app's instructions; one
 nudge per user turn when the voice claims a task without calling; a spoken "taking longer" note at 25 s; `tool_choice` always auto.
 Findings along the way: assistant-role thinking notes make the model continue them and invent results (reverted to user role + delete);
 `create_response: false` is ignored so a classifier cannot gate the reply; `usage` is always null; context window is 32k (models endpoint).
