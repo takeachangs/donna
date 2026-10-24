@@ -28,7 +28,10 @@ Shape = the office's existing `Workspace` type (`office/apps/web/src/agency/type
 }
 ```
 Status words (`WorkStatus`): queued | working | waiting | review | done | paused | failed. A worker is `working` from its
-`SubagentStart` (or its Agent `PostToolUse`) until its `SubagentHandback` report or `SubagentStop`; `done` after. Hooks
+`SubagentStart` (or its Agent `PostToolUse`) until its `SubagentHandback` report or `SubagentStop`; `done` after.
+Who is drawn (#44): agents started in this duty period (`since`, below) whose Agent call gave a `name` (the row's name) or a
+`description` (its first 3 words), minus unnamed `Explore`/`Plan` helpers. A `SubagentStop` for an agent with no
+`SubagentStart` and no Agent call makes no row: Claude Code's own helpers fire one (`agent_type` "") after the brain's turns. Hooks
 carry no failure signal, so `failed` comes only from the transcript fallback. The brain row is `lead: true`: `waiting`
 while a herd `ask` is open, `working` while its turn runs (last `UserPromptSubmit`/`PostToolUse` after the last `Stop`),
 else `done`. `char-female-a` does not exist in the office's assets: Donna is `char-female-b` (the office's own default),
@@ -48,7 +51,8 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
 - What the hooks carry (Claude Code 2.1.309, captured): every input has `session_id`, `cwd`, `transcript_path`; inside a
   subagent also `agent_id`/`agent_type`. The brain's `PostToolUse(Agent)` has `tool_input.{name,description,prompt}` and
   `tool_response.agentId` (`status: "async_launched"` for a background agent; a foreground one carries the result).
-  `SubagentStart` (only the id, arrives before that `PostToolUse`), subagent `PostToolUse` (→ `currentAction`), its
+  `SubagentStart` (only `agent_id`/`agent_type`, no name or description; before that `PostToolUse` for a foreground agent,
+  after it for a background one), subagent `PostToolUse` (→ `currentAction`), its
   `SubagentHandback` call (`tool_input.message` = the report → `summary`), `SubagentStop` (no result; its
   `background_tasks` still say "running"), `Stop` (`last_assistant_message`, `background_tasks`). The report reaches the
   brain as a `UserPromptSubmit` starting `<agent-message from="<name>">`. `Notification` is logged and ignored.

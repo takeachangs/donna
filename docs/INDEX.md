@@ -106,6 +106,12 @@ Grep this folder first: `grep -rn "<term>" docs/`. Every file is plain markdown 
 - Model may *claim* to be working without calling a tool; instruct it explicitly never to say so unless it called the tool this turn.
 - Tool choice follows the words in a tool's description, even negated ones (Oct 24, `higgs-realtime`, #23): with "never for files, folders or the computer" in `task_status`'s description, "what's in my directory" called `task_status` in 2/6 runs (0/6 without it, 12/12 once the routing was stated positively in `delegate_task`'s prompt). Keep words about other tools' jobs out of a description. When tasks are queued, "what's in this tray" (STT for "directory") reads as the task in-tray.
 - `claude -p` headless: pass `--allowedTools` or file tools are denied silently.
+- Claude Code hooks (2.1.309, probed Oct 24 for #44): `SubagentStart` carries `session_id` (set), `cwd`, `prompt_id`, `agent_id`,
+  `agent_type` and nothing else: no name, no description; those come only from the brain's `PostToolUse(Agent)`, which for a
+  background agent fires BEFORE its `SubagentStart` and for a foreground one after its `SubagentStop`, and now carries
+  `tool_response.agentId` in both. The brain's live log also has bare `SubagentStop`s (`agent_type` "", no Start, no Agent
+  call, no transcript), ~2 s after each of its 6 `Stop`s and once mid-turn: 7 in one 10-minute call, Claude Code's own helpers
+  (cause unconfirmed). Counting them as workers put 7 "Agent" rows in the office lounge.
 - `response.create` accepts only `instructions`, `input`, `temperature`, `max_output_tokens`, `metadata` as per-response overrides. In practice ANY `response` body (even a valid `instructions` override) made the model reply with a generic greeting; keep `response.create` bare and put steering text in the conversation item instead. Change `tool_choice` via `session.update` mid-session.
 - From audio turns the model refuses "open it in the browser"-style requests more readily than from typed text; a rich tool description + a one-shot forced retry (`tool_choice: "required"`) covers it.
 - `tool_choice: "required"` is documented but, set at session level (at start or mid-session), the server produced NO response events at all afterwards — no error, just silence until timeout. Avoid it. Named `{"type":"function","name":…}` at session level fails instantly with `upstream_error`. Only `"auto"` works.
