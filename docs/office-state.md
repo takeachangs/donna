@@ -14,15 +14,15 @@ Shape = the office's existing `Workspace` type (`office/apps/web/src/agency/type
 {
   "revision": 42,                       // increases on every write
   "call": {"state": "off"},             // off | ringing | listening | thinking | speaking  (from bridge.py's state file)
-  "secretary": {"id":"mara","name":"Donna","role":"Secretary","voice":"nora","characterKey":"char-female-a"},
+  "secretary": {"id":"mara","name":"Donna","role":"Secretary","voice":"nora","characterKey":"char-female-b"},
   "projects": [{"id":"<cwd slug>","name":"<repo dir name>","goal":"<first task>","memory":{"outcome":"","checkpoint":"","latest":"<last say>","nextStep":"","updatedAt":"<iso>"}}],
   "workers": [
-    {"id":"brain-<session>","projectId":"<cwd slug>","name":"Donna","role":"Brain","responsibility":"","characterKey":"char-female-a","status":"working","currentAction":"Read dash.py","lead":true},
+    {"id":"brain-<session>","projectId":"<cwd slug>","name":"Donna","role":"Brain","responsibility":"","characterKey":"char-female-b","status":"working","currentAction":"Read dash.py","lead":true},
     {"id":"<agentId>","projectId":"<cwd slug>","name":"<Agent name>","role":"<Agent description>","responsibility":"","characterKey":"char-male-b","status":"working","currentAction":"Edit herd.py"}
   ],
   "assignments": [{"id":"<agentId>","projectId":"<cwd slug>","workerId":"<agentId>","title":"<Agent description>","brief":"<Agent prompt>","acceptance":"","status":"working","cwd":"<cwd>","summary":"<final report, when done>","startedAt":"<iso>","completedAt":"<iso>"}],
   "decisions": [{"id":"<task id>","projectId":"<cwd slug>","title":"<ask text>","context":"","status":"open","createdAt":"<iso>"}],
-  "briefings": [{"id":"<task id>","projectId":"<cwd slug>","title":"<say text, first 60 chars>","summary":"<say text>","status":"queued","contributors":[{"name":"<worker names>"}],"createdAt":"<iso>"}],
+  "briefings": [{"id":"<task id>","projectId":"<cwd slug>","workerId":"<agentId of the worker who did it, or the brain row>","title":"<say text, first 60 chars>","summary":"<say text>","status":"queued","contributors":[{"name":"<worker names, exactly as in workers[].name>"}],"createdAt":"<iso>"}],
   "activity": [{"at":"<iso>","projectId":"<cwd slug>","message":"<herd event>"}]
 }
 ```
@@ -43,3 +43,9 @@ brain's `ask` for it is open. The brain row is `lead: true`; status working whil
 - `~/.higgs/state.json` written by `bridge.py`, read by the producer.
 - Herd line shapes (`docs/herd.md`), `in_reply_to` for answers to `ask`.
 - The voice's sign-off and pickup lines live in `bridge.py` only.
+
+## Decided during #25 (Oct 24 07:35)
+- Character keys that ship: `char-male-a`, `char-male-b`, `char-male-d`, `char-female-b`, `char-female-d`, `char-female-e`. Donna is `char-female-b`. An unknown key draws a placeholder.
+- A briefing carries `workerId`; the scene uses it for the desk → Donna walk. Contributor names must equal `workers[].name`.
+- A finished worker (`done`/`failed`) rests in the lounge on their own, regardless of the rest of the project.
+- A file that exists but is not a JSON object is "missing" for the office: Donna alone, health `state: 'missing'`.
