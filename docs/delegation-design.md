@@ -57,7 +57,7 @@ async with higgslive.connect(playback=True) as conn:            # BOSON_API_KEY;
                             # session.output_audio.delta {delta b64} | session.input_transcript.done | session.output_transcript.delta/.done
                             # session.input_speech_started (barge-in: clear your playback) | session.commentary.appended | session.closed | error
     await conn.input_audio.append(pcm16)                                   # conn.input_text.append(str) for typed turns
-    await conn.session.thinking.append(content, delegation_id)             # silent; user-role "[progress…]" item, deleted when the result lands
+    await conn.session.thinking.append(content, delegation_id)             # silent; never sent to Higgs, the latest note per task feeds agent_status
     await conn.session.commentary.append(content, delegation_id)           # spoken; waits for idle voice + quiet user + drained playback + 1 s,
                                                                            # then returns the REAL function_call_output for the still-open call + bare response.create
     await conn.session.instructions.append(content)                        # session.update with the amended prompt
