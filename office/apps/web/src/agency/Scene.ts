@@ -485,7 +485,9 @@ export class AgencyScene implements GameScene {
         ? 'thinking'
         : lead.length
           ? 'working'
-          : 'idle';
+          : workspace.workers.some((w) => w.lead && w.status === 'waiting') // #65: on her workers or your answer: attentive, not idle
+            ? 'thinking'
+            : 'idle';
     if (mood !== this.mood) {
       this.mood = mood;
       if (this.activities.get('mara') !== 'talking') this.activity('mara', mood);

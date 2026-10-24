@@ -1,3 +1,4 @@
+import type { Workspace } from './types';
 export type Point = { x: number; z: number };
 export type Footprint = {
   x: number;
@@ -206,4 +207,25 @@ export function turnBack(points: Point[], index: number, home: Point): Point[] {
 export function nextCall(queue: ToolCall[], finished: Set<string>): [ToolCall | undefined, ToolCall[]] {
   const q = queue.filter((c) => !finished.has(c.callId));
   return [q[0], q.slice(1)];
+}
+
+/** Scene walks briefing.workerId to Donna, so it must be a worker with a desk. The producer may send the lead's id
+ * (the brain row has no desk) or none: then it is the first contributor's worker. */
+export function adapt(w: Workspace): Workspace {
+  const desk = (id?: string) => w.workers.find((k) => !k.lead && k.id === id)?.id;
+  return {
+    ...w,
+    briefings: w.briefings.map((b) => {
+      const contributors = b.contributors || [];
+      return {
+        ...b,
+        contributors,
+        workerId:
+          desk(b.workerId) ||
+          w.workers.find((k) => !k.lead && k.status !== 'queued' && k.name === contributors[0]?.name)?.id ||
+          b.workerId ||
+          '',
+      };
+    }),
+  };
 }

@@ -1,7 +1,7 @@
 import { initLocale, setLocale, t } from '../i18n';
 import { Engine } from '../render/Engine';
 import { AgencyScene } from './Scene';
-import { donnaLine, onTheLine } from './floor';
+import { adapt, donnaLine, onTheLine } from './floor';
 import type { Workspace, View, Assignment, Decision, Briefing } from './types';
 import './style.css';
 import './board.css';
@@ -302,26 +302,6 @@ function render() {
   scene?.workspace(workspace);
   paintCall();
   renderDrawer();
-}
-/** Scene walks briefing.workerId to Donna, so it must be a worker with a desk. The producer may send the lead's id
- * (the brain row has no desk) or none: then it is the first contributor's worker. */
-function adapt(w: Workspace): Workspace {
-  const desk = (id?: string) => w.workers.find((k) => !k.lead && k.id === id)?.id;
-  return {
-    ...w,
-    briefings: w.briefings.map((b) => {
-      const contributors = b.contributors || [];
-      return {
-        ...b,
-        contributors,
-        workerId:
-          desk(b.workerId) ||
-          w.workers.find((k) => !k.lead && k.status !== 'queued' && k.name === contributors[0]?.name)?.id ||
-          b.workerId ||
-          '',
-      };
-    }),
-  };
 }
 function startScene(w: Workspace) {
   return (starting ??= (async () => {

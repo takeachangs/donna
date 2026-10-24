@@ -255,12 +255,19 @@ def trim(tool, inp):  # scalars only, strings cut: an Agent call keeps name/desc
             for k in (("name", "description", "prompt") if tool == "Agent" else inp) if isinstance(v := inp.get(k), (str, int, float, bool))}
 
 
-def action(e):  # a PostToolUse event (or None) -> "Read dash.py", "Bash ls"
+CHECKS = re.compile(r"\b(tests?|pytest|vitest|selftest|typecheck|tsc|npm|lint)\b")
+
+
+def action(e):  # a worker's last PostToolUse event (or None), in words, at most 40 chars (#65): "Writing index.html", "Running checks"
     if not e: return ""
     tool, inp = e.get("tool"), e.get("input") or {}
-    arg = os.path.basename(inp["file_path"]) if tool in ("Read", "Write", "Edit") and inp.get("file_path") else \
-        next((" ".join(str(inp[k]).split()) for k in ("command", "pattern", "path", "description", "url") if inp.get(k)), "")
-    return f"{tool} {arg[:50]}".strip()
+    f, c = os.path.basename(str(inp.get("file_path") or inp.get("notebook_path") or "")), str(inp.get("command") or "")
+    s = (f"{'Reading' if tool == 'Read' else 'Writing' if tool == 'Write' else 'Editing'} {f}" if f and tool in ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit")
+         else "Searching the code" if tool in ("Read", "Grep", "Glob", "LS")
+         else ("Running checks" if CHECKS.search(c) else "Committing the work" if "git commit" in c else "Running a command") if tool == "Bash"
+         else "Looking it up" if tool in ("WebFetch", "WebSearch")
+         else f"Messaging {inp['to']}" if tool == "SendMessage" and inp.get("to") else "Hiring help" if tool == "Agent" else f"Using {tool}")
+    return s[:40]
 
 
 def both(ns):  # "Ava", "Ava and Ben", "Ava, Ben and Cy"
@@ -281,7 +288,7 @@ def phrase(e, hires=()):  # #65: what Donna is doing, in words, from her last to
     if tool != "Bash": return "Working on it"
     if m := re.search(r"herd\.py\S* reply donna \S+ (\w+)", c): return {"ask": "Asking you", "take": "Reading the repo", "transfer": "Putting you through"}.get(m[1], "Reporting")
     if "git worktree" in c: return "Setting up a workspace"
-    if re.search(r"\b(tests?|pytest|vitest|selftest|typecheck|tsc|npm|lint)\b", c): return "Running checks"
+    if CHECKS.search(c): return "Running checks"
     return "Working on it"
 
 
@@ -408,7 +415,7 @@ def office(now=None):
         elif ev == "PostToolUse":
             if a:
                 r = row(a, e)
-                if tool == "SubagentHandback": r["summary"] = inp.get("message"); r["t1"] = r["t1"] or ts  # the report, not an action: Bob stays "Bash ls"
+                if tool == "SubagentHandback": r["summary"] = inp.get("message"); r["t1"] = r["t1"] or ts  # the report, not an action: Bob stays "Running a command"
                 else: r["act"] = e
             else:
                 lead.update(t=ts, act=e, hires=lead["hires"] + [inp] if tool == "Agent" else [])
@@ -435,10 +442,10 @@ def office(now=None):
     needs = {k: t for k, t in (st.get("tasks") or {}).items() if t.get("state") == "needs_you" and (t.get("ts") or 0) >= since}
     got = {k: t for k, t in (st.get("tasks") or {}).items() if t.get("state") == "queued" and since <= (t.get("ts") or 0) and now - t["ts"] < 600}  # #65: sent by the voice, not taken yet
     lid = f"brain-{sess[:8]}" if sess else "brain"
-    ls_ = "waiting" if needs else "working" if lead["t"] > lead["stop"] else "done"
     busy = [name for r, name in vis if stt(r) == "working"]
+    ls_ = "waiting" if needs else "working" if lead["t"] > lead["stop"] else "waiting" if busy else "done"  # #65: her workers still out: she waits on them (done when nobody is)
     last = list(got.values())[-1:]
-    doing = ("Waiting for your answer" if ls_ == "waiting" else f"Got it: {last[0].get('task') or ''}"[:80] if last else ("Thinking" if not lead["act"] or lead["ask"] > lead["act"].get("ts", 0) else phrase(lead["act"], lead["hires"]))
+    doing = ("Waiting for your answer" if needs else f"Got it: {last[0].get('task') or ''}"[:80] if last else ("Thinking" if not lead["act"] or lead["ask"] > lead["act"].get("ts", 0) else phrase(lead["act"], lead["hires"]))
              if ls_ == "working" else f"Waiting on {both(busy)}" if busy else "Ready")  # #65: Donna's narrative line
     workers = [{"id": lid, "projectId": pid, "name": "Donna", "role": "Brain", "responsibility": "", "characterKey": "char-female-b",
                 "status": ls_, "assignmentId": "", "currentAction": doing, "lead": True}]
@@ -508,6 +515,9 @@ def selfcheck_office():  # the brain-side hook and office.json, replayed from a 
 def _selfcheck_office():
     global parent_args
     import contextlib, io, tempfile
+    assert [action({"tool": t, "input": i}) for t, i in [("Bash", {"command": "cd /private/tmp/x && uv run pytest -q"}), ("Bash", {"command": "cd /private/tmp/x"}),
+            ("Read", {"file_path": "/a/b.py"}), ("Grep", {"pattern": "x"})]] == ["Running checks", "Running a command", "Reading b.py", "Searching the code"]
+    assert len(action({"tool": "Write", "input": {"file_path": "/a/" + "x" * 60}})) == 40  # #65: worker actions in words, at most 40 chars
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["HIGGS_HOME"] = tmp
         H, proj, S, B = Path(tmp), tmp + "/proj", "sess-0123-brain", "a1b2c3bob"
@@ -536,7 +546,7 @@ def _selfcheck_office():
              tool_response={"isAsync": True, "status": "async_launched", "agentId": B})
         fire("PostToolUse", agent_id=B, agent_type="general-purpose", tool_name="Bash", tool_input={"command": "ls", "description": "List files"}, tool_response={"stdout": "a.txt"})
         assert (w := W(O(), B)) | {"characterKey": 0} == {"id": B, "projectId": pid, "name": "Bob", "role": "Count files", "responsibility": "", "characterKey": 0,
-                                                          "voice": "jake", "status": "working", "assignmentId": B, "currentAction": "Bash ls"}, w
+                                                          "voice": "jake", "status": "working", "assignmentId": B, "currentAction": "Running a command"}, w
         assert w["characterKey"] == KEYS[0]
         fire("SubagentStart", sess="other", agent_id="zzz", agent_type="x"); fire("PostToolUse", sess="other", tool_name="Read", tool_input={"file_path": "/a/b.py"})
         fire("Stop", sess="other")  # another session fires the hook from the same dir: its events count for nothing
@@ -566,7 +576,7 @@ def _selfcheck_office():
         fire("SubagentStart", agent_id="fg1", agent_type="general-purpose"); fire("SubagentStop", agent_id="fg1", agent_type="general-purpose")  # foreground Agent: no agentId, the result comes with the PostToolUse
         fire("SubagentStop", agent_id="int1", agent_type="")  # #44: Claude Code's own helper (no Start, no Agent call, also seen mid-turn): no row, so it cannot take fg1's name
         fire("PostToolUse", tool_name="Agent", tool_input={"description": "Fg job", "prompt": "p"}, tool_response={"status": "completed", "content": [{"type": "text", "text": "found it"}]})
-        assert W(O(), B)["currentAction"] == "Bash ls"  # done, and the handback did not replace its last action
+        assert W(O(), B)["currentAction"] == "Running a command"  # done, and the handback did not replace its last action
         assert (w := W(O(), "fg1"))["name"] == "Fg job" and w["status"] == "done" and w["characterKey"] == KEYS[1]
         assert next(x for x in O()["assignments"] if x["id"] == "fg1")["summary"] == "found it"
         fire("Stop")
@@ -581,7 +591,7 @@ def _selfcheck_office():
         assert O()["decisions"] == [{"id": t2, "projectId": pid, "title": "blue or green?", "context": "pick a colour", "status": "open",
                                      "createdAt": O()["decisions"][0]["createdAt"], "updatedAt": O()["decisions"][0]["createdAt"]}] and O()["workers"][0]["status"] == "waiting"
         send("donna", "blue", reply_to=t2); write_office()
-        assert O()["decisions"] == [] and O()["workers"][0]["status"] == "done"
+        assert O()["decisions"] == [] and O()["workers"][0]["status"] == "waiting"  # #65: gp1 (Fix the login) is still out
 
         sp = H / "state.json"; sp.write_text('{"state": "speaking"}')  # bridge.py's state file: fresh counts, stale (crashed bridge) is "off"
         assert office()["call"] == {"state": "speaking"}
@@ -694,18 +704,18 @@ def _selfcheck_office():
         fire("PostToolUse", tool_name="Bash", tool_input={"command": "uv run -q herd.py reply donna t9 note \"Ava is building the page and Ben is drawing\""}); assert D() == "Reporting"
         fire("Stop", last_assistant_message="I've started the landing page team.", background_tasks=[{"id": "x1", "type": "teammate", "status": "running"}])
         fire("SubagentStop", agent_id="a9b30125acf0f7387", agent_type="")  # Claude Code's own helper, ~2 s after the brain's Stop: nobody is done
-        assert D() == "Waiting on Ava and Ben" and [x[1] for x in WS()] == ["working", "working"], (D(), WS())
+        assert D() == "Waiting on Ava and Ben" and O()["workers"][0]["status"] == "waiting" and [x[1] for x in WS()] == ["working", "working"], (D(), WS())
         mate = lambda n: f"/opt/homebrew/Caskroom/claude-code@latest/2.1.309/claude --agent-id {n}@{team} --agent-name {n} --team-name {team} --agent-color green --parent-session-id {S} --permission-mode auto --settings hooks/office.json --model sonnet"
         parent_args = lambda: mate("Ben")  # Ben's own hooks: his session, no agent_id
         assert fire("PostToolUse", sess="7d74b2e5-ben", tool_name="Write", tool_input={"file_path": "/w/landing/architecture.svg", "content": "<svg/>"}) == ""  # a teammate never consumes the inbox
         assert evs()[-1]["agent"] == f"Ben@{team}" and evs()[-1]["session"] == S
-        assert WS()[1] == ("Ben", "working", "Write architecture.svg"), WS()
+        assert WS()[1] == ("Ben", "working", "Writing architecture.svg"), WS()
         fire("Stop", sess="7d74b2e5-ben", last_assistant_message="I wrote landing/architecture.svg.")  # idle: done
         assert WS()[1][:2] == ("Ben", "done") and WS()[0][1] == "working" and D() == "Waiting on Ava", (WS(), D())
         assert O()["assignments"][1]["summary"] == "I wrote landing/architecture.svg." and "completedAt" in O()["assignments"][1]
         parent_args = lambda: mate("Ava")
         fire("PostToolUse", sess="825c942f-ava", tool_name="Bash", tool_input={"command": "git commit -qm 'landing: page'"})
-        assert WS()[0] == ("Ava", "working", "Bash git commit -qm 'landing: page'"), WS()
+        assert WS()[0] == ("Ava", "working", "Committing the work"), WS()
         fire("Stop", sess="825c942f-ava")
         parent_args = lambda: "claude --settings hooks/office.json"
         fire("UserPromptSubmit", prompt="x"); assert D() == "Thinking" and [x[1] for x in WS()] == ["done", "done"]
