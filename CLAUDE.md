@@ -36,6 +36,7 @@ Three parts (Oct 24 architecture; the log is `IDEAS.md` from "Oct 24 ~07:00"):
 ```bash
 export BOSON_API_KEY=…      # ~/.zshrc; a second key is BOSON_API_KEY_2 in .env (gitignored)
 uv run bridge.py --ring --backend session --voice nora --out EarPods --brain <repo>   # the phone + the brain (tmux attach -t donna)
+uv run bridge.py … --brain <repo> --brain-model sonnet                              # the brain on another model (passed to claude --model)
 cd office && npm install && npm run dev                           # the office: http://127.0.0.1:5183/ (API 3003; HIGGS_HOME picks another folder)
 ```
 Wired EarPods are the output (the laptop mic hears the speakers, and AirPods' Bluetooth mic degrades STT); `bridge.py` exits if `--out` matches no device.

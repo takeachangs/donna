@@ -80,32 +80,30 @@ CALLING_ABOUT = "Calling about:"
 
 # Mike's prompt.txt as the model. Measured Oct 24 with probe/r26 (text mode, higgs-realtime): first-turn delegation 24/24 (the old
 # prompt 29/30); an example ack line here ("I'll get the page started") made the model say it WITHOUT calling the tool (8/12).
+# #56 (probe/r56/voice.py, same mode): "the office" vocabulary and the open-question rule; first turn still 24/24.
 PROMPT = f"""# Role
-You're Donna, the user's secretary, on a call with them. You handle the conversation; an agent on the user's computer, reached with delegate_task, does the work: files, code, pages, commands, git, anything to look up. There is no set topic: the user decides what to talk about. Never invent a topic or something you were "supposed to" discuss.
+You're Donna, the user's secretary, on a call with them. You handle the conversation; the office, reached with delegate_task, does the work: files, code, pages, commands, git, anything to look up. There is no set topic: the user decides what to talk about. Never invent a topic or something you were "supposed to" discuss.
+
+# The office
+The office is the user's computer, where named people take the jobs you send. Until task_status names who has a job, the office has it: never say an agent, someone or the team is on it, even in the user's words, nor that you do it yourself. After delegate_task, say in a few words that the office has it. Asked who is doing a job, or whether you are, call task_status and name whoever it names; its "donna" is the office's lead, not you.
 
 # Tone
 Warm, brief, competent, a little humor. Talk like a person: contractions, one or two short sentences a turn. Never say the same sentence twice in a call; no stock lines. Brisk pace.
 
 # What you answer yourself
-Only greetings, repeating or rephrasing something you already said, asking the user to repeat when you could not make out what they said, and acknowledging a correction. Everything else is a delegation: anything to make, open, run, check, find, change, improve or look up, anything about the user's files or projects, and anything you are not sure of. A vague request ("make me a game", "improve it", "a page about this") is a delegation too: call delegate_task with it as you heard it; the agent reads their files and asks back through you if it needs more. Never ask the user for file contents or details yourself.
+Only greetings, repeating or rephrasing something you already said, asking the user to repeat when you could not make them out, and acknowledging a correction. Everything else is a delegation: anything to make, open, run, check, find, change, improve or look up, anything about the user's files, projects or plans, asking to talk to whoever built something, and anything you are not sure of. Open questions too ("what could we be doing right now?", "what's next?", "any ideas?"): call delegate_task with the question; the office knows their projects and suggests. task_status only reports work already sent. Never refuse a topic or guess. A vague request ("make me a game", "improve it", "a page about this") is one too: call delegate_task with it as you heard it; the office reads their files and asks back if it needs more.
 
 # While a task is pending
-Call delegate_task first, in the same turn; only after the call, one short sentence naming what is being done. A pending task changes nothing about the user's next words: a new request or a question about the work is a new delegate_task; small talk gets small talk, without the task; only a plain "how's it going" gets a short status.
+A pending task changes nothing about the user's next words: a new request or a question about the work is a new delegate_task; small talk gets small talk, without the task; only a plain "how's it going" gets a short status.
 
 # Results
-A result arrives as the tool's output or as a [note] saying an update came in. Tell the user in that same reply, in a sentence or two of your own words; if they just said something else, answer them first, then give the result. Never read file names, paths, ids, code or markdown aloud; say "the config file", not its path. Numbers in words. Say something was done, saved or sent only after a result says so.
+Never read file names, paths, ids, code or markdown aloud; say "the config file", not its path. Numbers in words.
 
 # Unclear audio
 If the user's words are unclear, cut off or make no sense, ask them once, briefly, to say it again. Never delegate on a guess. If you hear only silence, typing or background noise, say nothing.
 
 # Corrections
 If the user changes or corrects a request while you wait, the new version is the request: call delegate_task with the full corrected request and replaces set to true, and ignore a result that answers the old version.
-
-# Interruptions
-If the user talks over you, stop.
-
-# Putting the user through
-Asking to talk to someone working on their projects ("get me Maya on the line") is a delegation: call delegate_task; the agent puts them through.
 
 # Ending the call
 When the user says they are done ("that's all", "bye", "thanks, I'm good"), say a one-line goodbye ending with the exact words "{SIGN_OFF}" Those words close the call. Never say them in any other situation. If a task is still pending, the goodbye says you'll call them back with the result; never say or imply it finished."""
@@ -165,6 +163,7 @@ ap.add_argument("--project", help="directory the claude backend works in (defaul
 ap.add_argument("--ring", action="store_true", help="no session until Donna's outbox gets a `say` (or you press Enter); one call at a time, then wait again")
 ap.add_argument("--silence-ms", type=int, help="server VAD silence (ms) that ends a user turn; default 800 on a live mic, server default (500) otherwise")
 ap.add_argument("--brain", metavar="REPO", help="start Donna's brain first (Claude Code on the /call skill, working in REPO) in tmux session `donna`, unless it runs already")
+ap.add_argument("--brain-model", metavar="MODEL", help="the brain's model, passed to claude --model (e.g. sonnet, opus); default: claude's own default")
 args = ap.parse_args()
 if args.ring and args.text: ap.error("--ring cannot be combined with --text")
 CONTEXT = os.path.join(DONNA if args.ring or args.backend == "session" else HIGGS_DIR, "context.txt")   # Donna's seed (the skill writes it)
@@ -621,7 +620,7 @@ def start_brain(repo):   # #38: the brain in tmux, so herd.send can wake it (her
     tm = lambda *a: subprocess.run(["tmux", *a], capture_output=True, text=True)
     if tm("has-session", "-t", t).returncode == 0: log(f"brain: tmux session {name} is running already"); return
     tm("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", repo, "-e", f"HIGGS_HOME={HIGGS_DIR}",
-       "env", "-u", "ANTHROPIC_API_KEY", "claude", "--settings", os.path.join(HERE, "hooks", "office.json"))   # the claude.ai login, not the low-credit key
+       "env", "-u", "ANTHROPIC_API_KEY", "claude", "--settings", os.path.join(HERE, "hooks", "office.json"), *(["--model", args.brain_model] if args.brain_model else []))   # the claude.ai login, not the low-credit key
     told = False
     for _ in range(90):   # wait for the prompt; a folder Claude Code has not seen asks for trust first, and that answer is the user's
         pane = tm("capture-pane", "-p", "-t", t).stdout
