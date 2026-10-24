@@ -24,3 +24,19 @@ export function reconcileBriefings(queue:Briefing[],assignments:Assignment[],wor
  }
  return changed;
 }
+
+/** Natural timing for an unsolicited announcement (Python Donna herd.md §8, donna#24). */
+export const hold={quietMs:2500,recentUserMs:3000,questionMs:6000,maxMs:10000};
+export type Floor={now:number;heldSince:number;voiceBusy:boolean;userSpeaking:boolean;playing:boolean;userAt:number;voiceAt:number;question:boolean};
+/** Why an announcement must wait, or undefined when Donna may speak now. */
+export function holdReason(f:Floor):string|undefined{
+ if(f.voiceBusy)return 'Donna is mid-turn';
+ if(f.userSpeaking)return 'user is speaking';
+ if(f.now-f.heldSince>=hold.maxMs)return undefined;
+ if(f.playing)return 'Donna audio still playing';
+ if(f.question&&f.now-f.voiceAt<hold.questionMs)return 'Donna asked a question';
+ if(f.now-f.userAt<hold.recentUserMs)return 'user spoke recently';
+ if(f.now-Math.max(f.userAt,f.voiceAt)<hold.quietMs)return 'waiting for quiet';
+}
+/** True when the last sentence is a task-bearing question the user still owes an answer to. */
+export function openQuestion(said:string){const s=said.trim().split(/(?<=[.!?])\s+/).pop()||'';return s.endsWith('?')&&!/how can i help|anything else|what(?:'s| is) next|what else/i.test(s)&&/\b(which|should|do you want|would you like|prefer|or)\b/i.test(s);}

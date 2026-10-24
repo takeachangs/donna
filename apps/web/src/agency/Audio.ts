@@ -42,3 +42,5 @@ export class OfficeAudio {
  }
  async close(){clearInterval(this.timer);this.stop(false);await this.mic(false);await this.context.close()}
 }
+
+export function chime(){try{const c=new AudioContext(),t0=c.currentTime;for(const [f,at] of [[880,0],[1175,.18]]){const o=c.createOscillator(),g=c.createGain();o.frequency.value=f;g.gain.setValueAtTime(0,t0+at);g.gain.linearRampToValueAtTime(.12,t0+at+.02);g.gain.exponentialRampToValueAtTime(.001,t0+at+.3);o.connect(g).connect(c.destination);o.start(t0+at);o.stop(t0+at+.3)}setTimeout(()=>void c.close().catch(()=>{}),700)}catch{}}

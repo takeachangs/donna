@@ -1,7 +1,7 @@
 import {initLocale,setLocale,t} from '../i18n'
 import {Engine} from '../render/Engine'
 import {AgencyScene} from './Scene'
-import {OfficeAudio} from './Audio'
+import {OfficeAudio,chime} from './Audio'
 import {projectActions} from './projectActions'
 import type {State,Colleague,Doc,Project,Workspace,View,Assignment,Decision,Briefing} from './types'
 import './style.css'
@@ -54,7 +54,7 @@ const make=<K extends keyof HTMLElementTagNameMap>(tag:K,cls='',text='')=>{const
 let socket:WebSocket|undefined,audio:OfficeAudio|undefined,scene:AgencyScene|undefined,state:State|undefined,cast:Colleague[]=[],workspace:Workspace|undefined,ready=false,mic=false,currentResponse='',connected=false,firstTurnAt=0,projects:Project[]=[],selectedProject='',view:View='command',switching=false,polling=false
 const usage=new Map<string,any>(),heard=new Set<string>(),signatures=new Map<string,string>()
 let actionError='',transportError=''
-let listenWhenReady:string|undefined
+let listenWhenReady:string|undefined,ringing:string|undefined,seenBriefings:Set<string>|undefined
 const roomKey='personal-agency-room'
 const name=(id:string)=>(id==='mara'?workspace?.secretary.name:undefined)||workspace?.workers.find(w=>w.id===id)?.name||cast.find(a=>a.id===id)?.name||({iris:'Iris',theo:'Theo'} as Record<string,string>)[id]||id
 const projectName=(id:string)=>workspace?.projects.find(p=>p.id===id)?.name||id
@@ -121,21 +121,36 @@ function openBriefing(b:Briefing){
  const replay=make('button','quiet-button',t('agency.show_handoff'));replay.onclick=()=>{el<HTMLDialogElement>('work-dialog').close();setView('command');el('agency-scene').scrollIntoView({block:'center',behavior:'instant'});scene?.replayHandoff(b.id)};body.append(replay)
  const dialog=el<HTMLDialogElement>('work-dialog');dialog.showModal();dialog.scrollTop=0
 }
+function ring(id:string|undefined){
+ if(ringing===id)return
+ ringing=id;const c=el('connect')
+ if(id&&!socket){chime();scene?.ring(true);c.classList.add('is-ringing');c.textContent=t('agency.answer_call');status(t('agency.ring_status',{name:workspace?.secretary.name||'',title:workspace?.briefings.find(b=>b.id===id)?.title||''}))}
+ else if(c.classList.contains('is-ringing')){scene?.ring(false);c.classList.remove('is-ringing');c.textContent=t(ready?'agency.disconnect':'agency.connect')}
+ renderBriefings()
+}
+function watchRing(){
+ if(!workspace)return
+ const queued=workspace.briefings.filter(b=>b.status==='queued'&&workspace!.projects.some(p=>p.id===b.projectId&&!p.deletedAt)).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)),ids=queued.map(b=>b.id)
+ if(!seenBriefings){seenBriefings=new Set(ids);return}
+ const fresh=queued.find(b=>!seenBriefings!.has(b.id));ids.forEach(id=>seenBriefings!.add(id))
+ if(ringing&&!ids.includes(ringing))ring(undefined)
+ if(fresh&&!socket&&!ringing)ring(fresh.id)
+}
 function renderBriefings(){
  if(!workspace)return
  const visible=(b:Briefing)=>workspace!.projects.some(p=>p.id===b.projectId&&!p.deletedAt),pending=workspace.briefings.filter(b=>b.status==='queued'&&visible(b)).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)),history=workspace.briefings.filter(b=>b.status==='presented'&&visible(b)).sort((a,b)=>(b.presentedAt||'').localeCompare(a.presentedAt||'')).slice(0,12)
  el('briefings-section').hidden=view==='project';el('briefing-count').textContent=t('agency.queue_waiting',{count:String(pending.length)})
- section('briefings',[pending,workspace.workers.map(w=>[w.id,w.name]),workspace.projects,ready,!!socket],()=>pending.length?pending.map((b,i)=>{
-  const slot=make('li',`briefing-slot${i===0?' is-next':''}`),number=make('span','queue-position',String(i+1).padStart(2,'0')),card=make('article','briefing-card')
+ section('briefings',[pending,workspace.workers.map(w=>[w.id,w.name]),workspace.projects,ready,!!socket,ringing],()=>pending.length?pending.map((b,i)=>{
+  const slot=make('li',`briefing-slot${i===0?' is-next':''}${b.id===ringing?' is-ringing':''}`),number=make('span','queue-position',String(i+1).padStart(2,'0')),card=make('article','briefing-card')
   number.setAttribute('aria-hidden','true');slot.append(number,card)
-  card.append(make('p','queue-stage',t(i===0?'agency.queue_next':'agency.queue_after')))
+  const stage=make('p','queue-stage',t(i===0?'agency.queue_next':'agency.queue_after'));if(b.id===ringing)stage.append(make('span','ring-badge',t('agency.ring_badge')));card.append(stage)
   if(i>0){const open=make('button','queue-waiting-open');open.append(make('strong','',b.title),make('span','',`${name(b.workerId)} · ${projectName(b.projectId)}`));open.setAttribute('aria-label',t('agency.view_assignment',{title:b.title}));open.onclick=()=>openBriefing(b);card.append(open);return slot}
   const owner=make('div','briefing-owner'),avatar=make('span','briefing-avatar',name(b.workerId).slice(0,1)),identity=make('div');avatar.setAttribute('aria-hidden','true');identity.append(make('strong','',name(b.workerId)),make('span','',projectName(b.projectId)));owner.append(avatar,identity);card.append(owner,make('h3','briefing-title',b.title))
   const actions=make('div','briefing-actions'),read=make('button','briefing-read',t('agency.read_briefing'));read.onclick=()=>openBriefing(b)
   if(i===0){
    card.append(make('p','summary-preview',b.summary),make('p','briefing-meta',t('agency.queue_evidence',{files:String(b.artifacts.length),checks:String(b.verification.length)})))
    const hear=make('button','briefing-listen',t(ready?'agency.hear_briefing':socket?'agency.connecting':'agency.connect_listen'));hear.id='present-next';hear.disabled=!!socket&&!ready
-   hear.onclick=()=>{if(ready)presentBriefing(b.id);else{listenWhenReady=b.id;void start().catch(err=>{listenWhenReady=undefined;error(String(err))})}};actions.append(hear)
+   hear.onclick=()=>{if(ready)presentBriefing(b.id);else{listenWhenReady=b.id;if(!socket)void start().catch(err=>{listenWhenReady=undefined;error(String(err))})}};actions.append(hear)
   }
   actions.append(read);card.append(actions);return slot
  }):[make('li','queue-empty',t('agency.queue_empty'))])
@@ -143,6 +158,7 @@ function renderBriefings(){
 }
 function render(){
  if(!workspace)return
+ watchRing()
  document.body.dataset.view=view;document.body.dataset.ready=String(ready)
  projects=workspace.projects.filter(p=>!p.deletedAt)
  if(selectedProject&&!projects.some(p=>p.id===selectedProject)){if(socket)void start();selectedProject=projects[0]?.id||'';state=undefined;usage.clear();meter();view='command';rememberRoom();scene?.overview();document.body.dataset.view=view}
@@ -174,6 +190,7 @@ function onEvent(e:any){
  if(e.type==='view'&&['secretary','command','project'].includes(e.view)){view=e.view;scene?.viewRoom(view==='project'?selectedProject:view);render()}
  if(e.type==='state'){state=e.state;selectedProject=state!.id;rememberRoom();renderLegacy();renderProjects()}
  if(e.type==='project_ready'){switching=false;usage.clear();void loadUsage();controls(true);status(t('agency.ready'));send({type:'set_view',view})}
+ if(e.type==='ring')ring(e.briefingId)
  if(e.type==='colleague_ready')status(t('agency.connecting'))
  if(e.type==='ready'){connected=true;controls(true);status(t('agency.ready'));el('connect').textContent=t('agency.disconnect');error();if(listenWhenReady){const id=listenWhenReady;listenWhenReady=undefined;presentBriefing(id)}}
  if(e.type==='thinking'){scene?.activity('mara','thinking');status(t('agency.thinking'));if(!firstTurnAt)firstTurnAt=performance.now()}
@@ -188,13 +205,14 @@ function onEvent(e:any){
 }
 function rememberRoom(){localStorage.setItem(roomKey,selectedProject);const u=new URL(location.href);if(selectedProject)u.searchParams.set('room',selectedProject);else u.searchParams.delete('room');history.replaceState({},'',u)}
 async function start(){
- if(socket){socket.close();socket=undefined;listenWhenReady=undefined;audio?.stop(false);mic=false;connected=false;controls(false);await audio?.mic(false);el('mic').textContent=t('agency.mic_on');el('connect').textContent=t('agency.connect');status(t('agency.disconnected'));return}
+ if(socket){ring(undefined);socket.close();socket=undefined;listenWhenReady=undefined;audio?.stop(false);mic=false;connected=false;controls(false);await audio?.mic(false);el('mic').textContent=t('agency.mic_on');el('connect').textContent=t('agency.connect');status(t('agency.disconnected'));return}
+ if(ringing){listenWhenReady??=ringing;ring(undefined)}
  error();audio??=new OfficeAudio(send,(e,delay)=>{if(heard.has(e.jobId))return;heard.add(e.jobId);void fetch('/agency-api/measurement',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({roomId:selectedProject,kind:'first-audible',jobId:e.jobId,agentId:e.agentId,commandToAudibleMs:firstTurnAt?performance.now()-firstTurnAt+delay:undefined})});firstTurnAt=0})
  await audio.resume();status(t('agency.connecting'));el<HTMLButtonElement>('connect').disabled=true
  const ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/agency-ws`);socket=ws;renderBriefings()
  ws.onopen=()=>{send({type:'start',roomId:selectedProject,view});el<HTMLButtonElement>('connect').disabled=false}
  ws.onmessage=e=>{try{onEvent(JSON.parse(e.data))}catch(err){error(String(err))}}
- ws.onclose=()=>{if(socket!==ws)return;socket=undefined;listenWhenReady=undefined;connected=false;controls(false);void audio?.mic(false);mic=false;audio?.stop(false);el('mic').textContent=t('agency.mic_on');el('mic').setAttribute('aria-pressed','false');el('connect').textContent=t('agency.connect');el<HTMLButtonElement>('connect').disabled=false;status(t('agency.disconnected'))}
+ ws.onclose=()=>{if(socket!==ws)return;socket=undefined;listenWhenReady=undefined;ring(undefined);connected=false;controls(false);void audio?.mic(false);mic=false;audio?.stop(false);el('mic').textContent=t('agency.mic_on');el('mic').setAttribute('aria-pressed','false');el('connect').textContent=t('agency.connect');el<HTMLButtonElement>('connect').disabled=false;status(t('agency.disconnected'))}
  ws.onerror=()=>error(t('agency.connection_lost'))
 }
 function renderProjects(){section('project-select',[projects,selectedProject,view],()=>{const prompt=make('option','',t('agency.project_rooms'));prompt.value='';prompt.disabled=true;const options=projects.map(p=>{const o=make('option','',p.name);o.value=p.id;return o});return[prompt,...options]});el<HTMLSelectElement>('project-select').value=view==='project'?selectedProject:'';
