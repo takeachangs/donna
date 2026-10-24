@@ -58,6 +58,14 @@ first room never moves). A briefing's contributors are the workers of ONE room (
 team hired while a task runs is not credited with it. The role keeps the prefix, so the voice's status reads "Nova (Marketing: …)".
 
 ## Sources on the brain side (Python, this repo)
+
+Reviewed files can be registered with `herd.py result donna <task-id> <entry-file> --title "Result name"`.
+The producer copies a file from the attached repository or one of its Git worktrees to
+`$HIGGS_HOME/results/<content-id>/result.<extension>` and persists the task's result references
+in `herd/donna/results.json`. Reports carry optional `artifacts: [{id, file, title}]`.
+The office's **Open result** link reads that snapshot through `GET /agency-api/results/<id>/<file>`;
+unregistered files, traversal and paths outside snapshot storage are rejected. HTML previews use
+an opaque sandbox origin, embedded assets only, and no network or office API access.
 Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed by Claude Code hooks.
 - `hooks/office.json` registers `python3 $HOME/projects/higgs-hackathon/herd.py hook <Event>` for `SubagentStart`,
   `SubagentStop`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `Notification`. Install per session with

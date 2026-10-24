@@ -252,7 +252,9 @@ def run(name, tid):  # #66: one turn of a codex worker: take, a note per command
                 f"Put worktrees under {home()}/worktrees. Give real progress as notes on the original task IDs. "
                 "If workers are still busy, leave the parent task open and return; their results wake you automatically. "
                 "If you need the person, use ask and return. Answers are in your inbox. Review files and run checks before "
-                "one say/fail per original task ID. Forward a worker phone question to the same worker with herd send, "
+                "one say/fail per original task ID. For a page/document, register its reviewed entry file with "
+                "herd.py result donna <task-id> <absolute-file> before say, then mention Open result in the report. "
+                "Forward a worker phone question to the same worker with herd send, "
                 "then relay its actual response; transfer still uses the same worker voice. "
                 f"Read {d}/inbox.jsonl and the named workers' capture results. Pending: {json.dumps(pending)}")
         out("take", "")
@@ -292,6 +294,40 @@ def run(name, tid):  # #66: one turn of a codex worker: take, a note per command
 def capture(name):
     d = agent_dir(name)
     return {**load(d), "outbox": lines(d / "outbox.jsonl", 3)}
+
+
+@codex_state_lock
+def result(name, tid, file, title=None):
+    """Publish one reviewed file locally, from the attached repo or one of its Git worktrees."""
+    import hashlib, subprocess
+    d = agent_dir(name)
+    if tid not in load(d)["tasks"]: die(f"unknown task: {tid}")
+    project = Path(rj(root() / "donna" / "meta.json")["project"]).resolve()
+    roots = [project]
+    git = subprocess.run(["git", "-c", "core.quotePath=false", "-C", str(project), "worktree", "list", "--porcelain"],
+                         capture_output=True, text=True, encoding="utf-8")
+    if git.returncode == 0:
+        roots += [Path(l[9:]).resolve() for l in git.stdout.splitlines() if l.startswith("worktree ")]
+    src = Path(file).resolve(strict=True)
+    if not any(src.is_relative_to(p) for p in roots): die("result must belong to the attached project or its Git worktrees")
+    if not src.is_file() or src.suffix.lower() not in (".html", ".htm", ".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp"):
+        die("result must be a standalone HTML, document or image file")
+    if src.stat().st_size > 10 * 1024 * 1024: die("result exceeds 10 MiB")
+    data = src.read_bytes(); key = hashlib.sha256(data).hexdigest()[:24]
+    base = home().resolve() / "results"
+    if not base.resolve().is_relative_to(home().resolve()): die("result storage is outside the runtime directory")
+    target = base / key / ("result" + src.suffix.lower())
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.parent.resolve().is_relative_to(base): die("result snapshot is outside its storage directory")
+    tmp = target.with_name("." + os.urandom(8).hex())
+    tmp.write_bytes(data); os.replace(tmp, target)
+    item = {"id": key, "file": target.name, "title": title or src.name}
+    saved = rj(d / "results.json"); items = saved.setdefault(tid, [])
+    items[:] = [i for i in items if i.get("id") != key]; items.append(item)
+    write_json(d / "results.json", saved)
+    event("result.added", name, id=tid, title=item["title"])
+    write_office()
+    return item
 
 
 @codex_state_lock
@@ -648,7 +684,7 @@ def office(now=None):
         ws = [w for w, (r, _) in zip(workers[1:], vis) if sent.get(o["id"], 0) <= r["t0"] <= o["ts"]]
         ws = [w for w in ws if w["projectId"] == ws[0]["projectId"]]  # #83: a team hired while this task ran is not its contributor. ponytail: one room per result; a task that hires into two rooms credits the first
         briefings.append({"id": o["id"], "assignmentId": ws[0]["id"] if ws else "", "projectId": ws[0]["projectId"] if ws else pid, "workerId": ws[0]["id"] if ws else lid, "deliveryKey": o["id"],
-                          "title": (o.get("text") or "")[:60], "summary": o.get("text") or "", "artifacts": [], "verification": [], "status": "presented" if o["id"] in spoken else "queued",
+                          "title": (o.get("text") or "")[:60], "summary": o.get("text") or "", "artifacts": rj(root() / "donna" / "results.json").get(o["id"], []), "verification": [], "status": "presented" if o["id"] in spoken else "queued",
                           "createdAt": iso(o["ts"]), "contributors": [{"name": w["name"], "title": "", "summary": ""} for w in ws]})
     decisions = [{"id": k, "projectId": pid, "title": t.get("asked") or "", "context": t.get("task") or "", "status": "open",
                   "createdAt": iso(t.get("ts") or 0), "updatedAt": iso(t.get("ts") or 0)} for k, t in needs.items()]
@@ -1043,6 +1079,7 @@ def main(argv):
     a = sub.add_parser("state"); a.add_argument("name"); a.add_argument("state", choices=["working", "idle", "needs_you", "speaking", "on_call"])
     a = sub.add_parser("reply"); a.add_argument("name"); a.add_argument("id"); a.add_argument("kind", choices=["take", "note", "ask", "say", "fail", "transfer"]); a.add_argument("text")
     a = sub.add_parser("run"); a.add_argument("name"); a.add_argument("id")  # internal: started by send for a codex worker
+    a = sub.add_parser("result"); a.add_argument("name"); a.add_argument("id"); a.add_argument("file"); a.add_argument("--title")
     x = p.parse_args(argv)
     if x.cmd == "new":
         new(x.name, x.kind, x.project)
@@ -1065,6 +1102,8 @@ def main(argv):
         state(x.name, x.state)
     elif x.cmd == "run":
         run(x.name, x.id)
+    elif x.cmd == "result":
+        print(json.dumps(result(x.name, x.id, x.file, x.title)))
     else:
         reply(x.name, x.id, x.kind, x.text)
 

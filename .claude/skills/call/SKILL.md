@@ -152,6 +152,13 @@ Shell variables do not carry over between commands, so each command sets its own
      `R <id> ask "Want me to open a pull request?"` gets a yes. `git worktree remove` it once the PR is merged or the person
      says drop it.
    - Review before you report: read what the workers changed, run the repo's own checks (tests, build, lint) yourself.
+     **Deliver the result before saying done:** for a page, standalone HTML or document, run
+     `herd.py result donna <original task id> <absolute entry file> --title "<short result name>"`.
+     This copies that reviewed file into local result storage and adds the office's Open result link.
+     A standalone HTML result must embed its CSS/JavaScript/assets; the preview does not load remote resources.
+     Registration accepts only this attached repository and its Git worktrees. Report a registration
+     failure as a limitation; do not claim the page is open, running or deployed. In the spoken result,
+     tell the person they can use **Open result** in the report; do not read a filesystem path aloud.
      Anything to fix goes back to the worker (SendMessage; Codex: `herd.py send`) or to a new one; never fix it yourself. Then ONE result that names who did what: `R <id> say "Done. Leo built the
      timer and Mia the styling. It's on its own branch and the tests pass."`; a failure: `R <id> fail "I could not get the tests to run."`
    - **A `say` while nobody is on the line makes the voice call the person** (`bridge.py --ring`). Make every `say`

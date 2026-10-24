@@ -55,5 +55,22 @@ class ProjectFlow(unittest.TestCase):
         self.assertTrue(seed().startswith('Calling about: Your page is ready.'))
         self.assertIn(str(self.project), seed())
 
+    def test_result_snapshot_survives_source_changes_and_is_visible_in_report(self):
+        with patch.object(herd, 'wake'): tid = herd.send('donna', 'Build a standalone page')
+        page = self.project/'index.html'; page.write_text('<h1>Reviewed result</h1>', encoding='utf-8')
+        item = herd.result('donna', tid, page, 'My page')
+        herd.reply('donna', tid, 'say', 'Done. Use Open result in the report.')
+        page.write_text('<h1>Unreviewed edit</h1>', encoding='utf-8')
+        snapshot = herd.home()/'results'/item['id']/item['file']
+        self.assertIn('Reviewed result', snapshot.read_text())
+        self.assertEqual(herd.office()['briefings'][-1]['artifacts'], [item])
+
+    def test_results_cannot_publish_sibling_files_or_unknown_tasks(self):
+        with patch.object(herd, 'wake'): tid = herd.send('donna', 'Build a page')
+        outside = self.base/'unrelated-private-project'/'private.html'
+        outside.write_text('private', encoding='utf-8')
+        with self.assertRaises(SystemExit): herd.result('donna', tid, outside)
+        with self.assertRaises(SystemExit): herd.result('donna', 'missing-task', outside)
+
 
 if __name__ == '__main__': unittest.main()

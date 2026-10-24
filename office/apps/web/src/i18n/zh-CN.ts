@@ -15,6 +15,8 @@ export default {
   'agency.reconnecting': '重新连接中…',
 
   'agency.reports': '报告',
+  'agency.open_result': '打开成果',
+  'agency.open_result_named': '打开成果：{name}',
   'agency.briefing_queue': '报告',
   'agency.hide_panel': '收起面板',
   'agency.back': '‹ 返回',
