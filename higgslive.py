@@ -53,7 +53,8 @@ Reply to what the user just said. Mention a running task only if they ask or whe
 what the result should be), never as a shell command or code. It runs in the background; its result arrives later as the tool's
 output, often several turns after the call. Never guess or report the result before it arrives; when it does, bring it up as a
 natural aside and give the outcome in your own words. Never report an action as done, running, or sent unless you called {TOOL}.
-When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; never claim progress or results you did not get from a tool."""
+When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; while a
+task is running, even a casual "how's it going" means the task. Never claim progress or results you did not get from a tool."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
 CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending)|should be running|backend result)")
@@ -225,6 +226,8 @@ class Conn:
             st["in_flight"] = False
             calls = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == TOOL and o.get("executor") != "server"][:1]   # server-side tools (web_search, Oct 23) need no output from us. [:1]: 1.0 fires 2-3 near-duplicate calls for one request (9/12, probe/r15/A-tools.md); extras left open cause no error
             status = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == STATUS and o.get("executor") != "server"][:1]
+            self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})   # before the status answer: a status call in
+            self._open.update(c["call_id"] for c in calls)   # the same response must see this task running, or it reads "idle" and says "done"
             for c in status:   # synchronous: answered now, never enters _pending/_open
                 text = status_summary(self._t0 - time.monotonic() + time.time(), [(t, ts, d not in self._open, self._notes.get(d)) for d, (t, ts) in self._sent.items()])
                 await self._send({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": c["call_id"], "output": text}})
@@ -232,7 +235,6 @@ class Conn:
             if status and not calls:
                 st["guarded"] = True; await self._send({"type": "response.create"})   # same socket, so the output is added before the reply is made
                 self._emit("response.done", calls=1, pending=len(self._pending)); return
-            self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})
             if self.delegation and not calls and self._fake_claim() and not st["guarded"] and not st["turn_delegated"]:
                 st["guarded"] = True   # ponytail: one forced retry per user turn, no loop
                 log.info("GUARD: reply claimed or offered a task without calling %s — nudging", TOOL)
@@ -240,7 +242,7 @@ class Conn:
             spoke = any(o.get("type") == "message" and any(p.get("text") or p.get("transcript") for p in o.get("content", [])) for o in ev["response"].get("output", []))
             for c in calls:
                 did, task = c["call_id"], json.loads(c["arguments"]).get("task", "")
-                st["turn_delegated"] = True; self._pending.add(did); self._open.add(did)
+                st["turn_delegated"] = True; self._pending.add(did)
                 if not spoke: await self._send({"type": "response.create"})   # 1.5 speaks a preamble in the call response itself; a second ack would make it talk twice. No output yet: the call stays open and the model acknowledges. Bare: a body with instructions/tool_choice makes it greet from scratch
                 self._tasks.append(asyncio.create_task(self._still_working(did)))
                 self._emit("session.delegation.created", delegation={"id": did, "task": task}, offset_ms=int((time.monotonic() - self._t0) * 1000))
@@ -304,4 +306,8 @@ if __name__ == "__main__":   # self-check: no network
         assert sent == [], sent
         asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "function_call", "name": STATUS, "call_id": "s1"}]}}))
         assert "make index.html, has been running for a few seconds, latest note: writing index.html." in sent[0]["item"]["output"], sent
+        sent.clear()   # status + delegate_task in one response: the status answer already counts the new task as running
+        asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "function_call", "name": STATUS, "call_id": "s2"},
+                                                                                 {"type": "function_call", "name": TOOL, "call_id": "d2", "arguments": '{"task": "open it"}'}]}}))
+        assert "open it, has been running" in sent[0]["item"]["output"], sent
     print("ok")
