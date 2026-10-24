@@ -7,7 +7,7 @@ export const root=fileURLToPath(new URL('..',import.meta.url));
 export function checkRepo(){
  const names=execFileSync('git',['ls-files','--cached','--others','--exclude-standard','-z'],{cwd:root,encoding:'utf8'}).split('\0').filter(Boolean);
  const files=[...new Set(names)];
- const allowed=/^(?:apps\/(?:web|server)\/|tests\/|scripts\/|docs\/|licenses\/|\.github\/|(?:README\.md|AGENTS\.md|THIRD_PARTY_NOTICES\.md|\.gitignore|\.gitattributes|\.env\.example|package(?:-lock)?\.json|tsconfig\.json|vitest\.config\.ts)$)/;
+ const allowed=/^(?:apps\/(?:web|server)\/|tests\/|scripts\/|skills\/|docs\/|licenses\/|\.github\/|(?:README\.md|AGENTS\.md|THIRD_PARTY_NOTICES\.md|\.gitignore|\.gitattributes|\.env\.example|package(?:-lock)?\.json|tsconfig\.json|vitest\.config\.ts)$)/;
  const forbidden=/(^|\/)(?:node_modules|artifacts|\.history|\.runtime|\.cache|dist|candidates|\.git|\.env)(\/|$)|\.(?:wav|pcm|webm|log|jsonl)$/;
  const problems=[];
  let bytes=0;

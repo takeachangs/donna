@@ -37,7 +37,7 @@ If the voice drops (Higgs idle timeout, network, session rotation), do nothing: 
 
 ## How the office works
 
-- **Donna's voice** (Higgs) takes your goal and nothing more. **Donna's brain**, a persistent read-only Claude Code lead session per project, reads the project, plans 1–4 workers (small tasks normally need one), runs them one at a time, then reviews their files and writes one briefing. Workers never talk to you.
+- **Donna's voice** (Higgs) takes your goal and nothing more. **Donna's brain** is a persistent Claude Code orchestrator per project: it reads the project, spawns 1–4 Sonnet workers as its own parallel subagents (small tasks normally need one), forwards your messages to them, then reviews their files and writes one briefing. Ask "what is Mika doing" or tell a worker something and Donna uses `worker_status` / `message_worker`. Workers never talk to you.
 - The **···** beside a project opens **Project settings** for renaming or recoverable deletion. **Recently deleted** restores the same room, files, reports and native sessions. Deleting pauses active work; restoring keeps it paused.
 - **Project rooms** show real assignments, fixed desks and saved deliverables. **Details** contains the full report, checks and native session reference.
 - **Office floor** is the global view. Project rooms expand along a shared hall, with Donna's suite at the entrance. Workers stay at their desks; a completed workflow triggers a short delivery trip to Donna and back.
@@ -48,7 +48,7 @@ If the voice drops (Higgs idle timeout, network, session rotation), do nothing: 
 
 Default Codex execution is **GPT-6.1 Sol / low**; the brain can choose medium for a specific worker, and brain steps (plan, review) run at medium effort. One native writer runs at a time. Project working directories are isolated. The secretary provides the spoken interaction; workers currently return text and files. Arbitrary repository attachment, mail, calendar, deployment and independent worker voices are not implemented.
 
-Claude Code is a verified second worker engine (`apps/server/src/agency/claude.ts`). The brain sets `provider: "claude"` on a worker when you ask for Claude; otherwise `AGENCY_DEFAULT_PROVIDER` applies. A worker is bound to its engine's native session: the first run creates it with `--session-id`, later runs `--resume` it. Claude workers have file tools only (Read, Edit, Write, Glob, Grep) confined to the project directory, with no shell, hooks or MCP. The status check runs `claude auth status`, never inference; offline tests use a fake CLI. Verified live on 2026-10-24: a new file assignment and a resumed follow-up each finished in about 8 s on Sonnet and reached review and the briefing queue.
+Claude Code runs Donna's brain and its workers (`apps/server/src/agency/claude.ts`). The brain is an orchestrator session with Agent, SendMessage, Skill, file tools and sandboxed Bash, confined to the project directory by the sandbox and scoped allow rules (not `--restricted` or `--safe-mode`, which disable skills). Its Sonnet subagents are the workers, shown from its stream-json output; a user message reaches a running worker through the brain's stdin. Its prompts live in two skills, `skills/donna-brain` and `skills/donna-worker`, copied into each room's `workspace/.claude/skills`. When you ask for Codex, the brain returns a JSON plan and the old one-writer Codex queue runs it; `AGENCY_DEFAULT_PROVIDER` still applies there. The status check runs `claude auth status`, never inference; offline tests use a fake CLI. Verified live on 2026-10-24 (Claude Code 2.1.309, Opus brain): "build a landing page with a contact form" ran two Sonnet workers in parallel, a mid-run "tell Theo to use a blue palette" reached the brain through its stdin and was acknowledged in the one briefing, in 70 s.
 
 ## Source and private data
 
@@ -57,6 +57,7 @@ apps/web/                 Office UI, audio and a small Three.js scene
 apps/server/src/agency/   Secretary, workspace, persistence and native adapters
 tests/                    Offline regression tests
 scripts/                  Dev launcher, explicit live test, source packaging
+skills/                   donna-brain and donna-worker prompts for Claude Code
 docs/                     Architecture, upstream provenance and cleanup report
 licenses/                 Retained third-party licenses
 ```

@@ -91,6 +91,8 @@ wss.on('connection',(client,req)=>{
   if(name==='revise_assignment')return workspace.revise(args);
   if(name==='control_assignment'){if(args.action==='pause')return workspace.pause(args.assignment_id);if(args.action==='resume')return workspace.resume(args.assignment_id);if(args.action==='accept')return workspace.accept(args.assignment_id);throw Error('Unknown control action');}
   if(name==='record_decision')return workspace.decide(args);
+  if(name==='worker_status')return workspace.workerStatus(args.worker,projects.list().some(p=>p.id===selected)?selected:undefined);
+  if(name==='message_worker')return workspace.message({project_id:projects.list().some(p=>p.id===selected)?selected:undefined,worker:args.worker,text:args.text});
   if(name==='prepare_command_room'){view='command';emit({type:'view',view:'command'});return {committed:true,...read(args.project_id)};}
   throw Error('Unknown secretary tool');
  }

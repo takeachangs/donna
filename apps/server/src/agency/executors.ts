@@ -2,11 +2,11 @@ import {LocalCodex} from './codex.js';
 import {LocalClaudeCode} from './claude.js';
 import type {Provider} from './workspace.js';
 
-/** Codex or Claude Code runs the workers (whichever is signed in); a read-only Claude Code lead session is Donna's brain. */
+/** Codex or Claude Code runs the workers (whichever is signed in); a sandboxed, skill-driven Claude Code lead session (subagents, project-only writes) is Donna's brain. */
 export class AgencyExecutors {
  readonly codex=new LocalCodex();
  readonly claude=new LocalClaudeCode();
- readonly brain=new LocalClaudeCode({model:process.env.AGENCY_BRAIN_MODEL?.trim()||'opus',tools:['Read','Glob','Grep']});
+ readonly brain=new LocalClaudeCode({model:process.env.AGENCY_BRAIN_MODEL?.trim()||'opus',brain:true});
  private chosen?:Promise<Provider>;
  /** Resolved once per process. */
  defaultProvider():Promise<Provider>{return this.chosen??=(async()=>{

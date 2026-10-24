@@ -4,7 +4,7 @@ const text=z.string().trim().min(1);
 export const workPlanSchema=z.object({checkpoint:text.max(1000),rationale:text.max(1500),workers:z.array(z.object({key:text.regex(/^[a-zA-Z0-9_-]{1,50}$/),title:text.max(180).optional(),role:text.max(100),responsibility:text.max(1500),brief:text.max(6000),acceptance:text.max(2000),reasoning_effort:z.enum(['low','medium']).default('low'),depends_on:z.array(text).max(8).default([]),reuse_worker_id:z.string().trim().nullish(),provider:z.enum(['codex','claude']).optional()})).min(1).max(4)});
 // Donna's brain (a lead Claude Code session) writes plans; the voice only passes goals.
 export const brainPlanSchema=workPlanSchema.extend({title:text.max(120)});
-export const brainReviewSchema=z.object({summary:text.max(12000),verification:z.array(z.string().max(3000)).max(20).default([]),needsInput:z.string().max(3000).optional()});
+export const brainReviewSchema=z.object({title:text.max(120).optional(),summary:text.max(12000),verification:z.array(z.string().max(3000)).max(20).default([]),needsInput:z.string().max(3000).optional()});
 export const goalSchema=text.max(2000);
 // A model-created room must explicitly choose work or an empty room.
 export const createProjectSchema=z.object({name:z.string().trim().max(80).optional().describe('Short room name. Leave it out unless the user named the room; the office names it from the brief.'),brief:z.string().max(2000).default(''),initial_work:goalSchema.nullable().describe('The work to start now, in the user\'s words with every constraint they gave. Donna\'s brain plans the team. Use null only for an explicitly empty room.')});
