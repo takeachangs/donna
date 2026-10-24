@@ -104,6 +104,9 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
   worker to the phone in Donna's suite for the duration and back after, and the call pill reads "On the line: <name>".
   `workers[].voice` is the Higgs voice a worker speaks in when put through: by the look's gender, round-robin in order of
   appearance (female chloe, eleanor, nora; male jake, marcus, oliver; nora last because Donna is nora).
+  Look and voice follow the first name's gender (#87: "Mia" spoke as jake): `herd.GENDER` maps the `FIRST` names, a
+  female name gets `char-female-d/e/b` and a female voice, a male name `char-male-b/a/d` and a male voice, each round-robin
+  per gender; a name not in the map keeps the `KEYS` round-robin. One look per name for the whole office.
 
 ## Contracts that must not drift (change every side in the same commit)
 - `office.json` shape above; `WorkStatus` words; `call.state` words.
