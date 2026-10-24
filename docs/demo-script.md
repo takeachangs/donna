@@ -14,7 +14,7 @@ spawns shows up here, in the office. Seongmin, call her."
 ## 0:20 Pickup and a thin request (Seongmin)
 S presses Enter. Donna: "Hey, it's Donna. What do you need?"
 S: "Let's build a small focus timer web app."
-Donna asks one question with a proposal (a Pomodoro page, light and dark).
+Donna: "Should I make it a one-page focus timer with twenty-five minutes of work and five-minute breaks, and include both light and dark modes?"
 J (over the question): "She didn't guess. The request was thin, so the brain read the repo and came back with a
 proposal and one question. That's Claude Code deciding, not the voice."
 S: "Yes, and give it a session counter."
@@ -28,14 +28,14 @@ hooks firing inside the workers. Each of them works in its own git worktree."
 
 ## 1:20 Talk while they work (Seongmin)
 S: "How's it going?"
-Donna gives one fresh status line naming the workers.
-S interrupts her mid-sentence: "Actually, sorry, one thing: make the break five minutes."
+Donna: "Leo is building the timer page and logic, and Mia is handling the stylesheet."
+S interrupts her mid-sentence: "Actually, sorry, one thing: make the break ten minutes."
 Donna stops, listens, and passes it on.
 J: "Barge-in is Higgs. The follow-up went to the brain as a correction, and the brain forwards it to the worker who
 owns that file."
 
 ## 1:50 The result (Donna)
-Donna: "Done. Leo built the timer and Mia the styling. It's on its own branch, tests pass."
+Donna: "Leo built the focus timer with twenty-five minute sessions, five-minute breaks, and a session counter, and Mia handled the light and dark styling. The code is on its own branch."
 J: "Leo and Mia go to the lounge. The result came to her as a report; she spoke it when there was a gap in the
 conversation. If Seongmin had hung up, the phone would have rung him."
 
