@@ -85,10 +85,10 @@ wss.on('connection',(client,req)=>{
   if(name==='prepare_command_room'){view='command';emit({type:'view',view:'command'});return {committed:true,...read(args.project_id)};}
   throw Error('Unknown secretary tool');
  }
- const onLanded=(w:Workspace)=>{for(const b of w.briefings)if(b.status==='queued'&&!seen.has(b.id)){seen.add(b.id);pending.push({id:b.id,since:Date.now()});}};
+ const onLanded=(w:Workspace)=>{for(const b of w.briefings)if(b.status==='queued'&&!seen.has(b.id)){seen.add(b.id);pending.push({id:b.id,since:Date.now()});console.log(`[ring] landed ${b.id} for ${w.projects.find(p=>p.id===b.projectId)?.name||'a project'}`);}};
  async function announce(){
   if(!ready||!voice||closed)return;
-  const bs:Briefing[]=[];pending=pending.filter(p=>{try{const b=workspace.briefing(p.id);if(b.id===presentation?.briefingId)return false;bs.push(b);return true;}catch{return false;}});
+  const bs:Briefing[]=[];pending=pending.filter(p=>{try{const b=workspace.briefing(p.id);if(b.id===presentation?.briefingId){console.log(`[ring] dropped ${p.id}: presented by user`);return false;}bs.push(b);return true;}catch{console.log(`[ring] dropped ${p.id}: no longer queued`);return false;}});
   if(!bs.length)return;
   const now=Date.now(),names=workspace.snapshot().projects,label=bs.map(b=>`"${b.title}" for ${names.find(p=>p.id===b.projectId)?.name||'a project'} (briefing_id ${b.id})`).join('; '),why=holdReason({now,heldSince:pending[0].since,voiceBusy:voice.busy,...floor});
   if(why){if(why!==heldWhy)console.log(`[ring] holding ${label}: ${why}`);heldWhy=why;return;}
