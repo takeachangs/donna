@@ -67,7 +67,6 @@ Total spoken demo: about 3:50. If time is short, drop the interruption (1:30) an
 ## Docs that contradict each other (listed, not fixed)
 1. Issue #12 asks for a 3-minute `docs/demo.md` plus a separate `docs/submission.md`; the task here asks for a 4-minute sheet with the submission text inside `docs/demo.md`. The form wants a 2-3 min video.
 2. Issue #12 says branch `issue-12`; the task uses `demo-12`.
-3. IDEAS.md (Oct 23 21:50): Boson asked that their server-side `delegate`/`_delegate` not be publicised and the public repo should not name it; `docs/INDEX.md` Gotchas and CLAUDE.md name it. This sheet words finding 2 vaguely; the user should decide.
 4. IDEAS.md Oct 23 22:30 and `docs/herd.md` describe workers as headless `claude -p` via `herd.py` and Jerrold's scene reading `events.jsonl`; the Oct 24 ~07:00-08:00 entries replace that with the Agent tool plus `office.json` hooks. `docs/herd.md` may be stale.
 5. CLAUDE.md and the `/call` skill step 4 say `--out AirPods`; the setup requested here uses `EarPods`. The bridge refuses an unmatched device name.
 6. IDEAS.md Oct 23: Stage 2 Twilio is a stretch/spec only (`probe/r15/E-twilio.md`), while issue #12 lists "pcmu" in the Higgs usage statement; no phone line is built, so the draft says spec only.

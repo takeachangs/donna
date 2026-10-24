@@ -12,7 +12,6 @@ Every result the team set out to get is in; §12 lists what was not attempted.
 - Unloaded, it is ~70 ms slower than 1.0 and otherwise indistinguishable in latency. Most of what a caller waits for is the silence detector, not the model. [B]
 - It is **less reliable at using tools**: on the first turn it says "I've handed that off" without calling `delegate_task` in 7/24 runs (29%; 1.0: 0/4). The layer's NUDGE recovers it **12/12** when it fires, but the `CLAIM` regex that triggers it misses 3 of 15 fake phrasings. Fixable in the layer at ~+1.5 s on a quarter of task turns. [A]
 - **About 2 simultaneous generations per API key.** A third concurrent `response.create` fails with `upstream_error`. 1.0 takes 8 at once. [C]
-- Boson's advertised background thinking model is **not reachable through the API**: `_delegate` is still the instant "not configured" stub on 1.5. [A]
 - The async tool protocol our layer depends on works on 1.5 exactly as on 1.0: a call stays open across turns, a result returned 30 s later is spoken and remembered. [A]
 
 ## 2. Latency [B]
@@ -56,7 +55,7 @@ Text mode, `delegate_task` declared as in `higgslive.py`, request "make grocerie
 - **Fake claim on 1.5 is fixable in the layer:** loosen `CLAIM` to `\bhand(ing|ed)\b[^.]{0,20}\boff\b` (covers all 15 observed phrasings) and keep the existing one-shot NUDGE; the strong instruction line alone is not the fix (5/24 vs 7/24). Earlier phase-2 error rates were key-level collisions (see §2), not model behaviour; the clean rerun had 0 errors in 48+12 responses.
 - **False "done" on the other pending task:** when two tasks are open and only the second result lands, the model tends to announce both as finished. Mitigation to test: keep a `[progress] <task> still running` note in context (the layer's thinking channel) until each result arrives.
 - **1.0 over-calls** and this affects today's demo: the layer emits one `session.delegation.created` per call, so the bridge would spawn 2–3 agent jobs for one request. Fix: open only the first call per response, return a dummy output to the extras. This contradicts the clean 3/3 recorded in `IDEAS.md` (Oct 23 21:30), which had N=3.
-- Server tools: `delegate` is hijacked on both models (`executor: "server"`), returns "The delegation service is not configured." instantly; declaring a `task` argument yields `_delegate() got an unexpected keyword argument 'task'`, because the server runs a Python function with its own schema (`reason`). After a server tool output the server starts the next response by itself. `web_search` runs server-side on 1.5 and works (~0.5 s, excerpts with URLs; 1.5 grounded its answer in the excerpt, 1.0 appeared to invent a price, N=1).
+- Server tools: the function name `delegate` (and `web_search`) is reserved by the server; ours is `delegate_task`. After a server tool output the server starts the next response by itself. `web_search` runs server-side on 1.5 and works (~0.5 s, excerpts with URLs; 1.5 grounded its answer in the excerpt, 1.0 appeared to invent a price, N=1).
 - 1.5 mentions the open task in unrelated answers ("…while the file is being created"); 1.0 never did. `call_id` is 16 hex on 1.5 vs 32 on 1.0 (different serving stack). `usage` is populated on both models now (tokens + `cached_tokens`); 1.5 renders the same prompt ~120 tokens larger.
 - **A pending call survives a barge-in** on both models (audio, 3/3 each, 0 errors): the ack response is cancelled at `speech_started`, nothing references the `call_id`, and the output sent 30 s later is accepted, spoken and recalled 3/3. `conversation.item.retrieve` shows the `function_call` item as `completed` throughout, which only means it finished generating: the server exposes nothing about a call awaiting output, so the layer's `_open` set is the only record. Gemini documents the opposite (pending calls cancelled on interrupt). [A]
 
@@ -128,7 +127,6 @@ Full 26-row matrix with sources in `probe/r15/D-compare.md` (OpenAI Realtime `gp
 
 **Where Higgs beats the frontier APIs:** price (≈$0.016/min audio vs $0.05 GPT-Live, $0.023 Gemini); async tool calls on the voice model itself, undocumented but real, and they survive barge-in (Gemini cancels them); opus and μ-law and 8–48 k PCM; cloned voices; built-in `web_search`; manual turns at ~0.5 s. [D]
 
-**Pitch implication.** `CLAUDE.md` and `IDEAS.md` (slide 18) frame 1.5 as "the thinking half" we complement. The API shows no thinking half yet. Until Boson wires `_delegate`, the honest line is: "Boson announced a thinking-only background model; it is not reachable in the preview. We built the acting half on the protocol both versions already expose." Decision for the team.
 
 ## 9. Phone in to your coding sessions (Twilio) [E]
 
@@ -165,7 +163,7 @@ phone ─ Twilio ─ GET https://HOST/voice ─┐   cloudflared quick tunnel �
 7. **Retry the response on `upstream_error`**; run one key per live 1.5 call. [C]
 8. **`silence_duration_ms: 400`** as the default (−70 ms, no early cuts); keep 0.85 threshold. [B]
 9. **Idle keepalive** for a user waiting silently on a long task: text item + `response.create` before 300 s (the "still working" note already does this at `STILL_WORKING_AT`; check it is a response, not just an item). [C]
-10. Report to Boson: 48 k in+out `upstream_error` on 1.5; ~2 generations per key; `_delegate` still a stub; whether `_delegate` will ever accept a task argument. [A][C]
+10. Report to Boson: 48 k in+out `upstream_error` on 1.5; ~2 generations per key. [A][C]
 
 ## 11. Corrections to earlier notes
 
@@ -174,7 +172,6 @@ phone ─ Twilio ─ GET https://HOST/voice ─┐   cloudflared quick tunnel �
 - "`usage` is always null": no longer; populated on both models since Oct 23. [A]
 - "Higgs tool calls survive barge-in": stated in D's phase 1 from the 1.0 layer's experience, retracted as unproven, then confirmed by A's phase 3 (3/3 per model). It stands, now with evidence.
 - `IDEAS.md` "clean 3/3, no re-call" on 1.0: N=3; with N=12, 9 responses over-called. [A]
-- `CLAUDE.md` "1.5's version is a thinking-only background model": announced on a slide, not present in the API. [A]
 
 ## 12. Pending
 

@@ -104,7 +104,7 @@ Shell variables do not carry over between commands, so each command sets its own
    Optionally write `$D/context.txt` first: a few plain sentences on what this chat is working on, under 4000
    characters; every call starts with it. Then start the ring (it stays in the background, no call open):
    ```bash
-   pgrep -f "bridge.py --ring" >/dev/null || (cd ~/projects/higgs-hackathon && (nohup uv run -q bridge.py --ring --backend session --voice nora --out AirPods > /dev/null 2>&1 < /dev/null &)); sleep 3; tail -2 ~/projects/higgs-hackathon/bridge.log
+   pgrep -f "bridge.py --ring" >/dev/null || (cd ~/projects/higgs-hackathon && (nohup uv run -q bridge.py --ring --backend session --voice nora --out EarPods > /dev/null 2>&1 < /dev/null &)); sleep 3; tail -2 ~/projects/higgs-hackathon/bridge.log
    ```
    Expect `ring: waiting`. From now on every `say` rings the person and the voice opens with your result; tasks they
    give on the call land in your inbox. The call ends when the voice says its sign-off "Hanging up now." (after the
@@ -121,7 +121,7 @@ Shell variables do not carry over between commands, so each command sets its own
   `~/.higgs/state.json` the call state (`off|ringing|listening|thinking|speaking`, written by the bridge).
 - `bridge.log` in the hackathon folder is the voice's log (every turn, timestamps). The voice's own rules (what it
   answers itself, corrections, idle, sign-off) live in `bridge.py`'s `PROMPT`; you never repeat them.
-- Audio: laptop mic in, AirPods out (`--out AirPods`); if the person hears nothing, use `--out Speakers`.
+- Audio: laptop mic in, wired EarPods out (`--out EarPods`; AirPods' Bluetooth mic degrades STT, and the speakers echo into the mic); the bridge exits if the device name matches nothing.
 - Test without the voice: `uv run herd.py send donna "what time is it"` from another shell lands in your inbox.
 - Run in tmux (`bridge.py --brain`), each new inbox line is also typed into your window as `Phone task <id>: …` or
   `Answer to task <id>: …`, to wake you. It is the same line as in the inbox (which has the transcript): handle each id once.

@@ -1,150 +1,75 @@
-# Donna and the herd: a voice secretary who runs your coding agents (design memo, Oct 23 ~23:00)
+# Donna and the herd: the mailbox between the voice and the brain (design memo Oct 23, rewritten Oct 24 for the shipped code)
 
-Reference: `warmblood-kr/remuda` (a herd of agent sessions that outlives any ride; verbs `new/ls/send/capture/close`;
-MCP and Lua on top) and `warmblood-kr/remuda-butler` (the butler: one coordinator that distributes work, mail with a
-`Next:` reply line, cascading spawn, code-built status). We borrow the vocabulary and the invariants, not the Rust/Lua/
-Matrix. Decisions below are from Oct 23 ~23:00 and replace the earlier multi-voice draft.
+Reference: `warmblood-kr/remuda` and `warmblood-kr/remuda-butler` (verbs `new/ls/send/capture/close`; mail with a `Next:` reply
+line; deferred replies; code-built status). We borrow the vocabulary and the invariants, not the Rust/Lua/Matrix.
 
-## 1. The model (decided)
+## 1. The model
 
-- **One frontliner: Donna.** She is the only one who talks to the user and the only one who calls the user. She is the
-  butler in the CTO's vocabulary: she takes the request, distributes the work, reports back.
-- **Donna is a Claude Code session.** Plain Claude Code, no channels or other add-ons; the `/call` skill is her job
-  description. She talks to the user through Higgs (the voice), not through any Claude Code feature.
-- **One level deep.** Donna spawns worker Claude Code sessions (headless `claude -p`) for the actual work and never does
-  long work herself. Workers never talk to the user; they report to Donna.
-- **The phone is proactive both ways.** Donna can call the user (the voice starts speaking first: "Calling about…"),
-  and while on the line the user can ask her anything, give new work, redirect.
-- **MacBook first, Twilio second.** The first "phone" is the laptop speaker and mic: a helper that rings when Donna has
-  something, hangs up when the conversation is over. The Twilio design (`probe/r15/E-twilio.md`) swaps the audio
-  device for a phone line later; nothing above it changes.
-- **One voice.** Donna's. (The six Higgs presets and the per-leader voices from the earlier draft are dropped; a
-  `transfer` tool is not needed.) (Oct 24, #28: the user can still be put through to a worker in that worker's own voice; see §6.)
+- **One frontliner: Donna.** She is the only one who talks to the user and the only one who calls the user.
+- **The voice is her mouth, the brain is her mind.** The voice is the Higgs Realtime session run by `bridge.py`/`higgslive.py`.
+  The brain is the user's own interactive Claude Code session on the `/call` skill. Anything substantive goes
+  `delegate_task` → the brain's inbox (the call stays open); the brain answers with `herd.py reply`. Small talk and status
+  ("how's it going?", answered from `office.json` by `higgslive.office_status`) come from the voice directly.
+- **Workers are the brain's Agent-tool subagents** (named Sonnets, `run_in_background`, one git worktree per task). They
+  never talk to the user and `herd.py` does not spawn them; Claude Code dispatches, the hooks report them to the office
+  (`docs/office-state.md`).
+- **The phone is proactive both ways.** A `say` with nobody on the line rings the user (`bridge.py --ring`); the voice
+  opens with "Calling about: …".
+- **One voice per call.** Donna's, unless the user is put through to a worker in that worker's voice (§6).
 
-## 2. What we take from remuda / butler
-
-| Their idea | Ours |
-|---|---|
-| The herd outlives the ride | Workers live in `~/.higgs/herd/<name>/` and keep running when the call ends; a call (speaker now, phone later) is a *ride* that attaches to Donna. |
-| Butler = one coordinator, cascading spawn | Donna spawns workers with `herd.py new` + `send`; depth 1. The scene shows Donna with her workers around her. |
-| Verbs `new / ls / send / capture / close` | `herd.py`'s whole surface. Donna uses them from her shell; the bridge and the 3D scene read what they write. |
-| Mail with a `Next:` line | Already ours: each inbox line tells the agent how to reply (`herd.py reply donna <id> say\|note`). Workers reply the same way, into Donna's view. |
-| Deferred reply (`pending{timeout, on_cancel}`) | The open `delegate_task` call in `higgslive.py`. Adopt the cancel reasons: a hang-up is `client_disconnected`; the result is held and Donna calls back. |
-| Code-built status, never screen text | "How's it going?" is answered from `status.json` of every worker, not by interrupting them. Same source drives the scene's entity states. |
-| Caller identity is advisory | Say so in our docs too: the PIN decides who talks (Twilio later); the sessions' own permission mode decides what they may do. |
-
-Left out: PTY attach, Lua, Matrix, cluster, approvals/grants (later), real remuda as a backend (a backend swap later,
-since the verbs and directory contract are the same).
-
-## 3. Architecture
+## 2. Architecture
 
 ```
-user ⇄ speaker+mic (later: Twilio) ⇄ Higgs voice "Donna" ⇄ bridge.py ⇄ Donna's Claude Code session (/call, inbox/outbox)
-                                          │                                   │ herd.py new / send / capture / close
-                                          │                                   ▼
-                                          │                          worker sessions: claude -p, one dir each
-                                          └──── task_status ◀─── ~/.higgs/herd/*/status.json
-                                                                   ~/.higgs/herd/events.jsonl ──▶ Jerrold's 3D scene
+user ⇄ speaker+mic ⇄ Higgs voice "Donna" ⇄ bridge.py ⇄ ~/.higgs/herd/donna/{inbox,outbox}.jsonl ⇄ the brain (Claude Code, /call)
+                                                                                                   │ Agent tool: subagents in worktrees
+        office ◀── ~/.higgs/office.json ◀── herd.py hook <Event> (hooks/office.json) ◀─────────────┘
 ```
 
-- **The voice is Donna's mouth, Donna's session is her brain.** Anything substantive goes `delegate_task` → Donna's
-  inbox (the call stays open); she answers with `say` (spoken) or `note` (silent progress). Small talk and status come
-  from the voice directly.
-- **Two voice tools only:** `delegate_task(task)` (unchanged) and `task_status()` (code-built from the herd: who is
-  working on what, who is idle, what finished). No `spawn_agent` for the voice; Donna decides when to spawn.
-- **Donna's rules (in the `/call` skill):** never do work longer than a minute yourself; `herd.py new <name> --kind
-  claude --project DIR` then `herd.py send <name> "<task>"`; watch the workers' outboxes; `herd.py reply donna <id> note` for
-  progress, `herd.py reply donna <id> say` for results, ≤3 plain sentences; when the user is not on the line, a `say` rings them.
-
-## 4. The contract on disk (one directory per agent, one event log for everyone)
+## 3. The contract on disk (one directory per agent)
 
 ```
 ~/.higgs/herd/
-  events.jsonl                   # append-only; every state change (the scene tails this)
-  donna/                         # kind: session (the interactive Claude Code session running /call)
-    meta.json  inbox.jsonl  outbox.jsonl  status.json
-  <worker>/                      # kind: claude (headless, --resume'd per task; pre-warmed at new)
-    meta.json                    # {name, kind, project, parent: "donna", created, since}   since: the last `new` (a duty period)
-    inbox.jsonl                  # {id, task, context, from, ts} (+ transcript, in_reply_to, replaces: §6)
-    outbox.jsonl                 # {id, kind: take|note|ask|say|fail|transfer, text, ts}
-    status.json                  # {state, task_id, task, last_note, started, unread}
+  events.jsonl                   # append-only; every state change
+  donna/                         # kind: session (the Claude Code session running /call)
+    meta.json  inbox.jsonl  outbox.jsonl  status.json  context.txt
 ```
-`state ∈ {starting, idle, working, needs_you, done, dead}`; Donna additionally has `speaking` (set by the bridge while the
-voice reads her words) and `on_call`. `status.json` also carries `tasks: {id: {state, task, asked?, ts}}`, one record per
-task with `state ∈ {queued, in_progress, needs_you, done, failed}` (§8): readers take state from there, never infer it.
+`inbox.jsonl`: `{id, task, context, from, ts}` plus `transcript`, `in_reply_to`, `replaces`, `with` (§6).
+`outbox.jsonl`: `{id, kind: take|note|ask|say|fail|transfer, text, ts}`. `status.json`: `{state, task_id, task, last_note,
+started, unread, tasks: {id: {state, task, asked?, ts}}}`; `state ∈ {starting, idle, working, needs_you, done, dead}`, Donna
+additionally `speaking` and `on_call` (set by the bridge); a task's `state ∈ {queued, in_progress, needs_you, done, failed}` (§7):
+readers take state from there, never infer it.
 
-`events.jsonl` lines (the scene needs nothing else):
-```
-{"ts":…, "ev":"agent.new",      "agent":"reviewer", "kind":"claude", "parent":"donna"}
-{"ts":…, "ev":"task.sent",      "agent":"reviewer", "id":"c7…", "task":"review the diff on main", "from":"donna"}   # queued
-{"ts":…, "ev":"task.taken",     "agent":"reviewer", "id":"c7…"}                                     # in progress (§8)
-{"ts":…, "ev":"task.note",      "agent":"reviewer", "id":"c7…", "text":"reading 14 files"}
-{"ts":…, "ev":"task.needs_you", "agent":"reviewer", "id":"c7…", "text":"keep the old parser too?"}  # waiting for the user (§8)
-{"ts":…, "ev":"task.sent",      "agent":"reviewer", "id":"9a…", "task":"no, drop it", "from":"voice", "in_reply_to":"c7…"}   # the answer
-{"ts":…, "ev":"task.done",      "agent":"reviewer", "id":"c7…", "text":"two issues, both in parser.py"}
-{"ts":…, "ev":"task.failed",    "agent":"reviewer", "id":"c7…", "text":"the tests do not run here"}   # instead of task.done
-{"ts":…, "ev":"task.spoken",    "agent":"donna", "id":"c7…"}   # bridge.py: the voice delivered that say/fail (on the call, or as a ring's opener)
-{"ts":…, "ev":"agent.state",    "agent":"reviewer", "state":"idle"}
-{"ts":…, "ev":"call.ring",      "agent":"donna", "about":"review finished"}     # Donna walks to the phone
-{"ts":…, "ev":"call.answered",  "agent":"donna"}   /  {"ev":"call.ended", …}
-{"ts":…, "ev":"call.transfer",  "agent":"donna", "to":"Maya"}   # put through to a worker's voice; "to":"donna" when Donna is back (#28)
-{"ts":…, "ev":"task.transfer",  "agent":"donna", "id":"c7…", "text":"Maya"}   # the brain's answer to "get me Maya on the line"
-{"ts":…, "ev":"voice.speaking", "agent":"donna"}   /  {"ev":"voice.user"}        # who is talking right now
-{"ts":…, "ev":"agent.close",    "agent":"reviewer"}
-```
-A file, not a socket, on purpose: `tail -F` is the integration test; a 20-line websocket broadcaster if the browser
-cannot read a local file.
+`events.jsonl` lines (`agent.new`, `task.sent|taken|note|needs_you|done|failed|transfer|spoken`, `agent.state`,
+`call.ring|answered|ended|transfer`, `voice.speaking|user`, `agent.close`) are appended by `herd.py` and the bridge; the office
+does not read them, it reads `office.json`.
 
-## 5. The MacBook phone ("a simple helper that proactively calls me")
+## 4. The phone
 
-`bridge.py --ring` runs in the background with no call open. It watches Donna's outbox and the herd:
-1. Donna writes a `say` while nobody is on the line → the bridge opens a Higgs session on the speaker, seeds
-   `Calling about: <text>` (the existing opener makes the voice speak first), logs `call.ring` then `call.answered`.
-2. The user talks; `delegate_task` → Donna's inbox as today; `task_status` from the herd.
-3. The call ends on "bye"/"that's all" (voice says goodbye, bridge closes the session), or after 60 s of silence,
-   or on Higgs's 300 s idle timeout → `call.ended`. Results that land with nobody on the line ring again (one call
-   at a time; several results are read in one call).
-Same flow on Twilio later: `ring` dials instead of opening the speaker.
+`bridge.py --ring` runs with no call open. It watches Donna's outbox: a `say` while nobody is on the line opens a Higgs
+session on the speaker seeded with `Calling about: <text>` (the voice speaks first), logs `call.ring` then `call.answered`;
+Enter calls Donna instead. The call ends on "bye" (the voice's "Hanging up now."), after 60 s of silence or Higgs's 300 s
+idle timeout. Results that land with nobody on the line ring again (one call at a time). A task still running at hang-up is
+released by the bridge, so its later `say` rings. Twilio is spec only (`probe/r15/E-twilio.md`).
 
-## 6. What changes in the repo (Saturday order, each step checkable alone)
+## 5. The hook reducer
 
-1. `herd.py` (one stdlib file): `new / ls / send / capture / close`, the dirs above, writes `events.jsonl` and
-   `status.json`; `new --kind claude` pre-warms (`claude -p "ready"` → session id saved in `meta.json`); `send` on a
-   claude worker runs `claude -p --resume` and streams notes into `outbox.jsonl`. Check: `herd.py new a --kind fake &&
-   herd.py send a "x" && tail -3 ~/.higgs/herd/events.jsonl` shows `agent.new, task.sent, task.done`.
-2. `/call` skill → Donna's job description (§3 rules); step 1 registers `donna/` in the herd instead of the global
-   inbox. Check: a `/call` session answers one dictated task by spawning a worker and `say`ing its result.
-3. `bridge.py`: `session` backend reads/writes `herd/donna/`; `task_status` tool from `status.json`; `--ring` mode
-   (§5). Check: `--backend fake --silent --text "…"` unchanged transcript plus the events; then a `say` written to
-   Donna's outbox with no call open makes the speaker ring.
-4. Hand Jerrold §4 first, before any of 1–3, so the scene is built against the same lines in parallel.
-5. Twilio (`E-twilio.md`): replace the speaker/mic with the phone adapter; `ring` dials.
-6. Busy-Donna hook (issue #5; folded into the office hook by #26): the wait loop only runs between tasks, so the
-   brain's own `PostToolUse` hands Donna new inbox lines mid-work. `herd.py hook PostToolUse` (stdlib, ~40 ms, also
-   logs the event and re-renders `office.json`, `docs/office-state.md`) acts only for the brain: no `agent_id` (a
-   subagent's tool call never consumes the inbox) and `session_id` equal to `donna/meta.json` `session` (or, before one
-   is recorded, `cwd` equal to `project`). It reads `inbox.jsonl` from `donna/.hook_offset` (separate from the wait
-   loop's `.offset`) and prints `hookSpecificOutput.additionalContext` with each task, its transcript and its
-   `herd.py reply` lines. Install: `claude --settings ~/projects/higgs-hackathon/hooks/office.json` (all six events).
-   Check: `uv run herd.py` (the self-check replays a scripted brain + subagent through the hook).
+`herd.py hook <Event>` (stdlib, ~40 ms; registered for six events by `hooks/office.json`:
+`claude --settings ~/projects/higgs-hackathon/hooks/office.json`) reads the hook JSON on stdin, logs the event and re-renders
+`office.json` (shape: `docs/office-state.md`). It acts as the brain only when there is no `agent_id` (a subagent's tool call
+never consumes the inbox) and `session_id` equals `donna/meta.json` `session` (before one is recorded, `cwd` equals `project`).
+Two wakes for a brain that went quiet:
+- `PostToolUse` hands the brain new inbox lines mid-work (`hookSpecificOutput.additionalContext`: each task, its transcript and
+  its `herd.py reply` lines; offset in `donna/.hook_offset`, separate from the wait loop's `.offset`);
+- `Stop` blocks the brain's idle stop once (`{"decision":"block"}`, not again while `stop_hook_active`) while inbox lines sit
+  past `.offset`, and `herd.send` to donna types `Phone task <id>: …` (or `Answer to task <id>: …`) into the brain's tmux
+  session (`donna`, or `donna-<dir>` for another `HIGGS_HOME`; `bridge.py --brain REPO` starts it). With no take 20 s after a
+  task the bridge logs it and the voice says the brain is not answering.
 
-Oct 24 (#26), what changed from the design above: workers are not `herd.py new` sessions but the brain's own Agent-tool
-subagents (named Sonnets, `run_in_background`); Claude Code dispatches, the hooks report them to the office. Inbox lines
-from the voice carry `"transcript": [[role, text], ...]` (the call's last 12 turns, `user`/`assistant`) in place of
+## 6. Inbox extras and transfer
+
+Inbox lines from the voice carry `"transcript": [[role, text], ...]` (the call's last 12 turns, `user`/`assistant`) in place of
 `context`, and `"replaces": "<id>"` when the user corrected an earlier task (the brain fails the old one with
 "Replaced by the corrected request."; the voice has already dropped its result).
-
-Oct 24 (#32): one inbox path. `bridge.py --backend session` always sends through `herd.send` to `herd/donna/inbox.jsonl`
-and reads `herd/donna/outbox.jsonl`, with or without `--ring`; the pre-herd `~/.higgs/inbox.jsonl`/`outbox.jsonl` and the
-`bridge.py say|note|take|ask|fail` CLI are gone (`herd.py reply donna …` is the reply path). A task still running when the
-user hangs up is released by the bridge at hang-up, so its later `say` rings them (`tests/fake_donna.py --demo` checks it).
-
-Oct 24 (#38): a brain whose wait loop died never woke again (no turn, so no hook). Two wakes now: `herd.py hook Stop` blocks
-the brain's idle stop once (`{"decision":"block"}`, not again while `stop_hook_active`) while inbox lines sit past `.offset`,
-naming them; and `herd.send` to donna types `Phone task <id>: …` (or `Answer to task <id>: …`) into the brain's tmux session
-when there is one (`donna` for `~/.higgs`, `donna-<dir>` for another `HIGGS_HOME`). `bridge.py --brain REPO` starts that
-session (Claude Code with the office hooks, then the skill). With no take 20 s after a task, the bridge logs it and the voice
-tells the user the brain is not answering.
 
 Oct 24 (#28), transfer: "get me on the line with Maya" is a delegation like any other; the brain answers `transfer "Maya"`.
 The bridge has the voice say it is putting them through, ends that Higgs session, plays a hold cue and starts a fresh one
@@ -153,14 +78,7 @@ what she worked on, the last 6 turns). Every question there is a delegation with
 the Maya subagent (SendMessage) and `say`s her answer. Her voice ends with "Putting Donna back on." (or 60 s of quiet does)
 and a fresh Donna session opens with a two-line summary and "Hey, it's Donna again."; "bye" hangs up from either.
 
-Not Saturday: approvals, context %, more than one level, several voices, real remuda as a backend.
-
-## 7. The pitch sentence
-
-"GPT-Live lets the voice coordinate your agents inside ChatGPT. We built the same thing on Higgs, open, on your own
-machine: Donna answers the phone, runs your coding agents, and calls you when the work is done."
-
-## 8. Task lifecycle and when Donna's voice speaks (Oct 24, after two real calls)
+## 7. Task lifecycle and when Donna's voice speaks (Oct 24, after two real calls)
 
 Vocabulary: **Donna's voice** is the Higgs Realtime session (hears, speaks, calls `delegate_task` / `task_status`); **Donna's
 brain** is the Claude Code session running `/call` (does the work, keeps state, replies `take|note|ask|say|fail`); the
