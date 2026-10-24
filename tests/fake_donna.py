@@ -8,6 +8,8 @@
                                         # ends with a task still running at the goodbye, whose later say rings a second call
     uv run tests/fake_donna.py --transfer   # #28: who built it -> put through to Maya (her voice) -> a question only her
                                         # transcript answers -> back to Donna (her voice) -> bye
+    uv run tests/fake_donna.py --fast-take  # #49: the brain takes each task within ~10 ms, then stays silent past the 20 s
+                                        # deaf-brain timer: every take must reach the bridge (no "no take for" line)
 """
 import json, os, queue, signal, subprocess, sys, tempfile, threading, time
 from pathlib import Path
@@ -15,6 +17,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))   # import herd from the repo root
 answers: dict = {}
+QUIET = threading.Event()  # --fast-take: take at once, then nothing for 25 s (a missed take would look like a deaf brain)
 
 
 def out(msg):
@@ -34,6 +37,8 @@ MAYA = "I gave every question a thirty second timer, and the last one is a bonus
 
 def work(herd, line):
     tid, task = line["id"], line["task"]
+    if QUIET.is_set():
+        say(herd, tid, "take", ""); time.sleep(25); say(herd, tid, "say", "Done."); return
     said = (task + " " + " ".join(t for _, t in line.get("transcript") or [])).lower()
     if line.get("with") == "Maya":  # put through: the brain forwards to Maya (SendMessage) and says her answer
         say(herd, tid, "take", ""); time.sleep(1.0); say(herd, tid, "say", MAYA if "timer" in said or "question" in said else "That's not mine; Donna will know."); return
@@ -78,7 +83,7 @@ def agent():
                 answers.setdefault(r, queue.Queue()).put(line["task"])
             else:
                 threading.Thread(target=work, args=(herd, line), daemon=True).start()
-        time.sleep(0.2)
+        time.sleep(0.01 if QUIET.is_set() else 0.2)  # #49: fast enough to land a take while bridge.backend() is still in herd.send
 
 
 def ask_flow(herd, wait_log, type_):  # ask -> answer -> two results -> a task still running at the goodbye rings a second call
@@ -134,6 +139,27 @@ def transfer_flow(herd, wait_log, type_):  # #28: each segment is a fresh sessio
     wait_log("call.ended", 30)
 
 
+def fast_take_flow(herd, wait_log, type_):  # #49: offline, the old order (seek after herd.send) missed 8/20 takes from a 20 ms brain
+    QUIET.set()
+    wait_log("ring: waiting", 30)
+    type_("")  # Enter: call Donna
+    wait_log("session ready", 30)
+    time.sleep(1)
+    for req in ("Archive the photos folder.", "Also zip the music folder.", "And make a backup of the notes folder."):
+        type_(req)
+        wait_log("→ inbox", 30)
+        wait_log("~ note: started", 5)  # the take reached backend()
+        time.sleep(2)
+    try:
+        wait_log("no take for", 22)  # 20 s after the last task: a missed take shows up here
+    except TimeoutError:
+        pass
+    else:
+        raise AssertionError("a take was missed: false deaf-brain note")
+    type_("Thanks, bye")
+    wait_log("call.ended", 40)
+
+
 def demo(flow):
     tmp = tempfile.mkdtemp()
     os.environ["HIGGS_HOME"] = os.environ["HIGGS_DIR"] = tmp
@@ -179,4 +205,4 @@ def demo(flow):
 
 
 if __name__ == "__main__":
-    demo(ask_flow) if "--demo" in sys.argv else demo(transfer_flow) if "--transfer" in sys.argv else agent()
+    demo(ask_flow) if "--demo" in sys.argv else demo(transfer_flow) if "--transfer" in sys.argv else demo(fast_take_flow) if "--fast-take" in sys.argv else agent()
