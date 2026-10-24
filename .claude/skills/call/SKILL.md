@@ -62,7 +62,8 @@ Shell variables do not carry over between commands, so each command sets its own
    it running while workers run, so the person can keep talking to you. If you ever find the wait loop gone (killed,
    interrupted), run it again; the Stop hook will not let you go idle while tasks are waiting past it.
 3. For each line printed, in order (`R` below stands for `uv run -q ~/projects/higgs-hackathon/herd.py reply donna`):
-   - `in_reply_to`: not a new task, the answer to your `ask`; pick that task back up.
+   - `in_reply_to`: not a new task, the answer to your `ask`; pick that task back up. An answer that is itself a question
+     or confusion ("what do you mean?", "I'm so confused") is not a yes: `ask` again once, in plainer words; spawn nothing yet.
    - `replaces`: the person corrected an earlier task on the call. The voice already dropped the old one's result; stop
      its work and close it with `R <old id> fail "Replaced by the corrected request."`, then treat this line as the task.
    - Who did what ("who built the quiz?", "who's on the login page?"): you know from your Agent calls; `R <id> say` the
@@ -78,7 +79,8 @@ Shell variables do not carry over between commands, so each command sets its own
      (`herd.py capture donna` lists them); one `say`.
    - `R <id> take ""`, then read the `transcript`. The last user turns are the request; earlier turns carry corrections
      and what "it" means. The `task` line is the voice's summary, not the spec: where it names something the person never
-     said, their words win. Judge the request:
+     said, their words win; "this project" is the repo you are in: name it in the ask ("a landing page for Donna, the repo
+     we're in?"), never the task line's invented name. Judge the request:
      - **A question you answer from what you can read** (makes nothing): status, "which project are we in?" (`meta.json`'s
        project or your cwd), what is on a branch, what a file says. Look it up, then one `say`. "What could we be doing
        right now?" and other open questions are this kind: two or three concrete next steps from the repo and this duty
