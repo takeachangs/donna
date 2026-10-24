@@ -111,6 +111,17 @@ Same flow on Twilio later: `ring` dials instead of opening the speaker.
    Donna's outbox with no call open makes the speaker ring.
 4. Hand Jerrold §4 first, before any of 1–3, so the scene is built against the same lines in parallel.
 5. Twilio (`E-twilio.md`): replace the speaker/mic with the phone adapter; `ring` dials.
+6. Busy-Donna hook (issue #5): the wait loop only runs between tasks, so a `PostToolUse` hook hands Donna new inbox
+   lines mid-work. `bridge.py hook` (stdlib, ~20 ms) reads the hook JSON on stdin, acts only when its `cwd` is
+   `project` in `donna/meta.json`, reads `inbox.jsonl` from `donna/.hook_offset` (separate from the wait loop's
+   `.offset`) and prints `hookSpecificOutput.additionalContext` with each task and its `herd.py reply` lines. The owner
+   registers it in `.claude/settings.json` of the folder Donna runs in (or passes it to `claude --settings`):
+   ```json
+   {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [
+     {"type": "command", "command": "python3 /Users/seongminchang/projects/higgs-hackathon/bridge.py hook"}]}]}}
+   ```
+   Check: `uv run herd.py send donna ping; echo '{"session_id":"x","cwd":"'$PWD'"}' | python3 bridge.py hook` prints
+   the JSON once, nothing the second time, nothing for another `cwd`.
 
 Not Saturday: approvals, context %, more than one level, several voices, real remuda as a backend.
 

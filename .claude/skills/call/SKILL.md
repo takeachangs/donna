@@ -24,12 +24,15 @@ below; nothing here is specific to one coding agent. Design: `docs/herd.md` §1 
 ## Steps
 `herd.py` and `bridge.py` live in `~/projects/higgs-hackathon`; your directory is `~/.higgs/herd/donna` (`$D` below). Shell variables do not carry over between commands, so each command sets its own.
 
-1. Register and go idle. `new` is idempotent (prints "exists" on a rerun); the offset is seeded only once, so old
-   inbox lines are not replayed and tasks sent while you were away are:
+1. Register and go idle. `new` is idempotent (prints "exists" on a rerun, and records this folder as your project);
+   the offsets are seeded only once, so old inbox lines are not replayed and tasks sent while you were away are:
    ```bash
-   H=~/projects/higgs-hackathon; D=${HIGGS_HOME:-$HOME/.higgs}/herd/donna; uv run -q $H/herd.py new donna --kind session --project "$PWD"; touch $D/inbox.jsonl; [ -f $D/.offset ] || wc -c < $D/inbox.jsonl | tr -d ' ' > $D/.offset; uv run -q $H/herd.py state donna idle
+   H=~/projects/higgs-hackathon; D=${HIGGS_HOME:-$HOME/.higgs}/herd/donna; uv run -q $H/herd.py new donna --kind session --project "$PWD"; touch $D/inbox.jsonl; for f in .offset .hook_offset; do [ -f $D/$f ] || wc -c < $D/inbox.jsonl | tr -d ' ' > $D/$f; done; uv run -q $H/herd.py state donna idle
    ```
-   Tell the person Donna is on duty.
+   Tell the person Donna is on duty. If the `bridge.py hook` PostToolUse hook is registered (`docs/herd.md` §6), a
+   task that arrives while you are busy shows up after one of your tool calls as "Phone task <id>: …". Note it right
+   away, finish what you are doing, then do it. The wait loop in step 2 will print the same task again later; a task
+   id you have already handled is handled once.
 2. Wait for the next task. This blocks until new inbox bytes arrive past `.offset`, prints every new line, and moves
    `.offset` to what it printed (lines that land meanwhile are picked up next time):
    ```bash
