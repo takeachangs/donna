@@ -6,7 +6,7 @@ the script was rehearsed headlessly on Oct 24, 13:05-13:45: typed turns on `brid
 Latency = from the end of the presenter's line to Donna's first audio. Not yet run on a live mic.
 
 ## 1. Setup (once, before going on)
-1. EarPods in (Donna must not come out of the laptop speakers: no echo cancellation). `export BOSON_API_KEY=…` (one key per live call).
+1. EarPods in (Donna must not come out of the laptop speakers: no echo cancellation). Speak slower on the keywords: on the EarPods mic STT wrote "that encounter" for "session counter" and "Doma" for "Donna" (13:29 call, #82). `export BOSON_API_KEY=…` (one key per live call).
 2. Office: `cd office && npm run dev`, open http://127.0.0.1:5183 (API on :3003).
 3. Demo repo `~/projects/donna-demo`: a clean `main`, README only, and a GitHub remote (`git remote -v`; `gh auth status`).
    Without a remote the pull request beat rings back with "I couldn't open the pull request, the project has no GitHub remote".
