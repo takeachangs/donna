@@ -22,7 +22,7 @@ Shape = the office's existing `Workspace` type (`office/apps/web/src/agency/type
   ],
   "assignments": [{"id":"<agentId>","projectId":"<cwd slug>","workerId":"<agentId>","title":"<Agent description>","brief":"<Agent prompt>","acceptance":"","status":"working","cwd":"<cwd>","summary":"<final report, when done>","startedAt":"<iso>","completedAt":"<iso>"}],
   "decisions": [{"id":"<task id>","projectId":"<cwd slug>","title":"<ask text>","context":"","status":"open","createdAt":"<iso>"}],
-  "briefings": [{"id":"<task id>","projectId":"<cwd slug>","title":"<say text, first 60 chars>","summary":"<say text>","status":"queued","contributors":[{"name":"<worker names>"}],"createdAt":"<iso>"}],
+  "briefings": [{"id":"<task id>","projectId":"<cwd slug>","workerId":"<agentId of the worker who did it, or the brain row>","title":"<say text, first 60 chars>","summary":"<say text>","status":"queued","contributors":[{"name":"<worker names, exactly as in workers[].name>"}],"createdAt":"<iso>"}],
   "activity": [{"at":"<iso>","projectId":"<cwd slug>","message":"<herd event>"}]
 }
 ```
@@ -66,3 +66,9 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
 - `hooks/office.json` event list ↔ `herd.py hook` / `office()` reducer.
 - Herd line shapes (`docs/herd.md`), `in_reply_to` for answers to `ask`.
 - The voice's sign-off (`SIGN_OFF = "Hanging up now."`) and pickup lines live in `bridge.py` only.
+
+## Decided during #25 (Oct 24 07:35)
+- Character keys that ship: `char-male-a`, `char-male-b`, `char-male-d`, `char-female-b`, `char-female-d`, `char-female-e`. Donna is `char-female-b`. An unknown key draws a placeholder.
+- A briefing carries `workerId`; the scene uses it for the desk → Donna walk. Contributor names must equal `workers[].name`.
+- A finished worker (`done`/`failed`) rests in the lounge on their own, regardless of the rest of the project.
+- A file that exists but is not a JSON object is "missing" for the office: Donna alone, health `state: 'missing'`.

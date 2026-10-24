@@ -30,4 +30,4 @@ Dependency versions are pinned in `package-lock.json`. Their licenses remain in 
 
 ## Original application code
 
-This local repository is private and marked `UNLICENSED`. The original secretary, execution orchestration, project memory, workboard and office layout have not been granted a public open-source license by this packaging step. This does not alter the MIT/CC0 permissions of the separately identified third-party material.
+This local repository is private and marked `UNLICENSED`. The original office server, workboard and office layout have not been granted a public open-source license by this packaging step. This does not alter the MIT/CC0 permissions of the separately identified third-party material.

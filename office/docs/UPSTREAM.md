@@ -6,7 +6,7 @@ Pinned source commit: `f54a798ac94d5138fd8d0ed94c48a1c7e494987c` (`Update README
 
 ## What is ours
 
-The product workflow is independent: Higgs secretary, dynamic staffing, worker naming, native Codex execution/resume, staged Claude adapter, serialized work queue, project memory, decisions, delivery snapshots, room navigation, workboard, voice playback and office arrangement were added for Personal Agency. The current server is not an Agentshire server fork.
+Room navigation, the workboard drawer, the office arrangement and the server that streams `office.json` were added for this office. The current server is not an Agentshire server fork.
 
 ## What we retain
 

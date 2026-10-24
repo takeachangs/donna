@@ -1,15 +1,12 @@
-# Chamber
+# Chamber office
 
-This repository contains the personal office product only. Read `README.md` and `docs/ARCHITECTURE.md` for the current architecture. Historical experiments are not product requirements.
+A display only: it draws `$HIGGS_HOME/office.json` (default `~/.higgs/office.json`) and nothing else. Read `README.md` and `docs/ARCHITECTURE.md` first; the file's contract is `../docs/office-state.md`, and a change to its shape is made on the producer side and in `apps/web/src/agency/types.ts` together.
 
-- Active code: `apps/web`, `apps/server/src/agency`, `tests`, `scripts`.
-- Do not scan `.history`, `.cache`, `.runtime`, `artifacts` or `node_modules` for general context. Read a specific runtime record only when the task needs it.
-- Preserve existing projects, deliverables and native session IDs. Never commit `.env`, runtime data, audio, logs or native execution workspaces.
-- Higgs is Donna's voice; Donna's brain is a Claude Code orchestrator session that runs its workers as parallel Sonnet subagents; its instructions are `skills/donna-brain` and `skills/donna-worker`, installed once into `<data>/office/.claude/skills` and loaded with `--add-dir` (never written into a room). A room can be the user's own repository: the server does every git write (job branch, worker worktrees, commits, merges, push, PR); models only edit files in their checkouts. Codex workers run only when the user asks for Codex. Default Codex model is `gpt-6.1-sol`, low reasoning, medium when useful. Use small meaningful acceptance tasks.
-- On the Codex path (a plan JSON), `provider` picks the engine per worker; the default is `AGENCY_DEFAULT_PROVIDER`, else Codex when signed in. Offline tests use a fake CLI. Do not run real Claude inference unless explicitly requested.
-- `npm test` is offline. `npm run test:live` makes paid Higgs calls and uses authenticated Codex; run it only when authorized and report measured usage.
-- Keep the UI in English. Add new user-facing copy to both locale files. Preserve the warm neutral palette and readable workboard; avoid floating NPC labels.
-- NPC animations must use `transitionTo(...)`, not direct `playAnim(...)`, so movement and state remain consistent.
-- `src/vendor/agentshire` and `render/Engine.ts` contain attributed upstream code. Preserve licenses and update `docs/UPSTREAM.md` when changing this boundary.
-- Validate with `npm run build`, `npm test`, and `npm run check:repo`. For visual changes, verify the rendered page.
-- Source packaging is local. Publishing or pushing a remote repository is a separate action.
+- Active code: `apps/web`, `apps/server/src/agency`, `tests`, `scripts`. Do not scan `node_modules`, `dist` or `releases`.
+- Keep it display only. Do not add endpoints that write, model calls, executors, credentials or git to this directory.
+- Keep the UI in English. Add new user-facing copy to both `apps/web/src/i18n/en.ts` and `zh-CN.ts`. Keep the warm neutral palette and the readable drawer; avoid floating NPC labels.
+- NPC animations must use `transitionTo(...)`, not direct `playAnim(...)`, so movement and state stay consistent.
+- `apps/web/src/vendor/agentshire` and `apps/web/src/render/Engine.ts` contain attributed upstream code. Preserve the licenses and update `docs/UPSTREAM.md` when changing this boundary.
+- Never commit secrets, runtime data, logs or `releases/`.
+- Validate with `npm test`, `npm run typecheck`, `npm run check:repo` and `npm run build`. For visual changes, verify the rendered page.
+- Source packaging is local. Pushing or publishing a repository is a separate action.
