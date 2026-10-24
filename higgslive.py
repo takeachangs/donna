@@ -82,8 +82,8 @@ def open_question(voice: str) -> bool:
     v = voice.strip().lower()
     return v.endswith("?") and not CLOSER.search(v) and len(v.split()) >= 5 and bool(TASK_Q.search(v))
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
-CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching)|should be running|backend result|i'?ll\s+have\s+(the|an|my)\s+agent)")   # the last: "I'll have the agent take a look" (Oct 24 probe)
-OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat)|let me\s+(creat|mak|check|look|run|open|see)|"
+CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching|reaching|connecting|transferring|getting)|should be running|backend result|i'?ll\s+have\s+(the|an|my)\s+agent)")   # the last: "I'll have the agent take a look" (Oct 24 probe)
+OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat|connect|put|transfer)|let me\s+(creat|mak|check|look|run|open|see)|"
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
                    r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
                    r"(i'?ll|i (can|could)|let me)\s+(whip|draft|put (\w+ )?together|set (\w+ )?up|sketch))")   # asking permission instead of calling; offering to draft (Oct 24 calls)
@@ -91,7 +91,7 @@ PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c
 PENDING_LINE = "Still on it; I'll call you when it's done."   # what a reply that reports a result nobody sent is replaced by (#32)
 DONE = re.compile(r"\b(has|have|'s|is|was|are|were)\s+(been\s+)?(now\s+|all\s+)?(ready|live|in place)\b|(?<!you're )(?<!you are )\ball set\b|(?<!we're )(?<!you're )(?<!i'm )\bdone\b|"
                   r"\b(finished|completed|added|created|written|wrote|built|fixed|updated|saved|backed up|deployed|pushed|merged|committed|published|installed|deleted|renamed)\b")   # "we're done here" is the call
-LATER = re.compile(r"\b(when|once|until|till|soon|if|will|not|yet|still|being|going to|about to)\b|'ll|n't|\?\W*$")   # "I'll call you when it's done" is a promise, not a claim
+LATER = re.compile(r"\b(when|once|until|till|soon|if|will|not|yet|still|being|going to|about to|who|what|which|whether|check|checking|find out|look|looking)\b|'ll|n't|\?\W*$")   # "I'll call you when it's done" is a promise, not a claim
 FIX = "(system) No result has come in yet; the task is still running. Your last reply was wrong and was not played. Say exactly this and nothing else: \"{}\""
 
 
@@ -149,7 +149,8 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
 
 
 ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|"
-                   r"add|change|design|plan|style|improve|update (the|it|that|this|my)|tell (them|it|someone)|have (them|someone))\b")   # not bare "update"/"have it": "any update?", "do you have it?" ask about a running task
+                   r"add|change|design|plan|style|improve|update (the|it|that|this|my)|tell (them|it|someone)|have (them|someone)|"
+                   r"who('?s| is| was)? (built|made|wrote|did|working on|worked on|on|in charge of)|on the line|put me through|connect me|talk to|speak (to|with))\b")   # not bare "update"/"have it": "any update?", "do you have it?" ask about a running task; "who built the quiz?" and "get me on the line" go to the brain (#28)
 
 
 def _ev(d):
@@ -181,6 +182,7 @@ class Conn:
         self._notes: dict = {}                            # delegation id → its latest progress note, for task_status only
         self._sent: dict = {}                             # delegation id → (task, epoch) for task_status
         self._instructions = ""
+        self._relay = False   # a worker's voice (#28): every user turn is for the agent; see _start
         self._t0 = time.monotonic()
         self._tasks: list[asyncio.Task] = []
         self.delegation = False
@@ -194,6 +196,7 @@ class Conn:
     # ---- session.start -------------------------------------------------------------------------------------------
     async def _start(self, session: dict):
         self.delegation = (session.get("delegation") or {}).get("type") == "client"
+        self._relay = session.get("relay", False)   # a worker's voice (#28): every user turn goes to delegate_task (the claim GUARD treats each as a request), and the result guard is off: "I built the quiz" is her history
         seed = "\n".join(c["text"] for m in session.get("input", []) for c in m.get("content", []) if c.get("type") == "input_text")
         self._instructions = session.get("instructions", "")
         if self.delegation: self._instructions += "\n\n" + MECHANICS
@@ -330,7 +333,8 @@ class Conn:
 
     async def _handle(self, ev: dict):
         t, st = ev["type"], self._st
-        if t == "session.created": self._emit("session.started"); return   # the first session.update is not acknowledged; the socket is ordered, so it applies before any turn
+        if t == "session.created":   # it echoes the applied config: the voice actually in use (#28 checks a transfer by it)
+            self._emit("session.started", voice=(((ev.get("session") or {}).get("audio") or {}).get("output") or {}).get("voice")); return   # the first session.update is not acknowledged; the socket is ordered, so it applies before any turn
         if t == "error": self._emit("error", error=ev["error"]); return
         if t in ("session.idle_timeout", "session.max_duration_reached"): self._emit("session.closed", reason=t); return
         if t == "conversation.item.added":
@@ -357,7 +361,7 @@ class Conn:
         if t == "response.output_audio_transcript.done":
             # ponytail: "a task runs and no result came in this turn" stands for "this claim is about the running task"; re-asking about an
             # earlier finished one while another runs gets the pending line. Upgrade: match the claim against each task's words
-            if self.delegation and self._pending and not st["fresh"] and (fixed := fabricated(ev["transcript"])):   # a result nobody sent (#32)
+            if not self._relay and self.delegation and self._pending and not st["fresh"] and (fixed := fabricated(ev["transcript"])):   # a result nobody sent (#32)
                 log.info("fabricated: %r → %r", ev["transcript"], fixed)
                 if not st["guarded"]:   # dropped unplayed; the voice says the fixed line at response.done (one retry per user turn, like GUARD)
                     st.update(guarded=True, fix=fixed, spk_until=0.0); self._emit("session.output_audio.discard"); return
@@ -384,7 +388,7 @@ class Conn:
                 st["guarded"] = True; await self._send({"type": "response.create"})   # same socket, so the output is added before the reply is made
                 self._emit("response.done", calls=1, pending=len(self._pending)); return
             if self.delegation and not calls and self._fake_claim() and not st["guarded"] and not st["turn_delegated"] \
-                    and (not self._pending or ASKED.search(st["last_user"].lower())):   # a task is running: "on it" to "are you done?" is no fake claim (Oct 24 call)
+                    and (not self._pending or self._relay or ASKED.search(st["last_user"].lower())):   # a task is running: "on it" to "are you done?" is no fake claim (Oct 24 call)
                 st["guarded"] = True   # ponytail: one forced retry per user turn, no loop
                 log.info("GUARD: reply claimed or offered a task without calling %s — nudging", TOOL)
                 await self._item(NUDGE); await self._send({"type": "response.create"}); return
@@ -405,7 +409,9 @@ class Conn:
 
     def _fake_claim(self) -> bool:
         v = self._st["last_voice"].lower(); self._st["last_voice"] = ""
-        return bool(CLAIM.search(v)) or (bool(ASKED.search(self._st["last_user"].lower())) and bool(OFFER.search(v)))
+        u = self._st["last_user"].lower()   # a worker's voice answers a question only from delegate_task (#28: "Let me pull that up", "The timer is 30 seconds")
+        if self._relay and u.rstrip().endswith("?") and not re.search(r"\b(donna|bye)\b", u): return True
+        return bool(CLAIM.search(v)) or ((self._relay or bool(ASKED.search(self._st["last_user"].lower()))) and bool(OFFER.search(v)))
 
     def __aiter__(self): return self
     async def __anext__(self):
@@ -440,7 +446,11 @@ if __name__ == "__main__":   # self-check: no network
                                          "i'll whip up a hero section with a clean layout", "let me put that together",
                                          "sure. i'll add a hero section to the page with a big heading")) and CLAIM.search("i'm putting together the hero section")
     assert all(ASKED.search(x) for x in ("can you tell them to plan a nice hero section", "add a sleek hero section to it", "update the colors"))
-    assert not any(ASKED.search(x) for x in ("are you done? like.", "any update on that?", "do you have it yet?", "hello"))
+    assert not any(ASKED.search(x) for x in ("are you done? like.", "any update on that?", "do you have it yet?", "hello", "who are you?"))
+    assert fabricated("I've sent that off to check who built the quiz.") is None   # the question's own words, not a claim (#28 run)
+    assert OFFER.search("i'll connect you with maya right now.") and ASKED.search("get me on the line with her.")   # #28 run: no call, no nudge before
+    assert all(CLAIM.search(x) for x in ("i'm reaching out to maya now to get you connected.", "i'm connecting you with maya now."))   # #28: no call made
+    assert all(ASKED.search(x) for x in ("who built the quiz?", "who's working on the login page?", "get me on the line with her.", "can i talk to maya?"))   # #28
     assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
@@ -576,6 +586,11 @@ if __name__ == "__main__":   # self-check: no network
         assert sent[0]["item"]["content"][0]["text"] == FIX.format(PENDING_LINE + " Hanging up now."), sent
         await c._handle({"type": "response.output_audio_transcript.done", "transcript": "All done. Hanging up now."})
         assert [e.transcript for e in outs()] == [PENDING_LINE + " Hanging up now."]
+        c._st["guarded"], c._relay = False, True   # a worker's voice (#28): no result guard; a question answered without delegate_task is nudged
+        c._st.update(last_user="how long is the timer?", last_voice="let me pull that up."); assert c._fake_claim()
+        c._st.update(last_user="can you put donna back?", last_voice="sure."); assert not c._fake_claim()
+        await c._handle({"type": "response.output_audio_transcript.done", "transcript": "I built it."}); assert [e.transcript for e in outs() if e.type == "session.output_transcript.done"] == ["I built it."]
+        c._relay = False
         c._done("d2", "say"); c._st["guarded"] = False   # a result went in this turn (d1 still runs): "all done" may be true
         await c._handle({"type": "response.output_audio_transcript.done", "transcript": "All done."}); assert [e.transcript for e in outs() if e.type == "session.output_transcript.done"] == ["All done."]
     async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer(), stale(), fab()); await cap()   # cap flips globals: not alongside the others

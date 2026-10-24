@@ -1,6 +1,7 @@
 import { initLocale, setLocale, t } from '../i18n';
 import { Engine } from '../render/Engine';
 import { AgencyScene } from './Scene';
+import { onTheLine } from './floor';
 import type { Workspace, View, Assignment, Decision, Briefing } from './types';
 import './style.css';
 import './board.css';
@@ -76,7 +77,12 @@ function paintCall() {
       speaking: t('agency.call_speaking'),
     };
   pill.dataset.state = online ? state : 'reconnecting';
-  pill.textContent = online ? label[state] || label.off : t('agency.reconnecting');
+  const line = workspace && onTheLine(workspace.call, workspace.workers);
+  pill.textContent = online
+    ? line
+      ? t('agency.call_with', { name: name(line) })
+      : label[state] || label.off
+    : t('agency.reconnecting');
   if (!scene || state === call) return;
   // Donna walks to the entrance phone while she rings you, and talks or thinks with the voice.
   if ((state === 'ringing') !== (call === 'ringing')) scene.ring(state === 'ringing');

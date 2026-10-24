@@ -122,5 +122,17 @@ Grep this folder first: `grep -rn "<term>" docs/`. Every file is plain markdown 
   0 fabricated lines in the transcript; the guard fired 2/10 (both real: "The version flag has been added") and the model repeated the fixed line word for word, sign-off included.
   "You're all set" is a goodbye, not a claim (3 false hits before it was exempted). Five bridges at once on one key: 3/10 goodbye
   responses failed `upstream_error` mid-reply, cut before the sign-off, so the call never closed; two at once: 0/10.
+- Transfer (Oct 24, #28, `higgs-realtime`, `tests/fake_donna.py --transfer`): a fresh session per segment is cheap. The
+  new socket's `session.created` came 0.25 s after the old segment ended, and it echoes the applied voice at
+  `session.audio.output.voice` (how the check proves who is talking: nora → chloe → nora). The worker persona's
+  "Hey, it's Maya." opener (a user-role `Say exactly:` note) was said word for word, and so were "Putting Donna back on." and
+  "Hey, it's Donna again.". "Who built the quiz?" once got "I'll check who built the quiz for you." with no `delegate_task`
+  call; the GUARD did not nudge because `ASKED` had no who-question. It does now (who built/made/did, on the line, put me
+  through, talk to). Donna also refused once ("I can't connect you directly, but I can look up Maya's contact details")
+  until the persona said putting someone through is a delegation. In the worker's voice, "call delegate_task with their
+  words, in the same turn, then say one short thing while you check" still answered first without a call in 5/6 runs (the
+  GUARD's nudge recovered them, but 1/6 invented "thirty seconds" first). "Call delegate_task with the user's words first,
+  before you say anything; then only a few words, no details, until its answer arrives" gave 9/11 first-turn calls and 0
+  invented details. `relay: true` on the worker's session also makes the GUARD treat any question as a request.
 - Sign-off: with the persona's "say a one-line goodbye ending with the exact words \"Hanging up now.\"", 1.0 said the literal on every goodbye in 9/9 headless runs (typed "thanks, bye" / "that's all"), sometimes as the whole reply. Idle nudge as a user-role `[note]` + `response.create` at 30 s: answered in ~0.5 s ("Still with me?").
 - No echo cancellation (Oct 24, #34, `higgs-realtime`, live call on MacBook Pro Speakers + MacBook Pro Microphone): `noise_reduction: near_field` does not remove the voice's own audio. The mic peaked 0.40–0.64 (of full scale) while the voice played vs 0.07–0.15 for the user's own speech on the same mic; server VAD (threshold 0.85) fired within 1 s of 25/29 replies and 8/32 user transcripts were the voice's own words ("You asked me." after "You asked me to call."), which the model answered, so the call looped. A higher VAD threshold or a client level bar cannot separate an echo three times louder than the user. `bridge.py` sends zeros while the voice is audible (+0.3 s) on that pair (no barge-in there; headphones keep it), and drops a user transcript that began over the voice and copies its last line.
