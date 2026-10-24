@@ -13,7 +13,7 @@ export class AgencyScene implements GameScene {
  private assets=new AssetLoader();private npcs:NPCManager;private rooms=new Map<string,Room>();private selected='mara';private loaded=false;private resize:ResizeObserver
  private pointer?:{x:number;y:number;target:THREE.Vector3};private target=new THREE.Vector3(0,.3,4);private current=this.target.clone();private zoom=2.5;private currentZoom=2.5
  private autoFrame=true
- private hall=new THREE.Group();private workerSignature='';private secretaryName='';private lastWorkspace?:Workspace;private activities=new Map<string,string>();private roomId='all';private lights:THREE.Light[]=[];private events=new AbortController()
+ private hall=new THREE.Group();private workerSignature='';private secretaryName='';private lastWorkspace?:Workspace;private activities=new Map<string,string>();private mood:'thinking'|'working'|'idle'='idle';private roomId='all';private lights:THREE.Light[]=[];private events=new AbortController()
  private homes=new Map<string,Point>();private trips=new Map<string,Trip>();private seen?:Set<string>;private handoffs:Briefing[]=[]
  constructor(private engine:Engine,private container:HTMLElement,private cast:Colleague[],private select:(id:string)=>void,private progress:(n:number,total:number)=>void,private selectRoom:(id:string)=>void,private handoffStatus:(name:string|null)=>void=()=>{}){this.npcs=new NPCManager(engine.world.scene,container);this.resize=new ResizeObserver(()=>this.fit());this.resize.observe(container)}
  private fit(){const w=this.container.clientWidth,h=this.container.clientHeight;this.engine.renderer.setSize(w,h);this.engine.camera.aspect=w/Math.max(1,h);this.engine.camera.updateProjectionMatrix();if(this.loaded&&this.roomId==='all'&&this.autoFrame)this.frameFloor()}
@@ -56,7 +56,7 @@ export class AgencyScene implements GameScene {
   for(const [id,room] of this.rooms)if(id!=='secretary'&&!projects.some(p=>p.id===id&&!p.deletedAt)){this.clearOwned(room.group);this.engine.world.scene.remove(room.group);this.rooms.delete(id);changed=true}
   for(const [i,p] of projects.entries()){
    if(p.deletedAt)continue
-   const existing=this.rooms.get(p.id),count=this.lastWorkspace?.workers.filter(w=>w.projectId===p.id).length||0,footprint=projectRoom(i,count)
+   const existing=this.rooms.get(p.id),count=this.lastWorkspace?.workers.filter(w=>w.projectId===p.id&&!w.lead).length||0,footprint=projectRoom(i,count)
    if(existing&&existing.width===footprint.width&&existing.x===footprint.x&&existing.z===footprint.z){if(existing.group.name!==p.name){existing.group.name=p.name;this.clearOwned(existing.label);this.plaque(existing.label,p.name,existing.width/2,9.35)}continue}
    if(existing){this.clearOwned(existing.group);this.engine.world.scene.remove(existing.group)}this.buildRoom(p.id,p.name,footprint);changed=true
   }
@@ -65,12 +65,13 @@ export class AgencyScene implements GameScene {
  workspace(workspace:Workspace){
   this.lastWorkspace=workspace;if(!this.loaded)return;this.projects(workspace.projects)
   if(this.secretaryName!==workspace.secretary.name){this.secretaryName=workspace.secretary.name;const secretary=this.npcs.get('mara'),r=this.rooms.get('secretary')!;if(secretary){secretary.name=workspace.secretary.name;secretary.setLabel(workspace.secretary.name)}this.clearOwned(r.stations);this.desk(r.stations,workspace.secretary.name,t('agency.briefing_queue'),2.4,4);this.furniture(r.stations,'chair_B',5.5,5.5,1,-Math.PI/2);this.box(r.stations,.12,.55,.12,2.25,.28,.4,0x6d5138);this.box(r.stations,.34,.12,.2,2.25,.6,.4,0x2f2a25)}
-  const activeProjects=workspace.projects.filter(p=>!p.deletedAt),activeWorkers=workspace.workers.filter(w=>activeProjects.some(p=>p.id===w.projectId)),signature=JSON.stringify([activeProjects.map(p=>[p.id,p.name]),activeWorkers.map(w=>[w.id,w.projectId,w.name,w.role,w.characterKey])]);if(signature!==this.workerSignature){this.workerSignature=signature
+  const activeProjects=workspace.projects.filter(p=>!p.deletedAt),activeWorkers=workspace.workers.filter(w=>!w.lead&&activeProjects.some(p=>p.id===w.projectId)),signature=JSON.stringify([activeProjects.map(p=>[p.id,p.name]),activeWorkers.map(w=>[w.id,w.projectId,w.name,w.role,w.characterKey])]);if(signature!==this.workerSignature){this.workerSignature=signature
    for(const n of this.npcs.getAll())if(n.id!=='mara'){this.npcs.remove(n.id);this.activities.delete(n.id)}for(const k of [...this.trips.keys()])if(k!=='mara')this.trips.delete(k);this.handoffStatus(null);this.homes.clear()
    for(const r of this.rooms.values())if(r.id!=='secretary')this.clearOwned(r.stations)
    for(const p of activeProjects){const r=this.rooms.get(p.id);if(!r)continue;const workers=activeWorkers.filter(w=>w.projectId===p.id);if(!workers.length)this.desk(r.stations,p.name,t('agency.empty_desk'),r.width/2,3);workers.forEach((w,i)=>{const cols=Math.max(1,Math.ceil(workers.length/2)),x=r.width/(cols+1)*(i%cols+1),z=2.1+Math.floor(i/cols)*3.3,name=w.name||t('agency.naming'),home={x:r.x+x,z:r.z+z+1.65};this.desk(r.stations,name,w.role,x,z);this.homes.set(w.id,home);this.npcs.createNPCs([{id:w.id,name,color:0xD4A574,role:'worker',characterKey:w.characterKey||'char-male-d',label:name,spawn:{...home,y:0}}]);this.npcs.get(w.id)?.lookAtTarget({x:home.x,z:home.z-1.65})})}
   }
   for(const w of workspace.workers)if(!this.trips.has(w.id))this.workerActivity(w)
+  const lead=workspace.workers.filter(w=>w.lead&&w.status==='working'),mood=lead.some(w=>workspace.assignments.find(a=>a.id===w.assignmentId)?.kind==='plan')?'thinking':lead.length?'working':'idle';if(mood!==this.mood){this.mood=mood;if(this.activities.get('mara')!=='talking')this.activity('mara',mood)}
   const briefings=workspace.briefings||[];if(!this.seen)this.seen=new Set(briefings.map(b=>b.id));else for(const b of briefings)if(!this.seen.has(b.id)){this.seen.add(b.id);if(b.status==='queued')this.handoffs.push(b)}
  }
  ring(on:boolean){const trip=this.trips.get('mara');if(on){if(trip){if(!trip.returning)trip.hold=true;return}if(!this.npcs.get('mara')||matchMedia('(prefers-reduced-motion: reduce)').matches)return;this.trips.set('mara',{points:[{x:-.3,z:17.65},{x:-.3,z:13.1},{x:-1.05,z:13.05}],index:0,returning:false,wait:0,moving:false,hold:true})}else if(trip){trip.hold=false;if(trip.wait===Infinity)trip.wait=0}}
@@ -87,7 +88,7 @@ export class AgencyScene implements GameScene {
  viewRoom(id:string){if(id==='command'||id==='all'){this.overview();return}const r=this.rooms.get(id);if(!r)return;this.roomId=id;for(const room of this.rooms.values())room.group.visible=room.id===id;this.hall.visible=false;this.target.set(r.x+r.width/2,.3,r.z+r.depth/2);this.zoom=Math.max(1,r.width/(16*this.engine.camera.aspect));this.camera(true)}
  overview(){this.autoFrame=true;this.roomId='all';for(const r of this.rooms.values())r.group.visible=true;this.hall.visible=true;this.frameFloor()}
  focus(id:string){this.selected=id;for(const n of this.npcs.getAll())n.setGlow(n.id===id?'gold':'none')}
- activity(id:string,kind:'thinking'|'working'|'talking'|'idle'){const n=this.npcs.get(id);if(!n||this.trips.has(id))return;if(this.activities.get(id)!==kind){this.activities.set(id,kind);n.transitionTo('idle');if(kind==='working')n.transitionTo('working');if(kind==='thinking')n.transitionTo('thinking')}n.setGlow(id===this.selected?'gold':'none')}
+ activity(id:string,kind:'thinking'|'working'|'talking'|'idle'){if(id==='mara'&&kind==='idle')kind=this.mood;const n=this.npcs.get(id);if(!n||this.trips.has(id))return;if(this.activities.get(id)!==kind){this.activities.set(id,kind);n.transitionTo('idle');if(kind==='working')n.transitionTo('working');if(kind==='thinking')n.transitionTo('thinking')}n.setGlow(id===this.selected?'gold':'none')}
  update(dt:number){
   this.camera(false,dt);this.npcs.update(Math.min(dt,.1),this.engine.camera,this.engine.renderer)
   if(![...this.trips.keys()].some(k=>k!=='mara')&&this.handoffs.length){const b=this.handoffs.shift()!,w=this.lastWorkspace?.workers.find(w=>w.id===b.workerId),r=w&&this.rooms.get(w.projectId),home=this.homes.get(b.workerId);if(r&&home&&!matchMedia('(prefers-reduced-motion: reduce)').matches&&w?.status!=='working'){this.trips.set(b.workerId,{points:deliveryRoute(r,home),index:0,returning:false,wait:0,moving:false});this.handoffStatus(w?.name||'Worker')}}

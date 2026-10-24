@@ -13,10 +13,11 @@ import {serveWeb} from './static.js';
 import {completedBriefing,holdReason,openQuestion,type Briefing,type Presentation} from './briefings.js';
 
 const store=new OfficeStore(process.env.AGENCY_DATA_DIR?resolve(process.env.AGENCY_DATA_DIR):undefined),root=store.root,projects=new Projects(store),executors=new AgencyExecutors(),codex=executors.codex;
+const defaultProvider=await executors.defaultProvider();
 const clients=new Set<WebSocket>();
 const broadcast=(event:unknown)=>{for(const ws of clients)if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(event));};
 const landed=new Set<(w:Workspace)=>void>();
-const workspace=new AgencyWorkspace(store,projects,codex,w=>{broadcast({type:'workspace',workspace:w});for(const f of landed)f(w);},{claude:executors.claude});
+const workspace=new AgencyWorkspace(store,projects,codex,w=>{broadcast({type:'workspace',workspace:w});for(const f of landed)f(w);},{claude:executors.claude,brain:executors.brain,defaultProvider});
 const local=(origin:string|undefined)=>!origin||/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(origin);
 const json=(res:any,data:any,status=200)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));};
 async function body(req:any){let text='';for await(const b of req){text+=b;if(text.length>60000)throw Error('Request too large');}return JSON.parse(text||'{}');}
@@ -30,7 +31,7 @@ const server=createServer(async(req,res)=>{
   if(u.pathname==='/agency-api/projects/register'&&req.method==='POST'){const p=projects.register(await body(req));workspace.syncProjects();return json(res,p);}
   if(u.pathname==='/agency-api/projects'){if(req.method==='POST'){const p=projects.create(await body(req));workspace.syncProjects();return json(res,p,201);}return json(res,projects.list());}
   if(parts[0]==='agency-api'&&parts[1]==='projects'&&parts[2]&&req.method==='POST'){const value=await body(req);if(parts[3]==='rename')return json(res,workspace.renameProject(parts[2],value));if(parts[3]==='delete')return json(res,workspace.deleteProject(parts[2]));if(parts[3]==='restore')return json(res,workspace.restoreProject(parts[2]));}
-  if(u.pathname==='/agency-api/status'){const providers=await executors.status();return json(res,{available:!!process.env.BOSON_API_KEY,assistants:[workspace.snapshot().secretary],model:'higgs-realtime',codex:providers.codex,providers,execution:'local-codex',maxWorkersPerPlan:4});}
+  if(u.pathname==='/agency-api/status'){const providers=await executors.status();return json(res,{available:!!process.env.BOSON_API_KEY,assistants:[workspace.snapshot().secretary],model:'higgs-realtime',codex:providers.codex,providers,execution:`local-${providers.defaultProvider}`,maxWorkersPerPlan:4});}
   if(parts[0]==='agency-api'&&parts[1]==='assignments'&&parts[2]){
    const id=parts[2];
    if(req.method==='POST'){await body(req);if(parts[3]==='pause')return json(res,workspace.pause(id));if(parts[3]==='resume')return json(res,workspace.resume(id));if(parts[3]==='accept')return json(res,workspace.accept(id));}
@@ -67,7 +68,8 @@ wss.on('connection',(client,req)=>{
  const room=()=>selected?store.load(selected):undefined;
  // Keep old prose out of every turn. Full preserved drafts remain available on
  // an explicit read; current project memory describes the ongoing work.
- const current=()=>({selected_project_id:projects.list().some(p=>p.id===selected)?selected:null,view,workspace:workspace.snapshot(),legacy:selected?{documents:room()!.documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
+ const progress=()=>Object.fromEntries(workspace.snapshot().projects.filter(p=>!p.deletedAt).flatMap(p=>{const t=workspace.progress(p.id);return t?[[p.name,t]]:[];}));
+ const current=()=>({selected_project_id:projects.list().some(p=>p.id===selected)?selected:null,progress:progress(),view,workspace:workspace.snapshot(),legacy:selected?{documents:room()!.documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
  const read=(id?:string)=>id?{...current(),project:workspace.snapshot().projects.find(p=>p.id===id),legacy:store.load(id)}:current();
  function tool(name:string,args:any,job:Job):any{
   if(name==='read_briefing'&&job===announceJob)throw Error('Only announce the result and ask whether the user wants it now; read it after they say yes.');

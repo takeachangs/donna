@@ -49,33 +49,43 @@ function withClaude(){
 const executions=(f:{root:string})=>readFileSync(resolve(f.root,'executions.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line));
 const work=(key='build',depends_on:string[]=[])=>({key,role:key==='build'?'Implementation':'Review',responsibility:`Own ${key} and report actual evidence.`,brief:`Produce the ${key} deliverable in English.`,acceptance:'A nonempty file and an honest verification report.',depends_on});
 function delegate(f:ReturnType<typeof fixture>,workers:(ReturnType<typeof work>&{reuse_worker_id?:string;provider?:'codex'|'claude'})[]=[work()]){
-  return f.workspace.delegate({project_id:f.project.id,checkpoint:'A useful verified deliverable',rationale:'Only the required independently useful work packages are staffed.',workers});
+  return f.workspace.staff(f.project.id,{checkpoint:'A useful verified deliverable',rationale:'Only the required independently useful work packages are staffed.',workers});
 }
 async function until(predicate:()=>boolean){
   const start=Date.now();while(!predicate()){if(Date.now()-start>2000)throw Error('Timed out awaiting controlled execution');await new Promise(r=>setTimeout(r,0));}
 }
 
 describe('agency native execution workspace',()=>{
-  it('creates a new project with its initial work already queued, then records a native session',async()=>{
-    const f=fixture(),result=f.workspace.createProject({name:'Quick Notes',brief:'Build a single file notes app.',initial_work:{checkpoint:'Deliver working notes',rationale:'One small feature needs one worker.',workers:[work()]}});
-    expect(result.executionStarted).toBe(true);const assigned=f.workspace.snapshot().assignments.filter(a=>a.projectId===result.project.id);
-    expect(assigned).toHaveLength(1);expect(assigned[0].status).toBe('queued');expect(assigned[0].sessionId).toBeUndefined();
-    const pumping=f.workspace.pump();await until(()=>f.codex.pending.length===1);
-    expect(f.workspace.snapshot().assignments[0].sessionId).toBe(f.codex.pending[0].threadId);f.codex.deliver(0);await pumping;
-    expect(f.workspace.snapshot().assignments[0].status).toBe('review');
+  it('creates a new project with a planning step for Donna\'s brain, which staffs the team and queues its review',async()=>{
+    const brain=new ControlledCodex(),f=fixture(),workspace=new AgencyWorkspace(f.store,f.projects,f.codex,()=>{},{autoStart:false,brain});workspaces.push(workspace);
+    const result=workspace.createProject({name:'Quick Notes',brief:'Build a single file notes app.',initial_work:'Build a single file notes app.'});
+    expect(result.executionStarted).toBe(true);expect(result.planning).toBe(true);const snap=workspace.snapshot(),assigned=snap.assignments.filter(a=>a.projectId===result.project.id);
+    expect(assigned).toHaveLength(1);expect(assigned[0].kind).toBe('plan');expect(assigned[0].status).toBe('queued');
+    const lead=snap.workers.find(w=>w.id===assigned[0].workerId)!;expect(lead.lead).toBe(true);expect(lead.name).toBe('Donna');
+    const pumping=workspace.pump();await until(()=>brain.pending.length===1);
+    expect(brain.pending[0].input.prompt).toContain('Build a single file notes app.');expect(workspace.snapshot().workers.find(w=>w.id===lead.id)!.sessionId).toBe(brain.pending[0].threadId);
+    brain.pending[0].finish({threadId:brain.pending[0].threadId,status:'completed',text:'Here is the plan:\n```json\n'+JSON.stringify({title:'Notes app',checkpoint:'Working notes',rationale:'One small feature needs one worker.',workers:[work()]})+'\n```'});
+    await until(()=>f.codex.pending.length===1);
+    const after=workspace.snapshot(),crew=after.assignments.find(a=>!a.kind)!,review=after.assignments.find(a=>a.kind==='review')!;
+    expect(crew.status).toBe('working');expect(review.status).toBe('queued');expect(review.dependsOn).toEqual([crew.id]);expect(review.sessionId).toBe(lead.sessionId??brain.pending[0].threadId);
+    expect(after.assignments.find(a=>a.kind==='plan')!.status).toBe('done');
+    f.codex.deliver(0);await until(()=>brain.pending.length===2);
+    expect(brain.pending[1].input.threadId).toBe(brain.pending[0].threadId);expect(brain.pending[1].input.prompt).toContain('Rowan');
+    brain.pending[1].finish({threadId:brain.pending[0].threadId,status:'completed',text:JSON.stringify({summary:'Rowan built the notes app.',verification:['Read result.md']})});await pumping;
+    const done=workspace.snapshot();expect(done.assignments.find(a=>a.kind==='review')!.status).toBe('review');expect(done.briefings).toHaveLength(1);expect(done.briefings[0].workerId).toBe(crew.workerId);expect(done.briefings[0].summary).toBe('Rowan built the notes app.');expect(done.briefings[0].contributors).toHaveLength(1);
   });
-  it('keeps explicitly empty rooms idle and rejects invalid initial plans before creating a room',()=>{
+  it('keeps explicitly empty rooms idle and refuses a goal when no brain is connected',()=>{
     const f=fixture(),idle=f.workspace.createProject({name:'Later',brief:'Do not start yet.',initial_work:null});
     expect(idle.executionStarted).toBe(false);expect(f.workspace.snapshot().assignments).toHaveLength(0);
     const before=f.workspace.snapshot(),catalog=f.projects.list();
     expect(()=>f.workspace.createProject({name:'Missing choice',brief:'Build this'})).toThrow();
-    expect(()=>f.workspace.createProject({name:'Invalid',brief:'Build this',initial_work:{checkpoint:'Build',rationale:'Parallel scopes',workers:[work('one',['two']),work('two',['one'])]}})).toThrow('Cyclic');
+    expect(()=>f.workspace.createProject({name:'No brain',brief:'Build this',initial_work:'Build this'})).toThrow('not connected');
     expect(f.workspace.snapshot()).toEqual(before);expect(f.projects.list()).toEqual(catalog);
   });
   it('treats null or empty reuse IDs as new workers while rejecting unknown nonempty IDs',()=>{
     const f=fixture();
     for(const reuse_worker_id of [null,'']){
-      const result=f.workspace.delegate({project_id:f.project.id,checkpoint:'Build',rationale:'One worker',workers:[{...work(),reuse_worker_id}]});
+      const result=f.workspace.staff(f.project.id,{checkpoint:'Build',rationale:'One worker',workers:[{...work(),reuse_worker_id}]});
       expect(result.workers).toHaveLength(1);expect(result.workers[0].sessionId).toBeUndefined();
     }
     const before=f.workspace.snapshot();expect(()=>delegate(f,[{...work(),reuse_worker_id:'unknown'}])).toThrow('Reused worker');expect(f.workspace.snapshot()).toEqual(before);
@@ -269,9 +279,6 @@ describe('agency native execution workspace',()=>{
   it('rejects Claude work before any mutation when Claude Code is not connected',()=>{
     const f=fixture(),before=f.workspace.snapshot();
     expect(()=>delegate(f,[{...work(),provider:'claude'}])).toThrow('not connected');expect(f.workspace.snapshot()).toEqual(before);
-    const catalog=f.projects.list();
-    expect(()=>f.workspace.createProject({name:'Claude room',brief:'Build this',initial_work:{checkpoint:'Build',rationale:'One worker',workers:[{...work(),provider:'claude'}]}})).toThrow('not connected');
-    expect(f.workspace.snapshot()).toEqual(before);expect(f.projects.list()).toEqual(catalog);
   });
   it('interrupts a paused running Claude assignment on the Claude runner',async()=>{
     const f=withClaude(),plan=delegate(f,[{...work(),provider:'claude'}]),pumping=f.workspace.pump();await until(()=>f.claude.pending.length===1);

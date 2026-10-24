@@ -117,6 +117,8 @@ export default {
   'agency.project_rooms': 'Project rooms',
   'agency.request_failed': 'The request could not be completed.',
   'agency.codex_ready': 'Local Codex ready',
+  'agency.engine_ready': 'Local engine ready',
+  'agency.engine_unavailable': 'Local engine needs setup',
   'agency.codex_unavailable': 'Local Codex needs setup',
   'agency.command_short': 'Floor',
   'agency.map': 'Floor plan',

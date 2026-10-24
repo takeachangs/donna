@@ -18,9 +18,10 @@ export function reconcileBriefings(queue:Briefing[],assignments:Assignment[],wor
   if(b.status==='queued'&&(!a||currentKey(a)!==b.deliveryKey||!current(a))){b.status='superseded';changed=true;}
  }
  for(const a of assignments){
-  if(a.status!=='review'||!a.artifacts.length||!a.completedAt||!current(a)||assignments.some(d=>d.dependsOn.includes(a.id))||queue.some(b=>b.deliveryKey===currentKey(a)))continue;
-  const chain=chainFor(a);
-  queue.push({id:randomUUID(),assignmentId:a.id,projectId:a.projectId,workerId:a.workerId,deliveryKey:currentKey(a),title:a.title,summary:a.summary||'',artifacts:structuredClone(chain.flatMap(d=>d.artifacts)),verification:[...(a.verification||[])],createdAt:a.completedAt,status:'queued',contributors:chain.map(d=>({name:workers.find(w=>w.id===d.workerId)?.name||'Worker',title:d.title,summary:d.summary||''}))});changed=true;
+  if(a.status!=='review'||!a.completedAt||!current(a)||assignments.some(d=>d.dependsOn.includes(a.id))||queue.some(b=>b.deliveryKey===currentKey(a)))continue;
+  const chain=chainFor(a),crew=chain.filter(d=>!d.kind);
+  if(!chain.flatMap(d=>d.artifacts).length)continue;
+  queue.push({id:randomUUID(),assignmentId:a.id,projectId:a.projectId,workerId:(crew.at(-1)||a).workerId,deliveryKey:currentKey(a),title:a.title,summary:a.summary||'',artifacts:structuredClone(chain.flatMap(d=>d.artifacts)),verification:[...(a.verification||[])],createdAt:a.completedAt,status:'queued',contributors:crew.map(d=>({name:workers.find(w=>w.id===d.workerId)?.name||'Worker',title:d.title,summary:d.summary||''}))});changed=true;
  }
  return changed;
 }

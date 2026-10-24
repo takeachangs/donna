@@ -164,7 +164,7 @@ function render(){
  if(selectedProject&&!projects.some(p=>p.id===selectedProject)){if(socket)void start();selectedProject=projects[0]?.id||'';state=undefined;usage.clear();meter();view='command';rememberRoom();scene?.overview();document.body.dataset.view=view}
  if(!selectedProject&&projects.length){selectedProject=projects[0].id;rememberRoom();if(connected){switching=true;controls(false);send({type:'switch_project',roomId:selectedProject})}}
  renderProjects();scene?.workspace(workspace);projectManager.renderTrash();el('deleted-count').textContent=workspace.projects.some(p=>p.deletedAt)?String(workspace.projects.filter(p=>p.deletedAt).length):'';el('manage-current-project').hidden=view!=='project'
- const project=workspace.projects.find(p=>p.id===selectedProject&&!p.deletedAt),all=view!=='project',visible=(id:string)=>projects.some(p=>p.id===id)&&(all||id===selectedProject),assignments=workspace.assignments.filter(a=>visible(a.projectId)),decisions=workspace.decisions.filter(d=>d.status==='open'&&visible(d.projectId)),workers=workspace.workers.filter(w=>visible(w.projectId))
+ const project=workspace.projects.find(p=>p.id===selectedProject&&!p.deletedAt),all=view!=='project',visible=(id:string)=>projects.some(p=>p.id===id)&&(all||id===selectedProject),assignments=workspace.assignments.filter(a=>visible(a.projectId)),decisions=workspace.decisions.filter(d=>d.status==='open'&&visible(d.projectId)),workers=workspace.workers.filter(w=>!w.lead&&visible(w.projectId))
  const title=view==='project'?project?.name||t('agency.project'):t(view==='command'?'agency.command_room':'agency.secretary_office')
  el('page-title').textContent=title;el('scene-label').textContent=title;el('board-title').textContent=t(view==='command'?'agency.decisions_results':view==='project'?'agency.project_overview':'agency.attention')
  el('goal').textContent=view==='project'?project?.memory?.checkpoint||project?.goal||t('agency.empty_goal'):'';el('brief-section').hidden=view!=='project'
@@ -242,7 +242,7 @@ el('settings').onclick=()=>el<HTMLDialogElement>('settings-dialog').showModal();
 window.addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.querySelector('dialog[open]')){audio?.stop();send({type:'interrupt'})}})
 window.addEventListener('pagehide',()=>{socket?.close();void audio?.close()})
 async function init(){
- const data=await api('/agency-api/status');cast=data.assistants.filter((a:Colleague)=>a.id==='mara');el('execution-health').textContent=t(data.codex?.available&&data.codex?.authenticated?'agency.codex_ready':'agency.codex_unavailable');el('codex-provider-status').textContent=el('execution-health').textContent
+ const data=await api('/agency-api/status');cast=data.assistants.filter((a:Colleague)=>a.id==='mara');const ok=(s:any)=>s?.available&&s?.authenticated;el('execution-health').textContent=t(ok(data.providers?.[data.providers.defaultProvider]||data.codex)?'agency.engine_ready':'agency.engine_unavailable');el('codex-provider-status').textContent=t(ok(data.codex)?'agency.codex_ready':'agency.codex_unavailable')
  workspace=await api<Workspace>('/agency-api/workspace');projects=workspace.projects.filter(p=>!p.deletedAt)
  const candidate=new URLSearchParams(location.search).get('room')||localStorage.getItem(roomKey)||''
  if(candidate&&/^[a-f0-9-]{36}$/.test(candidate)&&!workspace.projects.some(p=>p.id===candidate)){

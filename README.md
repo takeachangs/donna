@@ -2,7 +2,7 @@
 
 **Your personal office for AI work.** Each project has a room on a shared floor; Donna keeps work moving and holds completed results for your next briefing.
 
-A local personal office: speak to a Higgs secretary, delegate real work to local Codex or Claude Code sessions, and review actual deliverables in project rooms. The Office floor brings all projects and decisions together. Workers name themselves; the secretary chooses the team size.
+A local personal office: speak to a Higgs secretary, delegate real work to local Codex or Claude Code sessions, and review actual deliverables in project rooms. The Office floor brings all projects and decisions together. Workers name themselves; Donna's brain chooses the team.
 
 ## Run
 
@@ -12,7 +12,7 @@ Requires Node.js 22.12+ and npm. One install covers both apps.
 npm ci
 ```
 
-Copy `.env.example` to `.env`, set `BOSON_API_KEY`, and sign in to your local Codex CLI. Set `AGENCY_CODEX_BIN` only if the executable is not on PATH. Claude Code workers use your local `claude` sign-in (claude.ai); the server removes `ANTHROPIC_API_KEY` from their environment so a shell API key is never billed. `AGENCY_CLAUDE_BIN` and `AGENCY_CLAUDE_MODEL` (default `sonnet`) are optional. Credentials stay in the backend/native CLI; no credentials are bundled with this repository.
+Copy `.env.example` to `.env`, set `BOSON_API_KEY`, and sign in to your local Codex CLI. Set `AGENCY_CODEX_BIN` only if the executable is not on PATH. `AGENCY_DEFAULT_PROVIDER` (`codex` or `claude`) picks the engine for workers when the plan does not name one; unset, the server uses Codex when signed in, otherwise Claude Code when signed in, and logs which and why. `AGENCY_BRAIN_MODEL` (default `opus`) is the model for Donna's brain. Claude Code workers use your local `claude` sign-in (claude.ai); the server removes `ANTHROPIC_API_KEY` from their environment so a shell API key is never billed. `AGENCY_CLAUDE_BIN` and `AGENCY_CLAUDE_MODEL` (default `sonnet`) are optional. Credentials stay in the backend/native CLI; no credentials are bundled with this repository.
 
 ```sh
 npm run dev
@@ -31,7 +31,7 @@ Open **http://127.0.0.1:3003/**. One server serves the built office, API and Web
 
 ## How the office works
 
-- **Donna, your secretary**, receives goals, follows project memory and delegates 1–4 useful work packages. Small tasks normally need one worker.
+- **Donna's voice** (Higgs) takes your goal and nothing more. **Donna's brain**, a persistent read-only Claude Code lead session per project, reads the project, plans 1–4 workers (small tasks normally need one), runs them one at a time, then reviews their files and writes one briefing. Workers never talk to you.
 - The **···** beside a project opens **Project settings** for renaming or recoverable deletion. **Recently deleted** restores the same room, files, reports and native sessions. Deleting pauses active work; restoring keeps it paused.
 - **Project rooms** show real assignments, fixed desks and saved deliverables. **Details** contains the full report, checks and native session reference.
 - **Office floor** is the global view. Project rooms expand along a shared hall, with Donna's suite at the entrance. Workers stay at their desks; a completed workflow triggers a short delivery trip to Donna and back.
@@ -40,9 +40,9 @@ Open **http://127.0.0.1:3003/**. One server serves the built office, API and Web
 - **Stop speaking** interrupts voice. **Pause work** pauses native execution. Closing the browser or changing rooms does not cancel background work.
 - Codex owns detailed conversation history. Resume the exact session using the command shown under execution details; the office keeps concise memory and references.
 
-Default execution is **GPT-6.1 Sol / low**; the secretary can choose medium for a specific assignment. One native writer runs at a time. Project working directories are isolated. The secretary provides the spoken interaction; workers currently return text and files. Arbitrary repository attachment, mail, calendar, deployment and independent worker voices are not implemented.
+Default Codex execution is **GPT-6.1 Sol / low**; the brain can choose medium for a specific worker, and brain steps (plan, review) run at medium effort. One native writer runs at a time. Project working directories are isolated. The secretary provides the spoken interaction; workers currently return text and files. Arbitrary repository attachment, mail, calendar, deployment and independent worker voices are not implemented.
 
-Claude Code is a verified second worker engine (`apps/server/src/agency/claude.ts`). Codex stays the default; Donna sets `provider: "claude"` on a worker when you ask for Claude. A worker is bound to its engine's native session: the first run creates it with `--session-id`, later runs `--resume` it. Claude workers have file tools only (Read, Edit, Write, Glob, Grep) confined to the project directory, with no shell, hooks or MCP. The status check runs `claude auth status`, never inference; offline tests use a fake CLI. Verified live on 2026-10-24: a new file assignment and a resumed follow-up each finished in about 8 s on Sonnet and reached review and the briefing queue.
+Claude Code is a verified second worker engine (`apps/server/src/agency/claude.ts`). The brain sets `provider: "claude"` on a worker when you ask for Claude; otherwise `AGENCY_DEFAULT_PROVIDER` applies. A worker is bound to its engine's native session: the first run creates it with `--session-id`, later runs `--resume` it. Claude workers have file tools only (Read, Edit, Write, Glob, Grep) confined to the project directory, with no shell, hooks or MCP. The status check runs `claude auth status`, never inference; offline tests use a fake CLI. Verified live on 2026-10-24: a new file assignment and a resumed follow-up each finished in about 8 s on Sonnet and reached review and the briefing queue.
 
 ## Source and private data
 
