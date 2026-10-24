@@ -43,7 +43,7 @@ Two processes: Donna (a Claude Code session running `/call`) and the phone (`bri
    a `task.sent` with `"from": "voice"` and the same id, Donna works, her `say` is spoken in the same call. A task sent
    with `herd.py send` while the call is live is also spoken in the call (`VOICE: Just got the update: …`); if the call
    has already ended, it rings again.
-6. "How's it going?" is answered from the herd (`agent_status → …` in `bridge.log`), not by interrupting Donna.
+6. "How's it going?" is answered from the herd (`task_status → …` in `bridge.log`), not by interrupting Donna.
 
 ## Hang up, stop
 - Hang up: say "bye" (or "that's all"), or stay quiet for 60 s. Expected: `call.ended` with `reason` `goodbye` or

@@ -18,15 +18,15 @@
             elif ev.type == "session.output_audio.delta":
                 play(base64.b64decode(ev.delta))
         await conn.input_audio.append(pcm16_24k_bytes)
-        await conn.session.thinking.append(content="reading the config", delegation_id=did)   # silent: kept here for agent_status
+        await conn.session.thinking.append(content="reading the config", delegation_id=did)   # silent: kept here for task_status
         await conn.session.commentary.append(content="Done, it's open.", delegation_id=did)   # spoken, when the voice is free
         await conn.session.instructions.append(content="The user is now on the pricing page.")
 
 How it maps: the voice model calls a function tool; this layer leaves the call OPEN (Higgs tool calls are asynchronous: the
 conversation continues with the output outstanding), requests one response so the model acknowledges, and emits
 `session.delegation.created`. Thinking appends never reach Higgs (as conversation items the model answered them instead of
-the user); the layer keeps the latest one per delegation for `agent_status`. The first commentary append for a delegation waits until the voice is idle, the user is quiet and playback has
-drained, then returns the real `function_call_output` and requests one response. Instructions appends re-send session.update.
+the user); the layer keeps the latest one per delegation for `task_status`. The first commentary append for a delegation waits until the voice is idle, the user is quiet and playback has
+drained, then returns the real `function_call_output` plus a one-line cue and requests one response. Instructions appends re-send session.update.
 """
 import asyncio, base64, json, logging, os, re, time
 from pathlib import Path
@@ -38,15 +38,18 @@ URL = "wss://api.boson.ai/v1/realtime?model="
 TOOL = "delegate_task"   # NOT "delegate": the server reserves that name for its own server-side tool (returns executor:"server", adds a `reason` arg; "delegation service not configured")
 TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an agent on the user's computer that can "
             "create or edit files, open pages or files in the browser, run commands, read code, check git, look things up, calculate. "
-            "Use it for ANY request to make, open, run, check, find or compute something. The task is a plain-English request, not a command.",
+            "Use it for ANY request to make, add, change, design, open, run, check, find or compute something, including what is in a "
+            "file, folder or directory. The task is a plain-English request, not a command.",
             "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}
-STATUS = "agent_status"   # answered at once by this layer from the herd files; never left open
-STATUS_DEF = {"type": "function", "name": STATUS, "description": "Says what the agents on the user's computer are doing right now: "
-              "who is working on what and for how long, who is idle, what finished. Use it whenever the user asks how it's going, "
-              "what's happening, or whether something is done.", "parameters": {"type": "object", "properties": {}}}
+STATUS = "task_status"   # answered at once by this layer from the herd files; never left open
+STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the tasks you sent with {TOOL} are going: which are running, "
+              "for how long, latest progress, which finished. Only for tasks.", "parameters": {"type": "object", "properties": {}}}   # naming files/folders here pulled "what's in my directory" to this tool (2/6 runs)
 MECHANICS = f"""## Delegation mechanics
 Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
 same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
+A request to add, change, design, plan, style or improve something on a page or file is work too: call {TOOL} with your best
+reading of it. If a detail is missing, pick a sensible default, say which, and let the user correct it; never interview the user
+before calling. A question about what is in a file, folder or directory, or on the computer, is work too: call {TOOL}.
 After the call, one short sentence that it's underway.
 Reply to what the user just said. Mention a running task only if they ask or when its result arrives.
 {TOOL} hands the job to an agent on the user's computer. Describe the task in plain English as a complete request (what, where,
@@ -54,13 +57,16 @@ what the result should be), never as a shell command or code. It runs in the bac
 output, often several turns after the call. Never guess or report the result before it arrives; when it does, bring it up as a
 natural aside and give the outcome in your own words. Never report an action as done, running, or sent unless you called {TOOL}.
 When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; while a
-task is running, even a casual "how's it going" means the task. Never claim progress or results you did not get from a tool."""
+task is running, even a casual "how's it going" means the task. {STATUS} is only for how a task you sent is going; if it can't
+answer what they asked, never say you're checking the status. Never claim progress or results you did not get from a tool."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
+RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences]"   # user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
-CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending)|should be running|backend result)")
-OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send)|let me\s+(creat|mak|check|look|run|open|see)|"
+CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching)|should be running|backend result)")
+OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat)|let me\s+(creat|mak|check|look|run|open|see)|"
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
-                   r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate)")   # asking permission instead of calling (Oct 24 call)
+                   r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
+                   r"(i'?ll|i (can|could)|let me)\s+(whip|draft|put (\w+ )?together|set (\w+ )?up|sketch))")   # asking permission instead of calling; offering to draft (Oct 24 calls)
 PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c.txt: no paths in speech
 
 
@@ -94,12 +100,16 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
     return PATH.sub(r"\1", " ".join(out)) or "No agents are running and nothing has finished since the call started."
 
 
-ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download)\b")
+ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|"
+                   r"add|change|design|plan|style|improve|update (the|it|that|this|my)|tell (them|it|someone)|have (them|someone))\b")   # not bare "update"/"have it": "any update?", "do you have it?" ask about a running task
 
 
 def _ev(d):
     """dict → attribute access, recursively (ev.delegation.id)."""
     return SimpleNamespace(**{k: _ev(v) if isinstance(v, dict) else v for k, v in d.items()}) if isinstance(d, dict) else d
+
+
+def _msg(text: str) -> dict: return {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}
 
 
 class _Channel:
@@ -110,12 +120,13 @@ class Conn:
     def __init__(self, ws, rate, playback=True, model="higgs-realtime"):
         self._ws, self._rate, self._playback, self._model = ws, rate, playback, model
         self._out: asyncio.Queue = asyncio.Queue()        # translated events for the consumer
-        self._spoken: asyncio.Queue = asyncio.Queue()     # (text, delegation_id) waiting for a quiet moment
+        self._spoken: asyncio.Queue = asyncio.Queue()     # (text, delegation_id[, note_for]) waiting for a quiet moment
         self._st = dict(in_flight=False, user_speaking=False, spk_until=0.0, guarded=False, turn_delegated=False, last_user="", last_voice="", added=None)
         self._pending: set[str] = set()                   # delegations with no commentary yet
+        self._arrived: set[str] = set()                   # delegations whose result came in (queued or spoken): their "still working" note is stale
         self._open: set[str] = set()                      # function calls whose output we have not returned yet
-        self._notes: dict = {}                            # delegation id → its latest progress note, for agent_status only
-        self._sent: dict = {}                             # delegation id → (task, epoch) for agent_status
+        self._notes: dict = {}                            # delegation id → its latest progress note, for task_status only
+        self._sent: dict = {}                             # delegation id → (task, epoch) for task_status
         self._instructions = ""
         self._t0 = time.monotonic()
         self._tasks: list[asyncio.Task] = []
@@ -145,6 +156,7 @@ class Conn:
 
     # ---- the three return channels + inputs ------------------------------------------------------------------------
     async def _commentary(self, content: str, delegation_id: str | None = None):
+        self._arrived.add(delegation_id)
         await self._spoken.put((content[:1500], delegation_id))
 
     async def _thinking(self, content: str, delegation_id: str | None = None):
@@ -164,23 +176,26 @@ class Conn:
         await self._item(content); await self._send({"type": "response.create"})
 
     async def _item(self, text: str):
-        await self._send({"type": "conversation.item.create", "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}})
+        await self._send({"type": "conversation.item.create", "item": _msg(text)})
 
     async def _speak_loop(self):
         # ponytail: one result at a time, oldest first; no priority, no coalescing
         while True:
-            text, did = await self._spoken.get()
+            text, did, *about = await self._spoken.get()   # about: the delegation a "still working" note is for
             st = self._st
             while st["in_flight"] or st["user_speaking"] or time.monotonic() < st["spk_until"] + 1.0:   # voice idle, user quiet, playback drained + a beat
                 await asyncio.sleep(0.1)
-            st["added"] = asyncio.Event()
+            if about and about[0] in self._arrived: continue   # its result came in while the note waited: the result wins (Oct 24 call)
             if did in self._open:   # the native path: the call stayed open all this time; this is its real output (confirmed with Boson, Oct 23)
                 self._open.discard(did)
-                await self._send({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": did, "output": text}})
+                items = [{"type": "function_call_output", "call_id": did, "output": text}, _msg(RESULT_CUE)]
             else:                   # no open call (opener, "still working" note, a second update for the same task): plain text item
-                await self._item(text)
-            try: await asyncio.wait_for(st["added"].wait(), 3)   # the server must add the item before we ask for the reply, or it answers without it
-            except asyncio.TimeoutError: log.warning("no item.added ack before response.create")
+                items = [_msg(text)]
+            for item in items:
+                st["added"] = asyncio.Event()
+                await self._send({"type": "conversation.item.create", "item": item})
+                try: await asyncio.wait_for(st["added"].wait(), 3)   # the server must add each item before we ask for the reply, or it answers without it
+                except asyncio.TimeoutError: log.warning("no item.added ack before response.create")
             await self._send({"type": "response.create"})
             if did: self._pending.discard(did)
             log.info("→ commentary %s (%d chars)", did or "(no delegation)", len(text))
@@ -188,7 +203,7 @@ class Conn:
 
     async def _still_working(self, did: str):
         await asyncio.sleep(STILL_WORKING_AT)
-        if did in self._pending: await self._spoken.put(("[note] The task you handed off is still in progress and taking longer than usual; tell the user in a few words.", None))
+        if did in self._pending: await self._spoken.put(("[note] The task you handed off is still in progress and taking longer than usual; tell the user in a few words.", None, did))
 
     # ---- event translation -----------------------------------------------------------------------------------------
     def _emit(self, type_: str, **kw): self._out.put_nowait(_ev({"type": type_, **kw}))
@@ -235,7 +250,8 @@ class Conn:
             if status and not calls:
                 st["guarded"] = True; await self._send({"type": "response.create"})   # same socket, so the output is added before the reply is made
                 self._emit("response.done", calls=1, pending=len(self._pending)); return
-            if self.delegation and not calls and self._fake_claim() and not st["guarded"] and not st["turn_delegated"]:
+            if self.delegation and not calls and self._fake_claim() and not st["guarded"] and not st["turn_delegated"] \
+                    and (not self._pending or ASKED.search(st["last_user"].lower())):   # a task is running: "on it" to "are you done?" is no fake claim (Oct 24 call)
                 st["guarded"] = True   # ponytail: one forced retry per user turn, no loop
                 log.info("GUARD: reply claimed or offered a task without calling %s — nudging", TOOL)
                 await self._item(NUDGE); await self._send({"type": "response.create"}); return
@@ -281,6 +297,11 @@ if __name__ == "__main__":   # self-check: no network
     assert ASKED.search("make me a page") and OFFER.search("i'll create it for you")
     assert all(OFFER.search(x) for x in ("i can't create files myself, but i can delegate that. shall i set that up?", "shall i set that up?",
                                          "want me to delegate that?", "would you like me to hand that off?")) and not OFFER.search("sure, what else?")
+    assert all(OFFER.search(x) for x in ("sure, i can draft a hero section for a tech company. what vibe are we going for?",   # the Oct 24 call, verbatim
+                                         "i'll whip up a hero section with a clean layout", "let me put that together",
+                                         "sure. i'll add a hero section to the page with a big heading")) and CLAIM.search("i'm putting together the hero section")
+    assert all(ASKED.search(x) for x in ("can you tell them to plan a nice hero section", "add a sleek hero section to it", "update the colors"))
+    assert not any(ASKED.search(x) for x in ("are you done? like.", "any update on that?", "do you have it yet?", "hello"))
     assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
@@ -299,7 +320,7 @@ if __name__ == "__main__":   # self-check: no network
         assert "donna is idle." in s and "donna finished make hello.txt: written to hello.txt" in s and "old" not in s, s
         assert "open the page, has been running for a few seconds" in s and "/" not in s and "{" not in s, s
         assert "finished" not in status_summary(now, (), now)   # done before the call: not reported
-        c, sent = Conn(None, 24000), []   # thinking.append sends Higgs nothing; agent_status still reports the note
+        c, sent = Conn(None, 24000), []   # thinking.append sends Higgs nothing; task_status still reports the note
         async def rec(ev): sent.append(ev)
         c._send, c._sent, c._open = rec, {"d1": ("make index.html", now)}, {"d1"}
         asyncio.run(c.session.thinking.append(content="writing index.html", delegation_id="d1"))
@@ -310,4 +331,24 @@ if __name__ == "__main__":   # self-check: no network
         asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "function_call", "name": STATUS, "call_id": "s2"},
                                                                                  {"type": "function_call", "name": TOOL, "call_id": "d2", "arguments": '{"task": "open it"}'}]}}))
         assert "open it, has been running" in sent[0]["item"]["output"], sent
+    c, sent = Conn(None, 24000), []   # GUARD while a task runs: only a new request without a call gets the nudge
+    c._send, c.delegation, c._pending = rec, True, {"d1"}
+    for user, voice, nudged in (("are you done? like.", "on it, just a sec while that updates.", False),
+                                ("add a sleek hero section to it", "i'll whip up a hero section with a clean layout.", True)):
+        sent.clear(); c._st.update(last_user=user, last_voice=voice, guarded=False, turn_delegated=False)
+        asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "message", "content": [{"transcript": voice}]}]}}))
+        assert any(e.get("item", {}).get("content", [{}])[0].get("text") == NUDGE for e in sent) == nudged, (user, sent)
+    STILL_WORKING_AT = 0   # a "still working" note queued before or after the result came in is dropped; the result gets the cue
+    async def stale_note():
+        c, sent = Conn(None, 24000), []
+        async def rec(ev):
+            sent.append(ev)
+            if ev["type"] == "conversation.item.create": c._st["added"].set()   # the server's item.added ack
+        c._send, c._open, c._pending = rec, {"d1"}, {"d1"}
+        await c._still_working("d1"); await c.session.commentary.append(content="Done, the page is open.", delegation_id="d1"); await c._still_working("d1")
+        t = asyncio.create_task(c._speak_loop()); await asyncio.sleep(0.3); t.cancel()
+        return sent
+    sent = asyncio.run(stale_note())
+    assert [e.get("item", {}).get("type") or e["type"] for e in sent] == ["function_call_output", "message", "response.create"], sent
+    assert sent[0]["item"]["output"] == "Done, the page is open." and sent[1]["item"]["content"][0]["text"] == RESULT_CUE, sent
     print("ok")

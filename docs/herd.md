@@ -43,14 +43,14 @@ user ⇄ speaker+mic (later: Twilio) ⇄ Higgs voice "Donna" ⇄ bridge.py ⇄ D
                                           │                                   │ herd.py new / send / capture / close
                                           │                                   ▼
                                           │                          worker sessions: claude -p, one dir each
-                                          └──── agent_status ◀── ~/.higgs/herd/*/status.json
+                                          └──── task_status ◀─── ~/.higgs/herd/*/status.json
                                                                    ~/.higgs/herd/events.jsonl ──▶ Jerrold's 3D scene
 ```
 
 - **The voice is Donna's mouth, Donna's session is her brain.** Anything substantive goes `delegate_task` → Donna's
   inbox (the call stays open); she answers with `say` (spoken) or `note` (silent progress). Small talk and status come
   from the voice directly.
-- **Two voice tools only:** `delegate_task(task)` (unchanged) and `agent_status()` (code-built from the herd: who is
+- **Two voice tools only:** `delegate_task(task)` (unchanged) and `task_status()` (code-built from the herd: who is
   working on what, who is idle, what finished). No `spawn_agent` for the voice; Donna decides when to spawn.
 - **Donna's rules (in the `/call` skill):** never do work longer than a minute yourself; `herd.py new <name> --kind
   claude --project DIR` then `herd.py send <name> "<task>"`; watch the workers' outboxes; `bridge.py note <id>` for
@@ -92,7 +92,7 @@ cannot read a local file.
 `bridge.py --ring` runs in the background with no call open. It watches Donna's outbox and the herd:
 1. Donna writes a `say` while nobody is on the line → the bridge opens a Higgs session on the speaker, seeds
    `Calling about: <text>` (the existing opener makes the voice speak first), logs `call.ring` then `call.answered`.
-2. The user talks; `delegate_task` → Donna's inbox as today; `agent_status` from the herd.
+2. The user talks; `delegate_task` → Donna's inbox as today; `task_status` from the herd.
 3. The call ends on "bye"/"that's all" (voice says goodbye, bridge closes the session), or after 60 s of silence,
    or on Higgs's 300 s idle timeout → `call.ended`. Results that land with nobody on the line ring again (one call
    at a time; several results are read in one call).
@@ -106,7 +106,7 @@ Same flow on Twilio later: `ring` dials instead of opening the speaker.
    herd.py send a "x" && tail -3 ~/.higgs/herd/events.jsonl` shows `agent.new, task.sent, task.done`.
 2. `/call` skill → Donna's job description (§3 rules); step 1 registers `donna/` in the herd instead of the global
    inbox. Check: a `/call` session answers one dictated task by spawning a worker and `say`ing its result.
-3. `bridge.py`: `session` backend reads/writes `herd/donna/`; `agent_status` tool from `status.json`; `--ring` mode
+3. `bridge.py`: `session` backend reads/writes `herd/donna/`; `task_status` tool from `status.json`; `--ring` mode
    (§5). Check: `--backend fake --silent --text "…"` unchanged transcript plus the events; then a `say` written to
    Donna's outbox with no call open makes the speaker ring.
 4. Hand Jerrold §4 first, before any of 1–3, so the scene is built against the same lines in parallel.
