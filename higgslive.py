@@ -26,7 +26,7 @@ How it maps: the voice model calls a function tool; this layer leaves the call O
 conversation continues with the output outstanding), requests one response so the model acknowledges, and emits
 `session.delegation.created`. Thinking appends never reach Higgs (as conversation items the model answered them instead of
 the user); the layer keeps the latest one per delegation for `agent_status`. The first commentary append for a delegation waits until the voice is idle, the user is quiet and playback has
-drained, then returns the real `function_call_output` and requests one response. Instructions appends re-send session.update.
+drained, then returns the real `function_call_output` plus a one-line cue and requests one response. Instructions appends re-send session.update.
 """
 import asyncio, base64, json, logging, os, re, time
 from pathlib import Path
@@ -61,6 +61,7 @@ task is running, even a casual "how's it going" means the task. {STATUS} is only
 about files, folders, the directory, the computer or what anything contains is a {TOOL}. If {STATUS} can't answer what they
 asked, never say you're checking the status. Never claim progress or results you did not get from a tool."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
+RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences]"   # user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
 CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching)|should be running|backend result)")
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send)|let me\s+(creat|mak|check|look|run|open|see)|"
@@ -109,6 +110,9 @@ def _ev(d):
     return SimpleNamespace(**{k: _ev(v) if isinstance(v, dict) else v for k, v in d.items()}) if isinstance(d, dict) else d
 
 
+def _msg(text: str) -> dict: return {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}
+
+
 class _Channel:
     def __init__(self, fn): self.append = fn
 
@@ -117,9 +121,10 @@ class Conn:
     def __init__(self, ws, rate, playback=True, model="higgs-realtime"):
         self._ws, self._rate, self._playback, self._model = ws, rate, playback, model
         self._out: asyncio.Queue = asyncio.Queue()        # translated events for the consumer
-        self._spoken: asyncio.Queue = asyncio.Queue()     # (text, delegation_id) waiting for a quiet moment
+        self._spoken: asyncio.Queue = asyncio.Queue()     # (text, delegation_id[, note_for]) waiting for a quiet moment
         self._st = dict(in_flight=False, user_speaking=False, spk_until=0.0, guarded=False, turn_delegated=False, last_user="", last_voice="", added=None)
         self._pending: set[str] = set()                   # delegations with no commentary yet
+        self._arrived: set[str] = set()                   # delegations whose result came in (queued or spoken): their "still working" note is stale
         self._open: set[str] = set()                      # function calls whose output we have not returned yet
         self._notes: dict = {}                            # delegation id → its latest progress note, for agent_status only
         self._sent: dict = {}                             # delegation id → (task, epoch) for agent_status
@@ -152,6 +157,7 @@ class Conn:
 
     # ---- the three return channels + inputs ------------------------------------------------------------------------
     async def _commentary(self, content: str, delegation_id: str | None = None):
+        self._arrived.add(delegation_id)
         await self._spoken.put((content[:1500], delegation_id))
 
     async def _thinking(self, content: str, delegation_id: str | None = None):
@@ -171,23 +177,26 @@ class Conn:
         await self._item(content); await self._send({"type": "response.create"})
 
     async def _item(self, text: str):
-        await self._send({"type": "conversation.item.create", "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}})
+        await self._send({"type": "conversation.item.create", "item": _msg(text)})
 
     async def _speak_loop(self):
         # ponytail: one result at a time, oldest first; no priority, no coalescing
         while True:
-            text, did = await self._spoken.get()
+            text, did, *about = await self._spoken.get()   # about: the delegation a "still working" note is for
             st = self._st
             while st["in_flight"] or st["user_speaking"] or time.monotonic() < st["spk_until"] + 1.0:   # voice idle, user quiet, playback drained + a beat
                 await asyncio.sleep(0.1)
-            st["added"] = asyncio.Event()
+            if about and about[0] in self._arrived: continue   # its result came in while the note waited: the result wins (Oct 24 call)
             if did in self._open:   # the native path: the call stayed open all this time; this is its real output (confirmed with Boson, Oct 23)
                 self._open.discard(did)
-                await self._send({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": did, "output": text}})
+                items = [{"type": "function_call_output", "call_id": did, "output": text}, _msg(RESULT_CUE)]
             else:                   # no open call (opener, "still working" note, a second update for the same task): plain text item
-                await self._item(text)
-            try: await asyncio.wait_for(st["added"].wait(), 3)   # the server must add the item before we ask for the reply, or it answers without it
-            except asyncio.TimeoutError: log.warning("no item.added ack before response.create")
+                items = [_msg(text)]
+            for item in items:
+                st["added"] = asyncio.Event()
+                await self._send({"type": "conversation.item.create", "item": item})
+                try: await asyncio.wait_for(st["added"].wait(), 3)   # the server must add each item before we ask for the reply, or it answers without it
+                except asyncio.TimeoutError: log.warning("no item.added ack before response.create")
             await self._send({"type": "response.create"})
             if did: self._pending.discard(did)
             log.info("→ commentary %s (%d chars)", did or "(no delegation)", len(text))
@@ -195,7 +204,7 @@ class Conn:
 
     async def _still_working(self, did: str):
         await asyncio.sleep(STILL_WORKING_AT)
-        if did in self._pending: await self._spoken.put(("[note] The task you handed off is still in progress and taking longer than usual; tell the user in a few words.", None))
+        if did in self._pending: await self._spoken.put(("[note] The task you handed off is still in progress and taking longer than usual; tell the user in a few words.", None, did))
 
     # ---- event translation -----------------------------------------------------------------------------------------
     def _emit(self, type_: str, **kw): self._out.put_nowait(_ev({"type": type_, **kw}))
@@ -329,4 +338,17 @@ if __name__ == "__main__":   # self-check: no network
         sent.clear(); c._st.update(last_user=user, last_voice=voice, guarded=False, turn_delegated=False)
         asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "message", "content": [{"transcript": voice}]}]}}))
         assert any(e.get("item", {}).get("content", [{}])[0].get("text") == NUDGE for e in sent) == nudged, (user, sent)
+    STILL_WORKING_AT = 0   # a "still working" note queued before or after the result came in is dropped; the result gets the cue
+    async def stale_note():
+        c, sent = Conn(None, 24000), []
+        async def rec(ev):
+            sent.append(ev)
+            if ev["type"] == "conversation.item.create": c._st["added"].set()   # the server's item.added ack
+        c._send, c._open, c._pending = rec, {"d1"}, {"d1"}
+        await c._still_working("d1"); await c.session.commentary.append(content="Done, the page is open.", delegation_id="d1"); await c._still_working("d1")
+        t = asyncio.create_task(c._speak_loop()); await asyncio.sleep(0.3); t.cancel()
+        return sent
+    sent = asyncio.run(stale_note())
+    assert [e.get("item", {}).get("type") or e["type"] for e in sent] == ["function_call_output", "message", "response.create"], sent
+    assert sent[0]["item"]["output"] == "Done, the page is open." and sent[1]["item"]["content"][0]["text"] == RESULT_CUE, sent
     print("ok")
