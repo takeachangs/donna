@@ -56,9 +56,10 @@ def deaf_once(st: dict) -> bool:
 
 ECHO_TAIL = 0.3   # s: the voice's audio counts as audible this long after its estimated end (output latency, room echo)
 
-def find_device(devices, name: str, kind: str) -> int | None:
+def find_device(devices, name: str, kind: str, hostapi=None) -> int | None:
     """Index of the first `kind` ("input"/"output") device whose name contains `name`, any case; None if none does (#34)."""
-    return next((i for i, d in enumerate(devices) if name.lower() in d["name"].lower() and d[f"max_{kind}_channels"] > 0), None)
+    return next((i for i, d in enumerate(devices) if name.lower() in d["name"].lower() and d[f"max_{kind}_channels"] > 0
+                 and (hostapi is None or d.get("hostapi") == hostapi)), None)
 
 def echo_of(heard: str, said: str) -> bool:
     """`heard` (a user transcript) is the mic picking up `said` (the voice's last line): two or more words, at least four in five
@@ -143,6 +144,8 @@ if sys.argv[1:2] == ["selftest"]:   # offline: no session, no audio
             {"name": "MacBook Pro Speakers", "max_input_channels": 0, "max_output_channels": 2}, {"name": "EarPods", "max_input_channels": 0, "max_output_channels": 2}]
     assert (find_device(devs, "macbook", "input"), find_device(devs, "MacBook", "output"), find_device(devs, "earpods", "output")) == (0, 1, 2)
     assert find_device(devs, "AirPods", "output") is None and find_device(devs, "EarPods", "input") is None   # no match, or no channels of that kind
+    win = [{"name": "Speakers", "max_output_channels": 2, "hostapi": api} for api in (0, 2)]
+    assert find_device(win, "Speakers", "output", 2) == 1 and find_device(win, "Speakers", "output", 3) is None
     assert all(echo_of(h, s) for h, s in (("You asked me.", "You asked me to call."), ("You asked me to.", "You asked me to call."), ("Still running.", "It's still running."),
                                           ("No need to check.", "Got it, no need to check on that. I'm just waiting for the task to finish up.")))   # the 08:30 call
     assert not any(echo_of(h, s) for h, s in (("On that now. No, you don't have to check on that. Um.", "I'm checking on that now."),   # echo + the user's own words
@@ -186,14 +189,27 @@ class _H(logging.Handler):
 logging.getLogger("higgslive").addHandler(_H()); logging.getLogger("higgslive").setLevel(logging.INFO)
 
 DEV: dict = {}   # "input"/"output" → the --mic/--out device, resolved once at start (#34); absent = the system default
+AUDIO: dict = {}  # per-device PortAudio settings; WASAPI converts the server's 24 kHz in shared mode
 ECHO = False     # speakers + built-in mic: the mic hears the voice
 if MIC or not args.silent:
     import sounddevice as sd
+    devices, apis = sd.query_devices(), sd.query_hostapis()
+    wasapi = next((i for i, api in enumerate(apis) if api["name"] == "Windows WASAPI"), None) if os.name == "nt" else None
     for kind, name in (("output", None if args.silent else args.out), ("input", args.mic if MIC else None)):
-        if not name: continue
-        DEV[kind] = find_device(sd.query_devices(), name, kind)
-        if DEV[kind] is None:   # used to fall back to the default silently: --out AirPods with no AirPods played on the speakers (#34)
-            print(sd.query_devices(), file=sys.stderr); ap.error(f"--{'out' if kind == 'output' else 'mic'} {name!r} matches no {kind} device (list above)")   # exit 2; --ring never arms
+        if (kind == "output" and args.silent) or (kind == "input" and not MIC): continue
+        if name:
+            DEV[kind] = find_device(devices, name, kind, wasapi)
+            if DEV[kind] is None: DEV[kind] = find_device(devices, name, kind)
+            if DEV[kind] is None:   # never silently use another physical device (#34)
+                print(devices, file=sys.stderr); ap.error(f"--{'out' if kind == 'output' else 'mic'} {name!r} matches no {kind} device (list above)")
+        elif wasapi is not None and apis[wasapi][f"default_{kind}_device"] >= 0:
+            DEV[kind] = apis[wasapi][f"default_{kind}_device"]
+        device = sd.query_devices(DEV.get(kind), kind)
+        if apis[device["hostapi"]]["name"] == "Windows WASAPI":
+            AUDIO[kind] = {"extra_settings": sd.WasapiSettings(auto_convert=True)}
+        (sd.check_input_settings if kind == "input" else sd.check_output_settings)(
+            device=DEV.get(kind), samplerate=RATE, channels=1, dtype="int16", **AUDIO.get(kind, {}))
+        log(f"audio {kind}: {device['name']} ({apis[device['hostapi']]['name']})")
     if ECHO := MIC and not args.silent and all("macbook" in sd.query_devices(DEV.get(k), k)["name"].lower() for k in ("input", "output")):   # ponytail: MacBook names only; add other built-in pairs if they echo
         log("echo guard: MacBook speakers + MacBook mic, so the mic hears Donna; it is muted while she talks, so you cannot talk over her. Headphones lift this.")
 
@@ -367,11 +383,14 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
     sd = None
     if not args.silent or not (args.text or args.wav or args.ring): import sounddevice as sd
 
+    def audio_failed(error):
+        st["audio_failed"] = True
+        log(f"SPEAKER THREAD CRASHED: {error!r}"); end("audio output failed")
     def spk_thread():
         try:
             odev = DEV.get("output")
             if args.out: loop.call_soon_threadsafe(log, f"speaker: {sd.query_devices(odev)['name']}")
-            with sd.RawOutputStream(samplerate=RATE, channels=1, dtype="int16", device=odev) as out:
+            with sd.RawOutputStream(samplerate=RATE, channels=1, dtype="int16", device=odev, **AUDIO.get("output", {})) as out:
                 import math, array
                 if who or opener:   # a transfer (#28): the hold cue, two soft rising tones, while the next voice connects
                     out.write(b"".join(array.array("h", (int(a * math.sin(2 * math.pi * hz * i / RATE)) for i in range(RATE * 3 // 20))).tobytes() for hz, a in ((523, 3000), (0, 0), (659, 3000))))
@@ -380,9 +399,9 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     loop.call_soon_threadsafe(log, "speaker: played a short beep — if you did not hear it, output is going to the wrong device")
                 while (chunk := spk.get()) is not None: out.write(chunk)
         except Exception as e:
-            loop.call_soon_threadsafe(log, f"SPEAKER THREAD CRASHED: {e!r}")
+            loop.call_soon_threadsafe(audio_failed, e)
     if sd and not args.silent:
-        d = sd.default.device; log(f"audio in: {sd.query_devices(d[0])['name']} | out: {sd.query_devices(d[1])['name']}")
+        log(f"audio in: {sd.query_devices(DEV.get('input'), 'input')['name']} | out: {sd.query_devices(DEV.get('output'), 'output')['name']}")
         threading.Thread(target=spk_thread, daemon=True).start()
     def clear_spk():
         try:
@@ -467,7 +486,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     loop.call_soon_threadsafe(log, f"mic level {lvl:.3f}" + ("   <-- ZERO: terminal has no microphone permission" if lvl < 0.001 else ""))
             dev = DEV.get("input")
             if args.mic: log(f"mic: {sd.query_devices(dev)['name']}")
-            stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=RATE // 10, callback=on_mic, device=dev); stream.start()
+            stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=RATE // 10, callback=on_mic, device=dev, **AUDIO.get("input", {})); stream.start()
         if args.max_seconds:
             async def deadline(): await asyncio.sleep(args.max_seconds); end("max-seconds"); log("max-seconds reached")
             tasks.append(asyncio.create_task(deadline()))
@@ -544,7 +563,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
         ev_task = asyncio.create_task(events()); NOW["call"] = st
         try:
             while not st["done"]: await asyncio.sleep(0.2)
-            while not args.silent and not spk.empty(): await asyncio.sleep(0.1)   # let the goodbye finish playing
+            while not args.silent and not st.get("audio_failed") and not spk.empty(): await asyncio.sleep(0.1)   # let the goodbye finish playing
             await asyncio.sleep(0.5 if args.silent else 3)
         finally:
             CLAIMED.clear()   # a task still running at hang-up (or a transfer): its later say rings or comes in the next segment (watch_outbox skips claimed ids)
