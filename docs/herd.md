@@ -64,7 +64,7 @@ user ⇄ speaker+mic (later: Twilio) ⇄ Higgs voice "Donna" ⇄ bridge.py ⇄ D
   donna/                         # kind: session (the interactive Claude Code session running /call)
     meta.json  inbox.jsonl  outbox.jsonl  status.json
   <worker>/                      # kind: claude (headless, --resume'd per task; pre-warmed at new)
-    meta.json                    # {name, kind, project, parent: "donna", created}
+    meta.json                    # {name, kind, project, parent: "donna", created, since}   since: the last `new` (a duty period)
     inbox.jsonl                  # {id, task, context, from, ts} (+ transcript, in_reply_to, replaces: §6)
     outbox.jsonl                 # {id, kind: note|say, text, ts}
     status.json                  # {state, task_id, task, last_note, started, unread}
@@ -83,6 +83,7 @@ task with `state ∈ {queued, in_progress, needs_you, done, failed}` (§8): read
 {"ts":…, "ev":"task.sent",      "agent":"reviewer", "id":"9a…", "task":"no, drop it", "from":"voice", "in_reply_to":"c7…"}   # the answer
 {"ts":…, "ev":"task.done",      "agent":"reviewer", "id":"c7…", "text":"two issues, both in parser.py"}
 {"ts":…, "ev":"task.failed",    "agent":"reviewer", "id":"c7…", "text":"the tests do not run here"}   # instead of task.done
+{"ts":…, "ev":"task.spoken",    "agent":"donna", "id":"c7…"}   # bridge.py: the voice delivered that say/fail (on the call, or as a ring's opener)
 {"ts":…, "ev":"agent.state",    "agent":"reviewer", "state":"idle"}
 {"ts":…, "ev":"call.ring",      "agent":"donna", "about":"review finished"}     # Donna walks to the phone
 {"ts":…, "ev":"call.answered",  "agent":"donna"}   /  {"ev":"call.ended", …}

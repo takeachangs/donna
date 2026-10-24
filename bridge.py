@@ -379,8 +379,8 @@ async def call(seed: str) -> str:
                 while True:
                     kind, sid, text = await SAYS.get()
                     if kind == "ask": await conn.session.commentary.append(content=text, delegation_id=sid, kind="ask"); ASK["did"] = sid
-                    elif kind == "fail": await conn.session.commentary.append(content=f"[note] Something you sent off could not be finished; tell the user in a sentence: {text}", kind="fail")
-                    else: await conn.session.commentary.append(content=f"[note] An update just came in from the work you sent off; tell the user in a sentence or two: {text}", kind="say")
+                    elif kind == "fail": await conn.session.commentary.append(content=f"[note] Something you sent off could not be finished; tell the user in a sentence: {text}", delegation_id=sid, kind="fail")
+                    else: await conn.session.commentary.append(content=f"[note] An update just came in from the work you sent off; tell the user in a sentence or two: {text}", delegation_id=sid, kind="say")   # the id: its commentary.appended marks it spoken
             async def typed():   # stdin lines on a call: typed turns (the headless check's only input)
                 while True:
                     if text := await TYPED.get(): await typed_turn(text)
@@ -423,6 +423,7 @@ async def call(seed: str) -> str:
                     log(f"DELEGATION {ev.delegation.id} @{ev.offset_ms}ms: {ev.delegation.task[:90]}" + (f" (replaces {rep})" if rep else "")); st["delegated"] = True
                     CLAIMED.add(ev.delegation.id); tasks.append(asyncio.create_task(run_delegation(ev.delegation.id, ev.delegation.task, rep)))
                 elif t == "session.commentary.appended" and ev.delegation_id:
+                    if ev.kind in ("say", "fail"): event("task.spoken", id=ev.delegation_id)   # office: that briefing is presented (#31)
                     if ev.kind != "dropped": st["spoke_result"] = True; st["act"] = time.monotonic()   # a result restarts the idle clock
                     elif args.text and not turns and st["spoke_result"] and not st["pending"]: st["done"] = True   # the corrected result was already spoken
                 elif t == "response.done":
@@ -467,6 +468,8 @@ async def main():
                 if g[0] == "ask": SAYS.put_nowait(g)   # asked aloud by says() once the session is up
             about = " ".join(" ".join(t for k, _, t in got if k != "ask").split())
             event("call.ring", about=about or " ".join(t for _, _, t in got)); NOW["ringing"] = True
+            for k, sid, _ in got:
+                if k != "ask": event("task.spoken", id=sid)   # the opener delivers it (asks are put by says() once the session is up)
             if about: seed = f"{CALLING_ABOUT} {about}\n{seed}".strip()
         event("call.answered"); set_state("on_call"); reason = "interrupted"
         try: reason = await call(seed)
