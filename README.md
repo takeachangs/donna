@@ -2,7 +2,7 @@
 
 **Your personal office for AI work.** Each project has a room on a shared floor; Donna keeps work moving and holds completed results for your next briefing.
 
-A local personal office: speak to a Higgs secretary, delegate real work to local Codex sessions, and review actual deliverables in project rooms. The Office floor brings all projects and decisions together. Workers name themselves; the secretary chooses the team size.
+A local personal office: speak to a Higgs secretary, delegate real work to local Codex or Claude Code sessions, and review actual deliverables in project rooms. The Office floor brings all projects and decisions together. Workers name themselves; the secretary chooses the team size.
 
 ## Run
 
@@ -12,7 +12,7 @@ Requires Node.js 22.12+ and npm. One install covers both apps.
 npm ci
 ```
 
-Copy `.env.example` to `.env`, set `BOSON_API_KEY`, and sign in to your local Codex CLI. Set `AGENCY_CODEX_BIN` only if the executable is not on PATH. Credentials stay in the backend/native CLI; no credentials are bundled with this repository.
+Copy `.env.example` to `.env`, set `BOSON_API_KEY`, and sign in to your local Codex CLI. Set `AGENCY_CODEX_BIN` only if the executable is not on PATH. Claude Code workers use your local `claude` sign-in (claude.ai); the server removes `ANTHROPIC_API_KEY` from their environment so a shell API key is never billed. `AGENCY_CLAUDE_BIN` and `AGENCY_CLAUDE_MODEL` (default `sonnet`) are optional. Credentials stay in the backend/native CLI; no credentials are bundled with this repository.
 
 ```sh
 npm run dev
@@ -42,7 +42,7 @@ Open **http://127.0.0.1:3003/**. One server serves the built office, API and Web
 
 Default execution is **GPT-6.1 Sol / low**; the secretary can choose medium for a specific assignment. One native writer runs at a time. Project working directories are isolated. The secretary provides the spoken interaction; workers currently return text and files. Arbitrary repository attachment, mail, calendar, deployment and independent worker voices are not implemented.
 
-Claude Code has a staged adapter in `apps/server/src/agency/claude.ts`. It is **disabled and unverified** in the live queue. No Claude command or inference is run by offline tests or status checks. Enabling it later requires provider-bound session routing and a separate live check.
+Claude Code is a verified second worker engine (`apps/server/src/agency/claude.ts`). Codex stays the default; Donna sets `provider: "claude"` on a worker when you ask for Claude. A worker is bound to its engine's native session: the first run creates it with `--session-id`, later runs `--resume` it. Claude workers have file tools only (Read, Edit, Write, Glob, Grep) confined to the project directory, with no shell, hooks or MCP. The status check runs `claude auth status`, never inference; offline tests use a fake CLI. Verified live on 2026-10-24: a new file assignment and a resumed follow-up each finished in about 8 s on Sonnet and reached review and the briefing queue.
 
 ## Source and private data
 

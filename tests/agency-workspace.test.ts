@@ -42,8 +42,13 @@ function fixture(){
   const workspace=new AgencyWorkspace(store,projects,codex,()=>{},{autoStart:false});workspaces.push(workspace);
   return {root,store,projects,project,codex,workspace};
 }
+function withClaude(){
+  const f=fixture(),claude=new ControlledCodex(),workspace=new AgencyWorkspace(f.store,f.projects,f.codex,()=>{},{autoStart:false,claude});workspaces.push(workspace);
+  return {...f,claude,workspace};
+}
+const executions=(f:{root:string})=>readFileSync(resolve(f.root,'executions.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line));
 const work=(key='build',depends_on:string[]=[])=>({key,role:key==='build'?'Implementation':'Review',responsibility:`Own ${key} and report actual evidence.`,brief:`Produce the ${key} deliverable in English.`,acceptance:'A nonempty file and an honest verification report.',depends_on});
-function delegate(f:ReturnType<typeof fixture>,workers:(ReturnType<typeof work>&{reuse_worker_id?:string})[]=[work()]){
+function delegate(f:ReturnType<typeof fixture>,workers:(ReturnType<typeof work>&{reuse_worker_id?:string;provider?:'codex'|'claude'})[]=[work()]){
   return f.workspace.delegate({project_id:f.project.id,checkpoint:'A useful verified deliverable',rationale:'Only the required independently useful work packages are staffed.',workers});
 }
 async function until(predicate:()=>boolean){
@@ -244,5 +249,33 @@ describe('agency native execution workspace',()=>{
     expect(restored.snapshot().assignments[0]).toMatchObject({status:'paused',sessionId:'native-test-1'});
     // Settle the old controlled host before fixture cleanup; the recovery assertion above checks the persisted checkpoint.
     f.workspace.pause(f.workspace.snapshot().assignments[0].id);f.codex.deliver(0);await pumping;
+  });
+  it('runs a Claude worker on the Claude runner, records its engine, and keeps Codex as the default',async()=>{
+    const f=withClaude(),plan=delegate(f,[{...work(),provider:'claude'}]),pumping=f.workspace.pump();await until(()=>f.claude.pending.length===1);
+    expect(f.codex.pending).toHaveLength(0);expect(plan.assignments[0].provider).toBe('claude');expect(plan.workers[0].provider).toBe('claude');
+    f.claude.deliver(0);await pumping;
+    const state=f.workspace.snapshot();expect(state.assignments[0]).toMatchObject({status:'review',provider:'claude'});expect(state.workers[0].provider).toBe('claude');
+    expect(f.workspace.briefing().id).toBe(state.briefings[0].id);expect(executions(f)[0].provider).toBe('claude');
+    delegate(f,[work('other')]);const other=f.workspace.pump();await until(()=>f.codex.pending.length===1);f.codex.deliver(0,{name:'Ellis',path:'other.md'});await other;
+    expect(f.claude.pending).toHaveLength(1);expect(executions(f)[1].provider).toBe('codex');expect(f.workspace.snapshot().assignments[1].provider).toBe('codex');
+  });
+  it('keeps a reused worker on its native engine and rejects switching engines atomically',async()=>{
+    const f=withClaude(),first=delegate(f,[{...work(),provider:'claude'}]),pumping=f.workspace.pump();await until(()=>f.claude.pending.length===1);f.claude.deliver(0,{name:'Rowan'});await pumping;f.workspace.accept(first.assignments[0].id);
+    const before=f.workspace.snapshot();expect(()=>delegate(f,[{...work('followup'),reuse_worker_id:first.workers[0].id,provider:'codex'}])).toThrow('Reused worker is bound');expect(f.workspace.snapshot()).toEqual(before);
+    delegate(f,[{...work('followup'),reuse_worker_id:first.workers[0].id}]);const running=f.workspace.pump();await until(()=>f.claude.pending.length===2);
+    expect(f.claude.pending[1].input.threadId).toBe('native-test-1');expect(f.codex.pending).toHaveLength(0);f.claude.deliver(1,{path:'followup.md'});await running;
+    expect(f.workspace.snapshot().assignments[1].provider).toBe('claude');
+  });
+  it('rejects Claude work before any mutation when Claude Code is not connected',()=>{
+    const f=fixture(),before=f.workspace.snapshot();
+    expect(()=>delegate(f,[{...work(),provider:'claude'}])).toThrow('not connected');expect(f.workspace.snapshot()).toEqual(before);
+    const catalog=f.projects.list();
+    expect(()=>f.workspace.createProject({name:'Claude room',brief:'Build this',initial_work:{checkpoint:'Build',rationale:'One worker',workers:[{...work(),provider:'claude'}]}})).toThrow('not connected');
+    expect(f.workspace.snapshot()).toEqual(before);expect(f.projects.list()).toEqual(catalog);
+  });
+  it('interrupts a paused running Claude assignment on the Claude runner',async()=>{
+    const f=withClaude(),plan=delegate(f,[{...work(),provider:'claude'}]),pumping=f.workspace.pump();await until(()=>f.claude.pending.length===1);
+    f.workspace.pause(plan.assignments[0].id);expect(f.claude.interrupted).toEqual(['native-test-1']);expect(f.codex.interrupted).toEqual([]);
+    f.claude.deliver(0);await pumping;expect(f.workspace.snapshot().assignments[0].status).toBe('paused');
   });
 });

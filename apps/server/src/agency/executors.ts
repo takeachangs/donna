@@ -1,10 +1,10 @@
 import {LocalCodex} from './codex.js';
 import {LocalClaudeCode} from './claude.js';
 
-/** Claude is registered but deliberately not routed to the live queue until verified. */
+/** Codex is the default executor; Claude Code is selectable per worker. */
 export class AgencyExecutors {
  readonly codex=new LocalCodex();
  readonly claude=new LocalClaudeCode();
- async status(){return {defaultProvider:'codex',codex:await this.codex.status(),claude:this.claude.status()};}
+ async status(){return {defaultProvider:'codex',codex:await this.codex.status(),claude:await this.claude.status()};}
  close(){this.codex.close();this.claude.close();}
 }

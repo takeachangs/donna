@@ -1,15 +1,46 @@
 import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
+import {randomUUID} from 'node:crypto';
 import {realpath,stat} from 'node:fs/promises';
 import {isAbsolute} from 'node:path';
 import {createInterface} from 'node:readline';
 import type {CodexRun,CodexResult} from './codex.js';
 
-/** Staged native Claude Code adapter. Status is static: no CLI/auth/model probe. */
+type Status={provider:'claude';implemented:boolean;available:boolean;authenticated:boolean;verified:boolean;enabled:boolean;model:string;capabilities:string[];note:string;error?:string};
+type Options={command?:string;args?:string[];turnTimeoutMs?:number;statusTimeoutMs?:number};
+const NOTE='Verified live 2026-10-24 (Claude Code 2.1.309, claude.ai login, sonnet): a new-session file assignment and a resumed follow-up reached review and the briefing queue.';
+// A low-credit ANTHROPIC_API_KEY in the shell would bill the API instead of the claude.ai login; read at spawn time, never import time.
+const cleanEnv=()=>{const env={...process.env};delete env.ANTHROPIC_API_KEY;return env;};
+
+/** Native Claude Code adapter. Claude Code owns the conversation history; the office keeps only the session ID. */
 export class LocalClaudeCode {
- private active?:{proc:ChildProcessWithoutNullStreams;sessionId?:string;cancelled:boolean};
+ private active?:{proc:ChildProcessWithoutNullStreams;sessionId:string;cancelled:boolean};
  private busy=false;
  private closed=false;
- status(){return {provider:'claude' as const,implemented:true,available:false,verified:false,enabled:false,capabilities:['project-files','native-resume'],note:'Adapter added; installation, authentication and execution have not been verified.'};}
+ private readonly options:Required<Options>;
+ private readonly model:string;
+ constructor(options:Options={}){
+  this.options={command:options.command??process.env.AGENCY_CLAUDE_BIN??'claude',args:options.args??[],turnTimeoutMs:options.turnTimeoutMs??600_000,statusTimeoutMs:options.statusTimeoutMs??10_000};
+  // Fast default for workers; always passed explicitly so the user's global default never leaks in.
+  this.model=process.env.AGENCY_CLAUDE_MODEL?.trim()||'sonnet';
+ }
+ /** Real check, no inference: `claude auth status`. Never returns identity (email/org) fields. */
+ async status():Promise<Status>{
+  const base={provider:'claude' as const,implemented:true,verified:true,enabled:true,model:this.model,capabilities:['project-files','native-resume'],note:NOTE};
+  const out=await new Promise<string|undefined>(resolve=>{
+   let buf='',done=false;
+   const end=(v?:string)=>{if(done)return;done=true;clearTimeout(timer);resolve(v);};
+   const proc=spawn(this.options.command,[...this.options.args,'auth','status'],{env:cleanEnv(),windowsHide:true,shell:false,stdio:['ignore','pipe','ignore']});
+   const timer=setTimeout(()=>{proc.kill();end();},this.options.statusTimeoutMs);
+   proc.stdout.on('data',d=>{buf+=d;});
+   proc.once('error',()=>end());
+   proc.once('close',()=>end(buf));
+  });
+  let info:any;try{info=out===undefined?undefined:JSON.parse(out)}catch{}
+  if(!info||typeof info!=='object')return {...base,available:false,authenticated:false,error:'Unable to launch Claude Code. Configure its native executable and local login.'};
+  if(info.apiKeySource==='ANTHROPIC_API_KEY')return {...base,available:true,authenticated:false,error:'ANTHROPIC_API_KEY reached the Claude worker; it must use the claude.ai login.'};
+  if(info.loggedIn!==true)return {...base,available:true,authenticated:false,error:'Claude Code is not signed in; run `claude auth login`.'};
+  return {...base,available:true,authenticated:true};
+ }
  async run(input:CodexRun):Promise<CodexResult>{
   if(this.closed)throw Error('Claude adapter is closed');
   if(this.busy)throw Error('Claude adapter is already executing');
@@ -19,22 +50,21 @@ export class LocalClaudeCode {
   try{
    const cwd=await realpath(input.cwd);if(!(await stat(cwd)).isDirectory())throw Error('Project directory does not exist');
    if(this.closed)throw Error('Claude adapter is closed');
-   const args=['--print','--output-format','stream-json','--verbose','--restricted','--safe-mode','--permission-mode','dontAsk','--tools','Read,Edit,Write,Glob,Grep','--allowedTools','Read','Edit','Write','Glob','Grep'];
-   if(input.threadId)args.push('--resume',input.threadId);
-   if(process.env.AGENCY_CLAUDE_MODEL?.trim())args.push('--model',process.env.AGENCY_CLAUDE_MODEL.trim());
-   args.push('--effort',input.reasoningEffort||'low');
+   const sessionId=input.threadId||randomUUID();
+   const args=['--print','--output-format','stream-json','--verbose','--restricted','--safe-mode','--permission-mode','dontAsk','--tools','Read,Edit,Write,Glob,Grep','--allowedTools','Read','Edit','Write','Glob','Grep',...(input.threadId?['--resume',sessionId]:['--session-id',sessionId]),'--model',this.model,'--effort',input.reasoningEffort||'low'];
    // Native binary or explicit AGENCY_CLAUDE_BIN; never interpolate a shell command.
    // Restricted + safe mode keeps file tools in cwd and excludes shell, hooks and MCP.
-   const proc=spawn(process.env.AGENCY_CLAUDE_BIN||'claude',args,{cwd,windowsHide:true,shell:false,stdio:'pipe'});
-   const active={proc,sessionId:input.threadId,cancelled:false};this.active=active;
+   const proc=spawn(this.options.command,[...this.options.args,...args],{cwd,env:cleanEnv(),windowsHide:true,shell:false,stdio:'pipe'});
+   const active={proc,sessionId,cancelled:false};this.active=active;
    return await new Promise<CodexResult>(resolve=>{
-    let text='',result:any,failed:string|undefined,settled=false;
+    let text='',result:any,failed:string|undefined,settled=false,confirmed=false,initModel:string|undefined;
     const lines=createInterface({input:proc.stdout});
-    const timer=setTimeout(()=>{failed='Claude execution timed out; native session retained';proc.kill();},600_000);
-    const finish=()=>{if(settled)return;settled=true;clearTimeout(timer);lines.close();if(this.active===active)this.active=undefined;const error=failed||(result?.is_error?'Claude reported an execution error':undefined)||(!result&&!active.cancelled?'Claude exited without a final result':undefined);resolve({threadId:active.sessionId||'',text:result?.result||text,status:active.cancelled?'interrupted':error?'failed':'completed',...(error?{error}:{}),...(result?{usage:{usage:result.usage,modelUsage:result.modelUsage,totalCostUSD:result.total_cost_usd},model:process.env.AGENCY_CLAUDE_MODEL}:{}),reasoningEffort:input.reasoningEffort||'low'});};
+    const timer=setTimeout(()=>{failed='Claude execution timed out; native session retained';proc.kill();},this.options.turnTimeoutMs);
+    const finish=()=>{if(settled)return;settled=true;clearTimeout(timer);lines.close();if(this.active===active)this.active=undefined;const error=failed||(result?.is_error?'Claude reported an execution error':undefined)||(!result&&!active.cancelled?'Claude exited without a final result':undefined);resolve({threadId:confirmed||input.threadId?sessionId:'',text:result?.result||text,status:active.cancelled?'interrupted':error?'failed':'completed',...(error?{error}:{}),...(result?{usage:{usage:result.usage,modelUsage:result.modelUsage,totalCostUSD:result.total_cost_usd}}:{}),model:initModel||this.model,reasoningEffort:input.reasoningEffort||'low'});};
     lines.on('line',line=>{let e:any;try{e=JSON.parse(line)}catch{return;}
-     if(e.session_id){if(active.sessionId&&active.sessionId!==e.session_id){failed='Claude returned a different native session ID';proc.kill();return;}
-      if(!active.sessionId){active.sessionId=e.session_id;try{input.onThread?.(e.session_id)}catch{failed='Could not persist native Claude session';proc.kill();return;}}}
+     if(e.session_id){if(e.session_id!==sessionId){failed='Claude returned a different native session ID';proc.kill();return;}
+      if(!confirmed){confirmed=true;if(!input.threadId){try{input.onThread?.(sessionId)}catch{failed='Could not persist native Claude session';proc.kill();return;}}}}
+     if(e.type==='system'&&e.subtype==='init'&&typeof e.model==='string')initModel=e.model;
      if(e.type==='assistant')text=(e.message?.content||[]).filter((c:any)=>c.type==='text').map((c:any)=>c.text).join('\n');
      if(e.type==='result')result=e;
      try{input.onEvent?.({method:'claude/'+String(e.type||'event'),params:e})}catch{/* Observers cannot interrupt native execution. */}

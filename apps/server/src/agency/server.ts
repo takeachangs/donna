@@ -15,7 +15,7 @@ import {completedBriefing,type Presentation} from './briefings.js';
 const store=new OfficeStore(process.env.AGENCY_DATA_DIR?resolve(process.env.AGENCY_DATA_DIR):undefined),root=store.root,projects=new Projects(store),executors=new AgencyExecutors(),codex=executors.codex;
 const clients=new Set<WebSocket>();
 const broadcast=(event:unknown)=>{for(const ws of clients)if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(event));};
-const workspace=new AgencyWorkspace(store,projects,codex,w=>broadcast({type:'workspace',workspace:w}));
+const workspace=new AgencyWorkspace(store,projects,codex,w=>broadcast({type:'workspace',workspace:w}),{claude:executors.claude});
 const local=(origin:string|undefined)=>!origin||/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(origin);
 const json=(res:any,data:any,status=200)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));};
 async function body(req:any){let text='';for await(const b of req){text+=b;if(text.length>60000)throw Error('Request too large');}return JSON.parse(text||'{}');}

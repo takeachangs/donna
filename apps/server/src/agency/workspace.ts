@@ -9,8 +9,9 @@ import {createProjectSchema,workPlanSchema,validateDependencies} from './plans.j
 
 export type ExecutionStatus='queued'|'working'|'waiting'|'review'|'done'|'paused'|'failed';
 export type Artifact={path:string;url:string;size:number;storage?:string;snapshotAt?:string};
-export type Worker={id:string;projectId:string;name?:string;role:string;responsibility:string;characterKey:string;status:ExecutionStatus;sessionId?:string;assignmentId:string;currentAction?:string};
-export type Assignment={id:string;projectId:string;workerId:string;title:string;brief:string;acceptance:string;status:ExecutionStatus;revision:number;runId?:string;cwd:string;sessionId?:string;dependsOn:string[];reasoningEffort?:'low'|'medium';summary?:string;artifacts:Artifact[];verification?:string[];error?:string;startedAt?:string;completedAt?:string;tokens?:unknown;usageMissing?:boolean;elapsedMs?:number};
+export type Provider='codex'|'claude';
+export type Worker={id:string;projectId:string;provider?:Provider;name?:string;role:string;responsibility:string;characterKey:string;status:ExecutionStatus;sessionId?:string;assignmentId:string;currentAction?:string};
+export type Assignment={id:string;projectId:string;workerId:string;provider?:Provider;title:string;brief:string;acceptance:string;status:ExecutionStatus;revision:number;runId?:string;cwd:string;sessionId?:string;dependsOn:string[];reasoningEffort?:'low'|'medium';summary?:string;artifacts:Artifact[];verification?:string[];error?:string;startedAt?:string;completedAt?:string;tokens?:unknown;usageMissing?:boolean;elapsedMs?:number};
 export type Decision={id:string;projectId:string;title:string;context:string;options?:string[];status:'open'|'decided';decision?:string;reason?:string;createdAt:string;updatedAt:string};
 export type ProjectOverview={id:string;name:string;deletedAt?:string;goal:string;memory:{outcome:string;checkpoint:string;latest:string;nextStep:string;updatedAt:string}};
 export type Workspace={revision:number;secretary:{id:'mara';name:string;role:'Secretary';voice:'eleanor';characterKey:string};projects:ProjectOverview[];workers:Worker[];assignments:Assignment[];decisions:Decision[];briefings:Briefing[];activity:{at:string;projectId?:string;message:string}[]};
@@ -21,6 +22,7 @@ export interface CodexRunner {
  close():void;
 }
 const now=()=>new Date().toISOString();
+const label=(p?:Provider)=>p==='claude'?'Claude Code':'Codex';
 const text=z.string().trim().min(1);
 const planSchema=workPlanSchema.extend({project_id:z.string().uuid()});
 const resultSchema=z.object({name:text.max(40),summary:text.max(12000),artifacts:z.array(text.max(500)).max(30),verification:z.array(z.string().max(3000)).max(20),needsInput:z.string().max(3000).optional()});
@@ -28,7 +30,7 @@ const resultSchema=z.object({name:text.max(40),summary:text.max(12000),artifacts
 /** Product state is an index and compact brief. Native Codex owns conversation history. */
 export class AgencyWorkspace {
  private data:Workspace;private running=false;private stopped=false;private wake?:ReturnType<typeof setTimeout>;private current?:{id:string;runId:string;threadId?:string};
- constructor(private store:OfficeStore,private projects:Projects,private codex:CodexRunner,private notify:(workspace:Workspace)=>void=()=>{},private options:{autoStart?:boolean}={}){
+ constructor(private store:OfficeStore,private projects:Projects,private codex:CodexRunner,private notify:(workspace:Workspace)=>void=()=>{},private options:{autoStart?:boolean;claude?:CodexRunner}={}){
   const p=resolve(store.root,'workspace.json');
   this.data=existsSync(p)?JSON.parse(readFileSync(p,'utf8')):{revision:0,secretary:{id:'mara',name:'Donna',role:'Secretary',voice:'eleanor',characterKey:'char-female-b'},projects:[],workers:[],assignments:[],decisions:[],briefings:[],activity:[]};
   const needsBriefings=!this.data.briefings;this.data.briefings??=[];
@@ -56,17 +58,19 @@ export class AgencyWorkspace {
  private project(id:string){const p=this.data.projects.find(p=>p.id===id);if(!p)throw Error('Unknown project; create or select a registered project first.');if(p.deletedAt)throw Error('Project is in Recently deleted. Restore it before changing work.');return p;}
  createProject(value:unknown){
   const input=createProjectSchema.parse(value),plan=input.initial_work;
-  if(plan){validateDependencies(plan.workers);if(plan.workers.some(w=>w.reuse_worker_id))throw Error('A new project needs new workers; do not reuse workers from another room.');}
+  if(plan){validateDependencies(plan.workers);if(plan.workers.some(w=>w.reuse_worker_id))throw Error('A new project needs new workers; do not reuse workers from another room.');this.engines(plan.workers.map(w=>w.provider));}
   const project=this.projects.create(input);this.syncProjects();
   if(!plan)return {committed:true,project,executionStarted:false,note:'Empty project created. No assignment or native session has started.'};
   const result=this.delegate({...plan,project_id:project.id,goal:plan.goal||input.brief||undefined});
-  return {committed:true,project,executionStarted:true,assignments:result.assignments,workers:result.workers,note:'Initial work is queued for real local Codex execution. Do not delegate the same work again.'};
+  return {committed:true,project,executionStarted:true,assignments:result.assignments,workers:result.workers,note:'Initial work is queued for real local execution. Do not delegate the same work again.'};
  }
  renameProject(id:string,value:unknown){this.project(id);const p=this.projects.rename(id,value);this.syncProjects();this.log(`Renamed project to ${p.name}`,id);this.save();return {committed:true,project:p};}
- deleteProject(id:string){const p=this.project(id);for(const a of this.data.assignments.filter(a=>a.projectId===id&&['working','queued','waiting'].includes(a.status))){a.revision++;this.state(a,'paused','Project moved to Recently deleted; files and session retained');}this.projects.setDeleted(id,true);this.syncProjects();this.log(`Moved ${p.name} to Recently deleted`,id);this.save();if(this.current&&this.data.assignments.some(a=>a.id===this.current!.id&&a.projectId===id)&&this.current.threadId)void this.codex.interrupt(this.current.threadId).catch(()=>{});return {committed:true};}
+ deleteProject(id:string){const p=this.project(id);for(const a of this.data.assignments.filter(a=>a.projectId===id&&['working','queued','waiting'].includes(a.status))){a.revision++;this.state(a,'paused','Project moved to Recently deleted; files and session retained');}this.projects.setDeleted(id,true);this.syncProjects();this.log(`Moved ${p.name} to Recently deleted`,id);this.save();const cur=this.current&&this.data.assignments.find(a=>a.id===this.current!.id&&a.projectId===id);if(cur&&this.current!.threadId)void this.runner(cur)?.interrupt(this.current!.threadId).catch(()=>{});return {committed:true};}
  restoreProject(id:string){const p=this.projects.setDeleted(id,false);this.syncProjects();this.log(`Restored ${p.name}; paused work stays paused`,id);this.save();return {committed:true,project:p};}
  private assignment(id:string){const a=this.data.assignments.find(a=>a.id===id);if(!a)throw Error('Unknown assignment');return a;}
  private worker(a:Assignment){return this.data.workers.find(w=>w.id===a.workerId)!;}
+ private runner(a:Assignment){return a.provider==='claude'?this.options.claude:this.codex;}
+ private engines(ps:(Provider|undefined)[]){if(ps.includes('claude')&&!this.options.claude)throw Error('Claude Code is not connected in this office');}
  private isCurrent(a:Assignment,revision:number,runId:string){return a.revision===revision&&a.runId===runId&&a.status==='working';}
  private state(a:Assignment,status:ExecutionStatus,action?:string){a.status=status;const w=this.worker(a);if(w.assignmentId===a.id){w.status=status;w.currentAction=action;}}
  private kick(){if(this.options.autoStart===false||this.stopped)return;clearTimeout(this.wake);this.wake=setTimeout(()=>void this.pump(),50);}
@@ -74,22 +78,23 @@ export class AgencyWorkspace {
  updateProject(value:unknown){const a=z.object({project_id:z.string().uuid(),goal:text.max(2000).optional(),checkpoint:text.max(1000).optional(),next_step:text.max(1000).optional()}).parse(value),p=this.project(a.project_id);if(a.goal){p.goal=a.goal;p.memory.outcome=a.goal;}if(a.checkpoint)p.memory.checkpoint=a.checkpoint;if(a.next_step)p.memory.nextStep=a.next_step;p.memory.updatedAt=now();this.log('Updated project brief',p.id);this.save();return {committed:true,project:p};}
  delegate(value:unknown){
   const a=planSchema.parse(value),p=this.project(a.project_id);validateDependencies(a.workers);
-  for(const w of a.workers)if(w.reuse_worker_id){const old=this.data.workers.find(k=>k.id===w.reuse_worker_id);if(!old||old.projectId!==p.id||['queued','working','waiting'].includes(old.status))throw Error('Reused worker must belong to this project and be available');}
+  for(const w of a.workers)if(w.reuse_worker_id){const old=this.data.workers.find(k=>k.id===w.reuse_worker_id);if(!old||old.projectId!==p.id||['queued','working','waiting'].includes(old.status))throw Error('Reused worker must belong to this project and be available');if((w.provider??old.provider??'codex')!==(old.provider??'codex'))throw Error(`Reused worker is bound to its native ${label(old.provider)} session; use a new worker for another engine`);}
+   this.engines(a.workers.map(w=>w.provider??this.data.workers.find(k=>k.id===w.reuse_worker_id)?.provider));
   const reused=a.workers.flatMap(w=>w.reuse_worker_id?[w.reuse_worker_id]:[]);if(new Set(reused).size!==reused.length)throw Error('Do not assign the same worker twice in one plan');
   const ids=new Map(a.workers.map(w=>[w.key,randomUUID()])),created:Assignment[]=[];
   if(a.goal){p.goal=a.goal;p.memory.outcome=a.goal;}p.memory.checkpoint=a.checkpoint;p.memory.nextStep='Execute the delegated work, then inspect the actual deliverables.';p.memory.latest=`Secretary delegated ${a.workers.length} work package(s). ${a.rationale}`;p.memory.updatedAt=now();
   const cwd=resolve(this.store.root,'workspaces',p.id);mkdirSync(cwd,{recursive:true});
   for(const [i,w] of a.workers.entries()){
-   const id=ids.get(w.key)!,old=w.reuse_worker_id?this.data.workers.find(k=>k.id===w.reuse_worker_id):undefined;
-   const worker:Worker=old||{id:'worker-'+randomUUID(),projectId:p.id,role:w.role,responsibility:w.responsibility,characterKey:['char-male-d','char-female-e','char-male-b','char-female-d'][this.data.workers.length%4],status:'queued',assignmentId:id};
-   Object.assign(worker,{role:w.role,responsibility:w.responsibility,status:'queued',assignmentId:id,currentAction:'Waiting for the local executor'});if(!old)this.data.workers.push(worker);
-   const assignment:Assignment={id,projectId:p.id,workerId:worker.id,title:w.title||w.role,brief:w.brief,acceptance:w.acceptance,status:'queued',revision:1,cwd,sessionId:worker.sessionId,dependsOn:w.depends_on.map(d=>ids.get(d)!),reasoningEffort:w.reasoning_effort,artifacts:[]};
+   const id=ids.get(w.key)!,old=w.reuse_worker_id?this.data.workers.find(k=>k.id===w.reuse_worker_id):undefined,provider:Provider=w.provider??old?.provider??'codex';
+   const worker:Worker=old||{id:'worker-'+randomUUID(),projectId:p.id,provider,role:w.role,responsibility:w.responsibility,characterKey:['char-male-d','char-female-e','char-male-b','char-female-d'][this.data.workers.length%4],status:'queued',assignmentId:id};
+   Object.assign(worker,{provider,role:w.role,responsibility:w.responsibility,status:'queued',assignmentId:id,currentAction:'Waiting for the local executor'});if(!old)this.data.workers.push(worker);
+   const assignment:Assignment={id,projectId:p.id,workerId:worker.id,provider,title:w.title||w.role,brief:w.brief,acceptance:w.acceptance,status:'queued',revision:1,cwd,sessionId:worker.sessionId,dependsOn:w.depends_on.map(d=>ids.get(d)!),reasoningEffort:w.reasoning_effort,artifacts:[]};
    this.data.assignments.push(assignment);created.push(assignment);
   }
   this.log(`Secretary allocated ${a.workers.length} worker(s): ${a.rationale}`,p.id);this.save();this.kick();return {committed:true,assignments:created,workers:created.map(a=>this.worker(a))};
  }
- revise(value:unknown){const v=z.object({assignment_id:text,brief:text.max(6000),acceptance:text.max(2000).optional(),title:text.max(180).optional()}).parse(value),a=this.assignment(v.assignment_id);this.project(a.projectId);a.brief=v.brief;if(v.acceptance)a.acceptance=v.acceptance;if(v.title)a.title=v.title;a.revision++;a.error=undefined;this.state(a,'queued','Requirements updated; awaiting execution');this.log(`Revised assignment: ${a.title}`,a.projectId);this.save();if(this.current?.id===a.id&&this.current.threadId)void this.codex.interrupt(this.current.threadId).catch(()=>{});this.kick();return {committed:true,assignment:a};}
- pause(id:string){const a=this.assignment(id);this.project(a.projectId);if(a.status==='done')throw Error('Accepted work is already complete');a.revision++;this.state(a,'paused','Paused by the user; files retained');this.log(`Paused: ${a.title}`,a.projectId);this.save();if(this.current?.id===id&&this.current.threadId)void this.codex.interrupt(this.current.threadId).catch(()=>{});return {committed:true,assignment:a};}
+ revise(value:unknown){const v=z.object({assignment_id:text,brief:text.max(6000),acceptance:text.max(2000).optional(),title:text.max(180).optional()}).parse(value),a=this.assignment(v.assignment_id);this.project(a.projectId);a.brief=v.brief;if(v.acceptance)a.acceptance=v.acceptance;if(v.title)a.title=v.title;a.revision++;a.error=undefined;this.state(a,'queued','Requirements updated; awaiting execution');this.log(`Revised assignment: ${a.title}`,a.projectId);this.save();if(this.current?.id===a.id&&this.current.threadId)void this.runner(a)?.interrupt(this.current.threadId).catch(()=>{});this.kick();return {committed:true,assignment:a};}
+ pause(id:string){const a=this.assignment(id);this.project(a.projectId);if(a.status==='done')throw Error('Accepted work is already complete');a.revision++;this.state(a,'paused','Paused by the user; files retained');this.log(`Paused: ${a.title}`,a.projectId);this.save();if(this.current?.id===id&&this.current.threadId)void this.runner(a)?.interrupt(this.current.threadId).catch(()=>{});return {committed:true,assignment:a};}
  resume(id:string){const a=this.assignment(id);this.project(a.projectId);if(!['paused','failed','waiting'].includes(a.status))throw Error('Only paused, failed or waiting work can resume');a.revision++;a.error=undefined;this.state(a,'queued','Queued to resume its native session');this.log(`Queued resume: ${a.title}`,a.projectId);this.save();this.kick();return {committed:true,assignment:a};}
  accept(id:string){const a=this.assignment(id);this.project(a.projectId);if(a.status!=='review')throw Error('Only a delivered result can be accepted');for(const f of a.artifacts)this.artifact(a.id,f.path);this.state(a,'done','Accepted by the user');this.log(`Accepted: ${a.title}`,a.projectId);this.save();return {committed:true,assignment:a};}
  decide(value:unknown){const v=z.object({id:text.optional(),project_id:z.string().uuid(),title:text.max(200).optional(),context:z.string().max(4000).optional(),options:z.array(text.max(500)).max(6).optional(),status:z.enum(['open','decided']),decision:text.max(2000).optional(),reason:z.string().max(3000).optional()}).parse(value);const p=this.project(v.project_id);let d=v.id?this.data.decisions.find(d=>d.id===v.id):undefined;if(v.id&&!d)throw Error('Unknown decision');if(d&&d.projectId!==p.id)throw Error('Wrong decision project');if(v.status==='decided'&&!v.decision)throw Error('A decision needs an explicit outcome');if(!d){if(!v.title)throw Error('A decision title is required');d={id:randomUUID(),projectId:p.id,title:v.title,context:v.context||'',status:v.status,createdAt:now(),updatedAt:now()};this.data.decisions.push(d);}Object.assign(d,{status:v.status,updatedAt:now()});if(v.title)d.title=v.title;if(v.context!==undefined)d.context=v.context;if(v.options)d.options=v.options;if(v.decision)d.decision=v.decision;if(v.reason!==undefined)d.reason=v.reason;this.log(v.status==='decided'?`Decision: ${d.decision}${d.reason?' — '+d.reason:''}`:`Needs a decision: ${d.title}`,p.id);p.memory.updatedAt=now();this.save();return {committed:true,decision:d};}
@@ -116,18 +121,20 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
     for(const a of this.data.assignments.filter(a=>a.status==='queued')){const bad=a.dependsOn.map(id=>this.assignment(id)).find(d=>['failed','paused','waiting'].includes(d.status));if(bad){this.state(a,'waiting',`Waiting for dependency: ${bad.title}`);a.error=`Dependency ${bad.title} is ${bad.status}; resume after it is resolved.`;blockedChanged=true;}}
     if(blockedChanged)this.save();
     const a=this.data.assignments.find(a=>a.status==='queued'&&a.dependsOn.every(id=>['review','done'].includes(this.assignment(id).status)));if(!a)break;
-    const beforeHealth=a.revision,health=await this.codex.status();
+    const beforeHealth=a.revision,runner=this.runner(a),name=label(a.provider);
+    if(!runner){a.error='Claude Code is not connected in this office';this.state(a,'failed',a.error);this.log(a.error,a.projectId);this.save();continue;}
+    const health=await runner.status();
     if(this.stopped)break;
     if(a.status!=='queued'||a.revision!==beforeHealth)continue;
-    if(!health.available||health.authenticated===false||health.modelAvailable===false){a.error=health.error||'Local Codex needs authentication';this.state(a,'failed',a.error);this.log(a.error,a.projectId);this.save();continue;}
-    const revision=a.revision,runId=randomUUID();a.runId=runId;a.startedAt=now();a.completedAt=undefined;a.error=undefined;this.current={id:a.id,runId,threadId:a.sessionId};this.state(a,'working',a.sessionId?'Resuming native Codex session':'Creating native Codex session; agent will name itself');this.log(`Local Codex started: ${a.title}`,a.projectId);this.save();const started=performance.now();
+    if(!health.available||health.authenticated===false||health.modelAvailable===false){a.error=health.error||`Local ${name} needs authentication`;this.state(a,'failed',a.error);this.log(a.error,a.projectId);this.save();continue;}
+    const revision=a.revision,runId=randomUUID();a.runId=runId;a.startedAt=now();a.completedAt=undefined;a.error=undefined;this.current={id:a.id,runId,threadId:a.sessionId};this.state(a,'working',a.sessionId?`Resuming native ${name} session`:`Creating native ${name} session; agent will name itself`);this.log(`Local ${name} started: ${a.title}`,a.projectId);this.save();const started=performance.now();
     try{
-     const result=await this.codex.run({cwd:a.cwd,threadId:a.sessionId,reasoningEffort:a.reasoningEffort||'low',prompt:this.prompt(a),onThread:id=>{a.sessionId=id;this.worker(a).sessionId=id;if(this.current?.runId===runId)this.current.threadId=id;if(a.status!=='working')void this.codex.interrupt(id).catch(()=>{});this.save();},onEvent:e=>{if(a.revision!==revision||a.runId!==runId||a.status!=='working')return;const item=e.params?.item;let action:string|undefined;if(e.method==='item/started'&&item?.type==='commandExecution')action=`Running: ${String(item.command||'local command').slice(0,180)}`;if(e.method==='item/started'&&item?.type==='fileChange')action='Updating project files';if(action){this.worker(a).currentAction=action;this.save();}}});
-     appendFileSync(resolve(this.store.root,'executions.jsonl'),JSON.stringify({at:now(),assignmentId:a.id,projectId:a.projectId,runId,revision,threadId:result.threadId,turnId:result.turnId,status:result.status,model:result.model,reasoningEffort:result.reasoningEffort,elapsedMs:performance.now()-started,usage:result.usage,usageMissing:result.usage===undefined,error:result.error,usageScope:'Native thread total is cumulative. Do not sum totals from resumed runs.'})+'\n');
+     const result=await runner.run({cwd:a.cwd,threadId:a.sessionId,reasoningEffort:a.reasoningEffort||'low',prompt:this.prompt(a),onThread:id=>{a.sessionId=id;this.worker(a).sessionId=id;if(this.current?.runId===runId)this.current.threadId=id;if(a.status!=='working')void runner.interrupt(id).catch(()=>{});this.save();},onEvent:e=>{if(a.revision!==revision||a.runId!==runId||a.status!=='working')return;const item=e.params?.item;let action:string|undefined;if(e.method==='item/started'&&item?.type==='commandExecution')action=`Running: ${String(item.command||'local command').slice(0,180)}`;if(e.method==='item/started'&&item?.type==='fileChange')action='Updating project files';if(e.method==='claude/assistant'){const blocks=e.params?.message?.content,tool=Array.isArray(blocks)?blocks.find((c:any)=>c?.type==='tool_use'):undefined;if(tool)action=['Edit','Write'].includes(tool.name)?'Updating project files':'Reading project files';}if(action){this.worker(a).currentAction=action;this.save();}}});
+     appendFileSync(resolve(this.store.root,'executions.jsonl'),JSON.stringify({at:now(),assignmentId:a.id,projectId:a.projectId,provider:a.provider||'codex',runId,revision,threadId:result.threadId,turnId:result.turnId,status:result.status,model:result.model,reasoningEffort:result.reasoningEffort,elapsedMs:performance.now()-started,usage:result.usage,usageMissing:result.usage===undefined,error:result.error,usageScope:'Native thread total is cumulative. Do not sum totals from resumed runs.'})+'\n');
      // Pausing or revising the task invalidates an old completion, even if cancellation races.
      if(!this.isCurrent(a,revision,runId))continue;
      a.elapsedMs=performance.now()-started;a.tokens=result.usage;a.usageMissing=result.usage===undefined;a.sessionId=result.threadId||a.sessionId;this.worker(a).sessionId=a.sessionId;
-     if(result.status!=='completed')throw Error(result.error||`Native Codex turn ${result.status}`);
+     if(result.status!=='completed')throw Error(result.error||`Native ${name} turn ${result.status}`);
      const raw=result.text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');const delivered=resultSchema.parse(JSON.parse(raw));
      const originals=[...new Set(delivered.artifacts)].map(path=>{const file=this.safeFile(a.cwd,path),size=statSync(file).size;if(!size)throw Error(`Empty artifact: ${path}`);return {path,file,size};});
      const snapshotDir=resolve(this.store.root,'deliveries',a.id,runId);mkdirSync(snapshotDir,{recursive:true});
@@ -147,5 +154,5 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
    }
   }finally{this.running=false;}
  }
- close(){this.stopped=true;clearTimeout(this.wake);this.codex.close();}
+ close(){this.stopped=true;clearTimeout(this.wake);this.codex.close();this.options.claude?.close();}
 }
