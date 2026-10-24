@@ -51,7 +51,7 @@ describe('rooms',()=>{
     const f=fixture(),uuid='b151db6a-edf3-4b63-87db-b27e321eaf39';
     expect(f.projects.list(true)).toEqual([]);expect(f.workspace.snapshot().projects).toEqual([]);
     for(const name of ['read_workspace','prepare_command_room','delegate_work'])expect(resolveProjectTarget(name,{project_id:'selected'},'',[]).project_id).toBeUndefined();
-    for(const name of ['update_project','record_decision'])expect(()=>resolveProjectTarget(name,{project_id:'selected'},'',[])).toThrow('Unknown project target');
+    expect(()=>resolveProjectTarget('update_project',{project_id:'selected'},'',[])).toThrow('Unknown project target');
     const a=f.projects.create({name:'Demo'}),b=f.projects.create({name:'Other'});
     expect(resolveProjectTarget('delegate_work',{project_id:'selected'},uuid,[a.id,b.id]).project_id).toBeUndefined();
     expect(resolveProjectTarget('delegate_work',{},a.id,[a.id,b.id]).project_id).toBe(a.id);

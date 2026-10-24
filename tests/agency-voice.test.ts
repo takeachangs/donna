@@ -136,6 +136,13 @@ it('opens with rule one and routes every tool by its own job',()=>{
  for(const t of secretaryTools){if(!['worker_status','message_worker','open_pull_request'].includes(t.name))expect(routing).toContain(t.name);expect(t.description).not.toMatch(/\bNOT\b/);for(const o of secretaryTools)if(o!==t)expect(t.description).not.toContain(o.name);}
 });
 
+it('greets a greeting even mid-work, and fetches status with a tool before answering (rules two and three, ahead of the phone rules)',()=>{
+ const i=secretaryInstructions,one=i.indexOf('RULE ONE'),two=i.indexOf('RULE TWO, GREETINGS'),three=i.indexOf('RULE THREE, STATUS'),phone=i.indexOf('ON THE PHONE');
+ expect(one).toBeLessThan(two);expect(two).toBeLessThan(three);expect(three).toBeLessThan(phone);
+ for(const x of ['"hello", "hi", "hey", "hey Donna"','even while work is running and even right after you gave a status','call no tool','calls worker_status or read_workspace in that same turn, before you answer','Never answer such a question from memory'])expect(i).toContain(x);
+ expect(i).not.toContain("answer from that project's line in progress");expect(i).not.toContain('the current state below does not answer');
+});
+
 it.each([["bye",true],["Bye!",true],["Goodbye.",true],["good bye",true],["Bye-bye",true],["Okay, thanks, bye!",true],["Thanks Donna, talk later.",true],["talk soon",true],["Talk to you later",true],["Okay, I'll talk to you later.",true],["No, that's it, bye.",true],["See you",true],["Later!",false],["Later, thanks.",false],["gotta go",true],["Bye for now",true],["thanks, bye Donna",true],["make a page that says bye",false],["say goodbye to the old header",false],["yes",false],["no thanks",false],["how's it going?",false],["make a tiny page that says hi",false],["",false],["Byelorussian history",false]])('hangsUp(%j)=%s',(text,want)=>{expect(hangsUp(text)).toBe(want);});
 
 it('picks up the phone with her name',()=>{expect(pickUpNotice('Donna')).toContain("Hey, it's Donna. What do you need?");});

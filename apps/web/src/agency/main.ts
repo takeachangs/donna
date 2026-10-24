@@ -47,7 +47,7 @@ const el=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById
 const make=<K extends keyof HTMLElementTagNameMap>(tag:K,cls='',text='')=>{const e=document.createElement(tag);e.className=cls;e.textContent=text;return e}
 let socket:WebSocket|undefined,audio:OfficeAudio|undefined,scene:AgencyScene|undefined,cast:Colleague[]=[],workspace:Workspace|undefined,ready=false,mic=false,micBlocked=false,currentResponse='',connected=false,firstTurnAt=0,projects:Project[]=[],selectedProject='',view:View='command',switching=false
 let hungUp=false,redialing=false,redialTimer:number|undefined,redialAttempt=0,micWasLive=false,voiceDown=false,offline=false,failures=0
-let pane:Pane='reports',openReport:string|undefined,drawerOpen=true,askAfterGreeting:string|undefined
+let pane:Pane='reports',openReport:string|undefined,drawerOpen=true
 const heard=new Set<string>(),signatures=new Map<string,string>()
 let listenWhenReady:string|undefined,ringing:string|undefined,ringShown=false,seenBriefings:Set<string>|undefined
 const roomKey='personal-agency-room'
@@ -127,7 +127,7 @@ function reportDetail(b:Briefing){
 }
 function questionCard(d:Decision){
  const row=make('article','question-item'),call=make('button','primary',t('agency.call_to_answer'));row.dataset.decisionId=d.id
- call.onclick=()=>{askAfterGreeting=`Let's go over your question: ${d.title}`;void dial().catch(dialFailed)}
+ call.onclick=()=>void dial().catch(dialFailed)
  row.append(make('strong','',d.title),make('p','item-meta',[projectName(d.projectId),d.options?.join(' / ')].filter(Boolean).join(' · ')),make('p','item-summary summary-preview',d.context),call);return row
 }
 function roomItems(p:NonNullable<Workspace['projects'][number]>,assignments:Assignment[],reports:Briefing[]){
@@ -203,13 +203,13 @@ function onEvent(e:any){
  if(e.type==='speech_started'){audio?.stop();firstTurnAt=performance.now();status(t('agency.listening'));currentResponse='';el('caption').textContent=''}
  if(e.type==='interrupted'){audio?.stop();status(t('agency.interrupted'))}
  if(e.type==='await_playback')audio?.done(e.jobId)
- if(e.type==='turn_done'){if(!e.cancelled){status(t(paintCall().idle));if(ready&&askAfterGreeting){const q=askAfterGreeting;askAfterGreeting=undefined;command(q)}}scene?.activity('mara','idle');void loadWorkspace().catch(fail)}
+ if(e.type==='turn_done'){if(!e.cancelled){status(t(paintCall().idle))}scene?.activity('mara','idle');void loadWorkspace().catch(fail)}
  if(e.type==='error'||e.type==='colleague_disconnected'){toast(e.message||t('agency.connection_lost'));status(t('agency.error'));if(switching){switching=false;controls(connected)}}
 }
 function rememberRoom(){localStorage.setItem(roomKey,selectedProject);const u=new URL(location.href);if(selectedProject)u.searchParams.set('room',selectedProject);else u.searchParams.delete('room');history.replaceState({},'',u)}
 function clearRedial(){window.clearTimeout(redialTimer);redialTimer=undefined;redialing=false;redialAttempt=0}
 /** Everything a finished call leaves behind, whether the user hung up or the line was lost for good. */
-function endCall(){el('caption').textContent='';currentResponse='';ring(undefined);clearRedial();listenWhenReady=undefined;askAfterGreeting=undefined;audio?.stop();mic=false;connected=false;voiceDown=false;controls(false);paintCall();void audio?.mic(false);el<HTMLButtonElement>('connect').disabled=false;status(t('agency.disconnected'))}
+function endCall(){el('caption').textContent='';currentResponse='';ring(undefined);clearRedial();listenWhenReady=undefined;audio?.stop();mic=false;connected=false;voiceDown=false;controls(false);paintCall();void audio?.mic(false);el<HTMLButtonElement>('connect').disabled=false;status(t('agency.disconnected'))}
 function hangUp(){hungUp=true;const ws=socket;if(ws){send({type:'stop'});socket=undefined;ws.close()}endCall()}
 const dialFailed=(err:unknown)=>{el<HTMLButtonElement>('connect').disabled=false;fail(err)}
 async function dial(o:{resume?:boolean}={}){

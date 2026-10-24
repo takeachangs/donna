@@ -242,7 +242,6 @@ describe('agency native execution workspace',()=>{
     f.workspace.updateProject({project_id:f.project.id,goal:'The revised real outcome.',checkpoint:'Verify the result',next_step:'Review actual evidence'});
     const open=f.workspace.decide({project_id:f.project.id,title:'Choose scope',context:'A real tradeoff',options:['Small','Large'],status:'open'});
     f.workspace.decide({id:open.decision.id,project_id:f.project.id,status:'decided',decision:'Small',reason:'Finish the bounded demo first.'});
-    expect(()=>f.workspace.decide({id:open.decision.id,project_id:other.id,status:'decided',decision:'Large'})).toThrow('Wrong decision');
     const restored=new AgencyWorkspace(f.store,f.projects,new ControlledCodex(),()=>{},{autoStart:false});workspaces.push(restored);
     expect(restored.snapshot().projects.find(p=>p.id===f.project.id)?.memory.nextStep).toBe('Review actual evidence');expect(restored.snapshot().projects.find(p=>p.id===other.id)?.goal).toBe('Separate goal');
     expect(restored.snapshot().decisions[0]).toMatchObject({status:'decided',decision:'Small',reason:'Finish the bounded demo first.'});

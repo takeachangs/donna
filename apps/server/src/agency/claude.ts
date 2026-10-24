@@ -22,7 +22,7 @@ const userLine=(t:string)=>JSON.stringify({type:'user',message:{role:'user',cont
 
 /** Native Claude Code adapter. Claude Code owns the conversation history; the office keeps only the session ID. */
 export class LocalClaudeCode {
- private active?:{proc:ChildProcessWithoutNullStreams;sessionId:string;cancelled:boolean;open:boolean};
+ private active=new Map<string,{proc:ChildProcessWithoutNullStreams;sessionId:string;cancelled:boolean;open:boolean}>();// brain mode runs one process per session id, so rooms run at once
  private busy=false;
  private closed=false;
  private readonly options:Required<Omit<Options,'model'|'tools'|'brain'>>;
@@ -54,26 +54,26 @@ export class LocalClaudeCode {
  }
  async run(input:CodexRun&{sandbox?:BrainSandbox}):Promise<CodexResult>{
   if(this.closed)throw Error('Claude adapter is closed');
-  if(this.busy)throw Error('Claude adapter is already executing');
+  if(!this.brain&&this.busy)throw Error('Claude adapter is already executing');
   if(!isAbsolute(input.cwd))throw Error('Claude requires an absolute project directory');
   if(input.threadId&&!/^[a-f0-9-]{36}$/i.test(input.threadId))throw Error('An exact native Claude session ID is required');
-  this.busy=true;
+  const sessionId=input.threadId||randomUUID();if(!this.brain)this.busy=true;
   try{
    const cwd=await realpath(input.cwd);if(!(await stat(cwd)).isDirectory())throw Error('Project directory does not exist');
    if(this.closed)throw Error('Claude adapter is closed');
-   const sessionId=input.threadId||randomUUID();
+   if(this.active.has(sessionId))throw Error('Claude session is already running');
    const sb=input.sandbox,effort=input.reasoningEffort||(this.brain?'medium':'low'),b=this.brain,ids=input.threadId?['--resume',sessionId]:['--session-id',sessionId];
    const args=b?['--print','--output-format','stream-json','--verbose','--input-format','stream-json','--strict-mcp-config','--setting-sources','project','--settings',brainSettings(sb),'--permission-mode','dontAsk','--tools',BRAIN_TOOLS.join(','),...(sb?.addDir?['--add-dir',sb.addDir]:[]),'--allowedTools',...BRAIN_ALLOWED,...(sb?.write??[]).map(w=>`Edit(/${w}/**)`),'--disallowedTools',...BRAIN_DENIED,...(sb?.deny??[]).map(d=>`Edit(/${d}/**)`),...(sb?.secrets??[]).flatMap(x=>[`Read(/${x})`,`Edit(/${x})`]),'--append-system-prompt','Follow the donna-brain skill.',...ids,'--model',this.model,'--effort',effort]
     :['--print','--output-format','stream-json','--verbose','--restricted','--safe-mode','--permission-mode','dontAsk','--tools',this.tools.join(','),'--allowedTools',...this.tools,...ids,'--model',this.model,'--effort',effort];
    // Native binary or explicit AGENCY_CLAUDE_BIN; never interpolate a shell command.
    // Restricted + safe mode keeps file tools in cwd and excludes shell, hooks and MCP.
    const proc=spawn(this.options.command,[...this.options.args,...args],{cwd,env:b?{...cleanEnv(),BASH_DEFAULT_TIMEOUT_MS:'60000',BASH_MAX_TIMEOUT_MS:'120000'}:cleanEnv(),windowsHide:true,shell:false,stdio:'pipe'});
-   const active={proc,sessionId,cancelled:false,open:b};this.active=active;
+   const active={proc,sessionId,cancelled:false,open:b};this.active.set(sessionId,active);
    return await new Promise<CodexResult>(resolve=>{
     let text='',result:any,tasks:any[]|undefined,failed:string|undefined,settled=false,confirmed=false,initModel:string|undefined;
     const lines=createInterface({input:proc.stdout});
     const timer=setTimeout(()=>{failed='Claude execution timed out; native session retained';proc.kill();},this.options.turnTimeoutMs);
-    const finish=()=>{if(settled)return;settled=true;active.open=false;clearTimeout(timer);lines.close();if(this.active===active)this.active=undefined;const error=failed||(result?.is_error?'Claude reported an execution error':undefined)||(!result&&!active.cancelled?'Claude exited without a final result':undefined);resolve({threadId:confirmed||input.threadId?sessionId:'',text:result?.result||text,status:active.cancelled?'interrupted':error?'failed':'completed',...(error?{error}:{}),...(result?{usage:{usage:result.usage,modelUsage:result.modelUsage,totalCostUSD:result.total_cost_usd}}:{}),model:initModel||this.model,reasoningEffort:effort});};
+    const finish=()=>{if(settled)return;settled=true;active.open=false;clearTimeout(timer);lines.close();if(this.active.get(sessionId)===active)this.active.delete(sessionId);const error=failed||(result?.is_error?'Claude reported an execution error':undefined)||(!result&&!active.cancelled?'Claude exited without a final result':undefined);resolve({threadId:confirmed||input.threadId?sessionId:'',text:result?.result||text,status:active.cancelled?'interrupted':error?'failed':'completed',...(error?{error}:{}),...(result?{usage:{usage:result.usage,modelUsage:result.modelUsage,totalCostUSD:result.total_cost_usd}}:{}),model:initModel||this.model,reasoningEffort:effort});};
     lines.on('line',line=>{let e:any;try{e=JSON.parse(line)}catch{return;}
      if(e.session_id){if(e.session_id!==sessionId){failed='Claude returned a different native session ID';proc.kill();return;}
       if(!confirmed){confirmed=true;if(!input.threadId){try{input.onThread?.(sessionId)}catch{failed='Could not persist native Claude session';proc.kill();return;}}}}
@@ -89,10 +89,10 @@ export class LocalClaudeCode {
     proc.once('close',code=>{if(code!==0&&!active.cancelled&&!failed)failed='Claude Code exited unsuccessfully; check its local configuration.';finish();});
     if(b)proc.stdin.write(userLine(input.prompt));else proc.stdin.end(input.prompt+'\n\nThis adapter supports project file tools only. Shell execution is unavailable. Never claim to have run tests; report any unverified checks explicitly.');
    });
-  }finally{this.busy=false;}
+  }finally{if(!this.brain)this.busy=false;}
  }
  /** Brain mode: add a user turn to the running session. False when no such process or its stdin is already closed. */
- inject(sessionId:string,text:string):boolean{const a=this.active;if(!a||a.sessionId!==sessionId||!a.open||!a.proc.stdin.writable)return false;a.proc.stdin.write(userLine(text));return true;}
- async interrupt(sessionId:string){const a=this.active;if(a?.sessionId===sessionId){a.cancelled=true;a.proc.kill('SIGINT');}}
- close(){this.closed=true;if(this.active){this.active.cancelled=true;this.active.proc.kill();}}
+ inject(sessionId:string,text:string):boolean{const a=this.active.get(sessionId);if(!a||!a.open||!a.proc.stdin.writable)return false;a.proc.stdin.write(userLine(text));return true;}
+ async interrupt(sessionId:string){const a=this.active.get(sessionId);if(a){a.cancelled=true;a.proc.kill('SIGINT');}}
+ close(){this.closed=true;for(const a of this.active.values()){a.cancelled=true;a.proc.kill();}}
 }

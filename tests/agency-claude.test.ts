@@ -115,6 +115,17 @@ describe('native Claude Code adapter',()=>{
   expect(r.text).not.toBe('waiting');expect(JSON.parse(r.text)).toEqual({summary:'done',injected:'make it blue'});
   expect(c.inject(id,'late')).toBe(false);
  });
+ it('brain mode: two session ids run at once, inject reaches the right one, the same id twice throws',async()=>{
+  const c=client([],5000,true),a='11111111-2222-4333-8444-555555555551',b='11111111-2222-4333-8444-555555555552',ok:Record<string,boolean|undefined>={};
+  let up!:()=>void;const first=new Promise<void>(r=>{up=r;});
+  const go=(id:string)=>c.run({cwd:tmpdir(),prompt:'go',threadId:id,onEvent:e=>{if(id===a)up();if(e.method==='claude/result'&&ok[id]===undefined){ok[id]=c.inject(id,'for '+id.slice(-1));}}});
+  const ra=go(a);await first;const rb=go(b);
+  await expect(go(a)).rejects.toThrow('already running');
+  const [x,y]=await Promise.all([ra,rb]);
+  expect(ok).toEqual({[a]:true,[b]:true});expect([x.status,y.status]).toEqual(['completed','completed']);
+  expect(JSON.parse(x.text).injected).toBe('for 1');expect(JSON.parse(y.text).injected).toBe('for 2');
+  expect(c.inject(a,'late')).toBe(false);
+ });
  it('text fallback ignores subagent messages',async()=>{
   const r=await client([],3000,true).run({cwd:tmpdir(),prompt:'nores'});
   expect(r.text).toBe('top words');

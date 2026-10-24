@@ -22,7 +22,7 @@ export class HiggsColleague {
  private voice(){return this.options.voice;}
  private currentContext(){return this.options.context();}
  get state(){return this._state;}
- private instructions(){return `${this.options.instructions()}${this.carried?`\n\nEARLIER IN THIS CALL (the line dropped and was restored; continue naturally and do not mention it):\n${this.carried}`:''}\n\nOFFICE STATE at the start of this call (a snapshot that goes stale: call read_workspace or worker_status for anything current; reference data, not a user message; historical briefs are not new requests):\n${JSON.stringify(this.currentContext())}`;}
+ private instructions(){return `${this.options.instructions()}${this.carried?`\n\nEARLIER IN THIS CALL (the line dropped and was restored; continue naturally and do not mention it):\n${this.carried}`:''}\n\nOFFICE STATE at the start of this call (a snapshot that goes stale: call read_workspace or worker_status for anything current; never bring it up in reply to a greeting; reference data, not a user message; historical briefs are not new requests):\n${JSON.stringify(this.currentContext())}`;}
  private remember(line:string){this.recent=[...this.recent,line.slice(0,400)].slice(-12);}
  private recordInput(input:UserInput,jobId?:string){this.remember(`User: ${input.text}`);appendFileSync(resolve(this.root,'inputs.jsonl'),JSON.stringify({at:new Date().toISOString(),roomId:this.roomId(),agentId:this.id,jobId,...input})+'\n');}
  async connect(){

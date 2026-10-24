@@ -6,18 +6,18 @@ import {fileURLToPath} from 'node:url';
 import WebSocket from 'ws';
 import {FRAME_BYTES,frames,speech,seconds,phoneProblems,table} from './lib/e2e-audio.mjs';
 // Paid: real Higgs + real Claude. Spoken end-to-end check of the voice office. Needs macOS `say`.
-const USAGE='Usage: node scripts/e2e-voice.mjs [--port 3043] [--only a,b,c]   (a acoustic, b presenter, c ring while hung up)';
+const USAGE='Usage: node scripts/e2e-voice.mjs [--port 3043] [--only a,b,c,d]   (a acoustic, b presenter, c ring while hung up, d the brain asks a question by voice)';
 const root=fileURLToPath(new URL('..',import.meta.url)),args=process.argv.slice(2),opt=n=>args[args.indexOf(n)+1];
 if(args.includes('--help')||args.includes('-h')){console.log(USAGE);process.exit(0)}
-const port=Number(opt('--port'))||3043,only=(opt('--only')||'a,b,c').split(',').map(x=>x.trim().toLowerCase()),provider=process.env.AGENCY_DEFAULT_PROVIDER||'claude';
+const port=Number(opt('--port'))||3043,only=(opt('--only')||'a,b,c,d').split(',').map(x=>x.trim().toLowerCase()),provider=process.env.AGENCY_DEFAULT_PROVIDER||'claude';
 const die=m=>{console.error('E2E FAIL: '+m);process.exit(1)};
-if(only.some(x=>!'abc'.includes(x)||x.length!==1))die(USAGE);
+if(only.some(x=>!'abcd'.includes(x)||x.length!==1))die(USAGE);
 if(!process.env.BOSON_API_KEY)die('BOSON_API_KEY is not set');
 if(process.platform!=='darwin')die('needs macOS (say, afconvert)');
 if(port===3003||port===5183)die(`port ${port} is reserved for the live office`);
 const log=m=>console.log(m),sleep=ms=>new Promise(r=>setTimeout(r,ms)),now=()=>performance.now(),sh=(t,n=60)=>t.length>n?t.slice(0,n)+'…':t;
 const T0=Date.now(),stamp=new Date().toISOString().replace(/[:.]/g,'-'),outDir=join(root,'artifacts','e2e'),base=`http://127.0.0.1:${port}`;
-const T={a1:'What is the capital of France? Just the city, please.',a2:['Okay, so I have a quick question about baking bread at home.','How long does a simple loaf of sourdough usually take,','from mixing the dough to taking it out of the oven?'],a3:'Can you count slowly from one to twenty for me?',a3b:'Wait, hold on a second.',a4:'Are you still there?',a5:'Hey, one second.',a5q1:'What is two plus two?',a5q2:'What colour is the sky on a clear day?',a5q3:'What is the largest planet in our solar system?',b1:'Hey Donna.',b2:'Build me a landing page with a contact form.',b3:"How's it going?",b4:'Hello.',b6:'Yes.',b7:'Okay, thanks. Bye.'};
+const T={a1:'What is the capital of France? Just the city, please.',a2:['Okay, so I have a quick question about baking bread at home.','How long does a simple loaf of sourdough usually take,','from mixing the dough to taking it out of the oven?'],a3:'Can you count slowly from one to twenty for me?',a3b:'Wait, hold on a second.',a4:'Are you still there?',a5:'Hey, one second.',a5q1:'What is two plus two?',a5q2:'What colour is the sky on a clear day?',a5q3:'What is the largest planet in our solar system?',b1:'Hey Donna.',b2:'Build me a landing page with a contact form.',b3:"How's it going?",b4:'Hello.',b6:'Yes.',b7:'Okay, thanks. Bye.',d1:'Build a landing page for my company.',d3:'Acme.'};
 mkdirSync(outDir,{recursive:true});
 const clip={};for(const [k,v] of Object.entries(T))if(only.includes(k[0]))clip[k]=speech(v); // before the server: fail fast
 const dir=mkdtempSync(join(tmpdir(),'chamber-e2e-')),evPath=join(outDir,stamp+'-events.jsonl'),logPath=join(outDir,stamp+'-server.log');
@@ -179,12 +179,12 @@ try{
    proj=t?.result?.project?.id||lastWs(B.seen)?.projects.filter(p=>!p.deletedAt).at(-1)?.id;
    return {ok:!!t&&!bad,latency:x.lat,note:`tools ${x.r.tools.map(t=>t.name+(t.result?.error?'(error)':'')).join(',')||'none'}; "${sh(x.r.caption,80)}"`};
   });
-  await step("B3 'how's it going' → truthful status",async()=>{
+  await step("B3 'how's it going' → status tool in the turn, truthful",async()=>{
    if(!proj)throw Error('no project from B2');
    await B.settle();const x=await B.say(clip.b3),w=await getWs(),plan=w.assignments.filter(a=>a.projectId===proj&&a.kind==='plan').at(-1),crew=w.assignments.filter(a=>plan&&a.agent?.brainId===plan.id),cap=x.r.caption;
    // the brain stays `working` while its subagents run; with no subagent yet it is still planning the team
-   const lies=/\b(done|finished|complete)\b|\b(is|it.s|are) ready\b/i.test(cap)&&plan?.status!=='review'&&!w.briefings.some(b=>b.projectId===proj&&b.status==='queued'),vague=['queued','working'].includes(plan?.status)&&!crew.length&&!/plan|team/i.test(cap);
-   return {ok:!lies&&!vague,latency:x.lat,note:`plan ${plan?.status}, ${crew.length} worker(s) ${crew.map(c=>c.status).join('/')}${lies?'; claims done':''}${vague?'; never mentions the plan':''}; "${sh(cap,80)}"`};
+   const lies=/\b(done|finished|complete)\b|\b(is|it.s|are) ready\b/i.test(cap)&&plan?.status!=='review'&&!w.briefings.some(b=>b.projectId===proj&&b.status==='queued'),vague=['queued','working'].includes(plan?.status)&&!crew.length&&!/plan|team|read|choos/i.test(cap),fresh=called(x.r.tools,/^(read_workspace|worker_status)$/);
+   return {ok:!lies&&!vague&&!!fresh,latency:x.lat,note:`plan ${plan?.status}, ${crew.length} worker(s) ${crew.map(c=>c.status).join('/')}; tools ${x.r.tools.map(t=>t.name).join(',')||'none'}${lies?'; claims done':''}${vague?'; never mentions the plan':''}; "${sh(cap,80)}"`};
   });
   await step("B4 'hello' → plain greeting",async()=>{
    await B.settle();const x=await B.say(clip.b4),cap=x.r.caption;
@@ -244,6 +244,31 @@ try{
    if(!ringB)throw Error('no new queued briefing within 300 s');
    const lat=ringAt-Date.parse(ringB.createdAt);return {ok:lat<=3000,latency:lat,note:`"${sh(ringB.title)}"`};
   });
+ }
+ if(only.includes('d')){
+  dead='';
+  const D=session('D',{type:'start',view:'secretary',resume:true});dead=await D.start().then(()=>'',e=>'skipped: no ready: '+e.message);
+  let proj,ask,askAt,askFrom=0;const asks=w=>(w?.decisions||[]).filter(d=>d.status==='open'&&d.action?.kind==='ask').map(d=>d.id),old=new Set(asks(await getWs()));
+  await step('D1 "landing page for my company" → work handed over in the same turn',async()=>{
+   const x=await D.say(clip.d1),t=called(x.r.tools,CREATE);proj=t?.result?.project?.id||t?.result?.assignment?.projectId;
+   return {ok:!!t&&!!proj,latency:x.lat,note:`tools ${x.r.tools.map(t=>t.name+(t.result?.error?'(error)':'')).join(',')||'none'}; "${sh(x.r.caption,60)}"`};
+  });
+  await step('D2 brain asks → open ask decision ≤ 240 s, Donna asks it aloud',async()=>{
+   if(!proj)throw Error('no project from D1');
+   for(const end=Date.now()+240000;!ask&&Date.now()<end;await sleep(500)){const w=await getWs();ask=w.decisions.find(d=>d.projectId===proj&&d.status==='open'&&d.action?.kind==='ask'&&!old.has(d.id));if(ask){askAt=now();askFrom=D.seen.length}}
+   if(!ask)throw Error('no open ask decision within 240 s (the brain did not ask)');
+   const r=await D.reply(askFrom,60000),cap=r.caption;
+   // ponytail: assumes the question turn is the next turn_done after the decision opens; D1's reply ended long before the brain finished
+   return {ok:/\?/.test(cap)&&!r.tools.length,latency:r.firstAudio===undefined?undefined:r.firstAudio-askAt,note:`question "${sh(ask.title,60)}"; Donna "${sh(cap,80)}"${r.tools.length?', tools: '+r.tools.map(t=>t.name):''}`};
+  });
+  await step('D3 "Acme." → record_decision → next brain turn carries the answer ≤ 15 s',async()=>{
+   if(!ask)throw Error('no question from D2');
+   await D.settle();const x=await D.say(clip.d3),t=called(x.r.tools,/^record_decision$/);let id;try{id=JSON.parse(t.arguments).id}catch{}
+   let w,plan;for(const end=Date.now()+15000;Date.now()<end;await sleep(500)){w=await getWs();plan=w.assignments.findLast(a=>a.projectId===proj&&a.kind==='plan'&&/acme/i.test(a.brief)&&['queued','working'].includes(a.status));if(plan)break}
+   const d=w.decisions.find(d=>d.id===ask.id);
+   return {ok:!!t&&id===ask.id&&d?.status==='decided'&&!!plan,latency:x.lat,note:`${t?`record_decision ${id===ask.id?'with the question id':'with the wrong id'}`:`no record_decision; tools ${x.r.tools.map(t=>t.name)}`}; decision "${sh(d?.decision||'',30)}" ${d?.status}; ${plan?`new plan ${plan.status}`:'no queued plan carrying the answer'}`};
+  });
+  await D.quit();
  }
  await finish();
 }catch(err){await finish(err.message)}

@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest';
-import {existsSync,mkdtempSync,mkdirSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {AgencyWorkspace,type CodexRunner} from '../apps/server/src/agency/workspace';
@@ -51,6 +51,9 @@ const crewOf=(f:F)=>f.workspace.snapshot().assignments.filter(a=>a.agent);
 const workerOf=(f:F,name:string)=>f.workspace.snapshot().workers.find(w=>w.name===name)!;
 
 describe('transcript',()=>{
+  it('says what a Bash step runs without the cd into the checkout',()=>{
+    expect(agentEvents(use('b1','Bash',{command:'cd /tmp/wt/Maya && python3 -B dash.py --version'},'t1'))).toEqual([{kind:'action',parent:'t1',tool:'Bash',action:'Running python3 -B dash.py --version',file:undefined}]);
+  });
   it('turns one stream-json event into typed facts',()=>{
     expect(agentEvents(agent('t1','Build the page',{name:'Mika',effort:'low'}))).toEqual([{kind:'spawn',toolUseId:'t1',name:'Mika',description:'Build the page',prompt:'Do: Build the page',model:'sonnet',effort:'low'}]);
     expect(agentEvents(ack('t1','a1'))).toEqual([{kind:'ack',toolUseId:'t1',agentId:'a1'}]);
@@ -121,7 +124,7 @@ describe('Donna\'s brain as orchestrator',()=>{
     expect(step.status).toBe('review');expect(step.dependsOn).toEqual(crew.map(c=>c.id));expect(step.artifacts.map(a=>a.path)).toEqual(['notes.txt']);
     expect(snap.briefings).toHaveLength(1);const [b]=snap.briefings;
     expect(b.contributors.map(c=>c.name)).toEqual(['Mika','Write contact']);expect(b.artifacts.map(a=>a.path)).toEqual(['index.html','form.js','notes.txt']);expect(b.summary).toContain('Mika built the page');
-    expect(f.workspace.progress(f.project.id)).toBe('Your brain is done with "Build a page and its form."; the briefing is ready.');
+    expect(f.workspace.progress(f.project.id)).toBe('"Build a page and its form." is done; the briefing is ready.');
   });
   it('names workers: case-insensitive reuse when idle, a number when busy',async()=>{
     const f=fixture(),{pumping}=await running(f);
@@ -138,8 +141,7 @@ describe('Donna\'s brain as orchestrator',()=>{
   it('does not reuse a name that another room holds',async()=>{
     const f=fixture(),other=f.projects.create({name:'Other',brief:'x'});f.workspace.syncProjects();
     f.workspace.delegate({project_id:other.id,goal:'Other room job'});f.workspace.delegate({project_id:f.project.id,goal:'Mine'});const pumping=f.workspace.pump();
-    await until(()=>f.brain.pending.length===1);f.brain.emit(0,agent('t1','Theirs',{name:'Mika'}));f.brain.reply(0,{summary:'ok'});
-    await until(()=>f.brain.pending.length===2);f.brain.emit(1,agent('t2','Mine',{name:'Mika'}));f.brain.reply(1,{summary:'ok'});await pumping;
+    await until(()=>f.brain.pending.length===2);f.brain.emit(0,agent('t1','Theirs',{name:'Mika'}));f.brain.emit(1,agent('t2','Mine',{name:'Mika'}));f.brain.reply(0,{summary:'ok'});f.brain.reply(1,{summary:'ok'});await pumping;
     expect(f.workspace.snapshot().workers.filter(w=>!w.lead).map(w=>[w.name,w.projectId])).toEqual([['Mika',other.id],['Mika 2',f.project.id]]);
   });
   it('maps a SendMessage-resumed task back to its worker by task id',async()=>{
@@ -173,13 +175,13 @@ describe('Donna\'s brain as orchestrator',()=>{
   });
   it('answers worker_status for one worker and for all',async()=>{
     const f=fixture(),{pumping,cwd}=await running(f);
-    expect(f.workspace.workerStatus('all',f.project.id).status).toBe("Donna's brain: Planning the team");
+    expect(f.workspace.workerStatus('all',f.project.id).status).toBe("Donna's brain: Reading the project and choosing the team");
     f.brain.emit(0,agent('t1','Build the page',{name:'Mika'}));f.brain.emit(0,agent('t2','Contact form',{name:'Wren'}));
     mkdirSync(cwd,{recursive:true});f.brain.emit(0,use('s1','Write',{file_path:resolve(cwd,'index.html')},'t1'));
     expect(f.workspace.workerStatus('mika',f.project.id).status).toMatch(/^Mika is editing index\.html \(\d+ s ago\), on it for \d+ s\.$/);
     f.brain.emit(0,{type:'user',message:{content:[{type:'tool_result',tool_use_id:'t2',content:'Form done'}]}});
-    const all=f.workspace.workerStatus('ALL').status;expect(all).toContain("Donna's brain: Planning the team");expect(all).toMatch(/Mika is editing index\.html.*Wren finished "Contact form" \d+ s ago\./);
-    expect(f.workspace.progress(f.project.id)).toMatch(/^Your brain is on "Build a page and its form\.": Mika is editing index\.html .* Wren finished "Contact form" \d+ s ago\.$/);
+    const all=f.workspace.workerStatus('ALL').status;expect(all).toContain("Donna's brain: Leading the team while they work");expect(all).toMatch(/Mika is editing index\.html.*Wren finished "Contact form" \d+ s ago\./);
+    expect(f.workspace.progress(f.project.id)).toMatch(/^Donna's brain is on "Build a page and its form\.": Mika is editing index\.html .* Wren finished "Contact form" \d+ s ago\.$/);
     expect(()=>f.workspace.workerStatus('Zed')).toThrow('Known workers: Mika, Wren');
     f.brain.reply(0,{summary:'Done.'});await pumping;
   });
@@ -216,6 +218,10 @@ describe('Donna\'s brain as orchestrator',()=>{
     for(const id of [f.project.id,r.project.id])expect(existsSync(resolve(f.root,'workspaces',id,'.claude'))).toBe(false);
     expect(existsSync(resolve(f.root,'workspaces',r.project.id))).toBe(true);
   });
+  it('tells the brain to run the checks itself before the briefing, with one revise round and real outputs',()=>{
+    const s=readFileSync(resolve('skills/donna-brain/SKILL.md'),'utf8');
+    for(const x of ['Run the checks yourself with Bash in PROJECT DIRECTORY before the final JSON','one revise round','python3 -B','Never list a check you did not run','<command you ran> → <its real output>'])expect(s).toContain(x);
+  });
   it('marks working crew paused after a restart, tells the brain, and fails what it never resumes',async()=>{
     const f=fixture(),{pumping}=await running(f);f.brain.emit(0,agent('t1','Build the page',{name:'Mika'}));f.brain.emit(0,agent('t2','Contact form',{name:'Wren'}));f.brain.emit(0,{type:'user',message:{content:[{type:'tool_result',tool_use_id:'t2',content:'done'}]}});
     await f.workspace.recover();
@@ -234,5 +240,66 @@ describe('Donna\'s brain as orchestrator',()=>{
     const f=fixture(),{pumping}=await running(f);f.brain.emit(0,agent('t1','Build the page',{name:'Mika'}));f.brain.reply(0,{summary:'Done.'});await pumping;
     (f.workspace as unknown as {data:{assignments:{agent?:object;status:string}[]}}).data.assignments.find(a=>a.agent)!.status='queued';
     await f.workspace.pump();expect(f.workspace.snapshot().assignments.find(a=>a.agent)!.status).toBe('queued');
+  });
+});
+
+describe('rooms in parallel, and status that says what is blocked',()=>{
+  const banned=/plan lands|wait(ing)? for the plan|finaliz|Planning queued/i;
+  const say=(f:F,id=f.project.id)=>[f.workspace.progress(id),f.workspace.workerStatus('all').status,JSON.stringify(f.workspace.snapshot().workers.map(w=>w.currentAction))].join('\n');
+  it('runs two rooms\' brain turns at once, and a message goes to the room it is about',async()=>{
+    const f=fixture(),b=f.projects.create({name:'Game',brief:'x'});f.workspace.syncProjects();
+    f.workspace.delegate({project_id:f.project.id,goal:'Build a landing page.'});f.workspace.delegate({project_id:b.id,goal:'Write a small game.'});
+    expect(f.workspace.parallel()).toBeUndefined();const pumping=f.workspace.pump();await until(()=>f.brain.pending.length===2);
+    expect(f.workspace.parallel()).toBe('Rooms run in parallel: "Demo" and "Game" are both working now.');
+    f.brain.emit(0,agent('t1','Page',{name:'Mika'}));f.brain.emit(1,agent('t2','Rules',{name:'Wren'}));
+    expect(f.workspace.workerStatus('all').status).toContain('Rooms run in parallel');expect(f.workspace.workerStatus('all',b.id).status).not.toContain('Rooms run in parallel');
+    expect(f.workspace.message({worker:'Wren',text:'Make it harder'})).toMatchObject({delivered:'now'});
+    expect(f.workspace.message({worker:'Mika',text:'Use blue'})).toMatchObject({delivered:'now'});
+    expect(f.brain.injected).toEqual([{threadId:'brain-2',text:"MESSAGE FOR Wren (from the user, through Donna's voice): Make it harder"},{threadId:'brain-1',text:"MESSAGE FOR Mika (from the user, through Donna's voice): Use blue"}]);
+    f.brain.reply(1,{summary:'Game done.'});f.brain.reply(0,{summary:'Page done.'});await pumping;
+    expect(say(f)).not.toMatch(banned);expect(f.workspace.snapshot().assignments.filter(a=>a.kind).map(a=>a.status)).toEqual(['review','review']);expect(f.workspace.parallel()).toBeUndefined();
+  });
+  it('queues a second goal in the same room behind the first, says so, and starts it when the first ends',async()=>{
+    const f=fixture(),{pumping}=await running(f);
+    f.workspace.delegate({project_id:f.project.id,goal:'Add a footer with links.'});
+    expect(f.workspace.progress(f.project.id)).toBe('Donna\'s brain on "Add a footer with links.": queued behind "Build a page and its form." (one job ahead)');
+    expect(f.workspace.workerStatus('all',f.project.id).status).toBe('Donna\'s brain: queued behind "Build a page and its form." (one job ahead)');
+    expect(f.brain.pending).toHaveLength(1);f.brain.reply(0,{summary:'First.'});await until(()=>f.brain.pending.length===2);
+    expect(f.workspace.progress(f.project.id)).toMatch(/^Donna's brain is reading the project and choosing the team for "Add a footer with links\." \(started \d+ s ago\)\.$/);
+    f.brain.reply(1,{summary:'Second.'});await pumping;expect(say(f)).not.toMatch(banned);
+  });
+  it('says what a paused or failed brain step is stuck on',async()=>{
+    const f=fixture(),{pumping}=await running(f);const id=f.workspace.snapshot().assignments[0].id;
+    f.workspace.pause(id);f.brain.reply(0,{summary:'stale'});await pumping;expect(f.workspace.progress(f.project.id)).toBe('Donna\'s brain on "Build a page and its form.": paused by the user; files retained');expect(say(f)).not.toMatch(banned);
+    f.workspace.resume(id);const again=f.workspace.pump();await until(()=>f.brain.pending.length===2);
+    f.brain.pending[1].finish({threadId:'brain-1',status:'failed',text:'',error:'Claude exited unsuccessfully'});await again;
+    expect(f.workspace.progress(f.project.id)).toBe('Donna\'s brain on "Build a page and its form.": stopped: Claude exited unsuccessfully');
+  });
+});
+
+describe('set_priority: reorder, pause and resume a whole room by voice',()=>{
+  it('resolves a room by exact name, by "the game", and says the room names when it cannot',()=>{
+    const f=fixture();f.projects.create({name:'Game',brief:'x'});f.projects.create({name:'Card Game',brief:'x'});f.workspace.syncProjects();
+    expect(f.workspace.setPriority({room:'demo',action:'last'})).toMatchObject({committed:true,note:expect.stringContaining('The "Demo" room goes last now.')});
+    expect(f.workspace.setPriority({room:'GAME!',action:'first'}).note).toBe('The "Game" room is first now. Rooms still run side by side; it goes first when they compete (the Codex writer).');
+    expect(f.workspace.rooms().map(r=>r.name)).toEqual(['Game','Card Game','Demo']);
+    expect(()=>f.workspace.setPriority({room:'the game',action:'first'})).toThrow('Which room is "the game"? Rooms: "Game", "Card Game", "Demo".');
+    expect(()=>f.workspace.setPriority({room:'Zed',action:'pause'})).toThrow('No room called "Zed". Rooms: "Game", "Card Game", "Demo".');
+    expect(()=>f.workspace.setPriority({action:'pause'})).toThrow('No room is selected.');
+    expect(f.workspace.setPriority({action:'first'},f.project.id).note).toContain('"Demo" room is first');expect(f.workspace.rooms()[0].name).toBe('Demo');
+    const saved=JSON.parse(readFileSync(resolve(f.root,'workspace.json'),'utf8'));expect(saved.projects.find((p:{name:string})=>p.name==='Demo').priority).toBeLessThan(0);
+    f.workspace.syncProjects();expect(f.workspace.rooms()[0].name).toBe('Demo');
+  });
+  it('pauses a room with its running brain step and crew, says so when nothing runs, and resumes it',async()=>{
+    const f=fixture(),game=f.projects.create({name:'Game',brief:'x'});f.workspace.syncProjects();
+    expect(f.workspace.setPriority({room:'game',action:'pause'})).toEqual({committed:false,projectId:game.id,note:'Nothing in "Game" is running or waiting, so there is nothing to pause.'});
+    expect(f.workspace.setPriority({room:'game',action:'resume'}).note).toBe('Nothing in "Game" is paused.');
+    const {pumping}=await running(f);f.brain.emit(0,agent('t1','Build the page',{name:'Mika'}));
+    expect(f.workspace.setPriority({room:'selected',action:'pause'},f.project.id)).toMatchObject({committed:true,projectId:f.project.id,note:'Paused "Demo"; its files and sessions are kept.'});
+    expect(f.workspace.snapshot().assignments.map(a=>a.status)).toEqual(['paused','paused']);expect(f.workspace.progress(f.project.id)).toMatch(/^Donna's brain on "Build a page and its form\.": paused/);
+    f.brain.reply(0,{summary:'stale'});await pumping;expect(f.workspace.snapshot().assignments.find(a=>a.kind)!.status).toBe('paused');
+    expect(f.workspace.setPriority({room:'demo',action:'resume'}).note).toBe('Resumed "Demo"; the paused work is queued again.');
+    expect(f.workspace.snapshot().assignments.find(a=>a.kind)!.status).toBe('queued');
+    const again=f.workspace.pump();await until(()=>f.brain.pending.length===2);f.brain.reply(1,{summary:'Done.'});await again;
   });
 });

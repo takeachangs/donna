@@ -5,7 +5,7 @@ import {z} from 'zod';
 import {OfficeStore} from './state.js';
 import {Projects} from './projects.js';
 import {reconcileBriefings,type Briefing} from './briefings.js';
-import {agentEvents,agentName,statusSentence,type AgentEvent,type CrewView} from './transcript.js';
+import {agentEvents,agentName,dur,statusSentence,type AgentEvent,type CrewView} from './transcript.js';
 import {commitAll,gitDir,merge,openPr,push,redact,removeCheckout,report,secretFiles,startJob,useJob,workerCheckout,type JobGit} from './git.js';
 import {createProjectSchema,roomName,workPlanSchema,validateDependencies,goalSchema,parsePlan,lastJson,brainReviewSchema} from './plans.js';
 
@@ -14,8 +14,8 @@ export type Artifact={path:string;url:string;size:number;storage?:string;snapsho
 export type Provider='codex'|'claude';
 export type Worker={id:string;projectId:string;provider?:Provider;lead?:true;name?:string;role:string;responsibility:string;characterKey:string;status:ExecutionStatus;sessionId?:string;assignmentId:string;currentAction?:string;actionAt?:string};
 export type Assignment={id:string;projectId:string;workerId:string;provider?:Provider;kind?:'plan'|'review';title:string;brief:string;acceptance:string;status:ExecutionStatus;revision:number;runId?:string;cwd:string;sessionId?:string;dependsOn:string[];reasoningEffort?:'low'|'medium';summary?:string;artifacts:Artifact[];verification?:string[];git?:JobGit;network?:true;error?:string;startedAt?:string;completedAt?:string;tokens?:unknown;usageMissing?:boolean;elapsedMs?:number;createdAt?:string;agent?:{toolUseId:string;taskId?:string;brainId:string;model?:string;effort?:string}};
-export type Decision={id:string;projectId:string;title:string;context:string;options?:string[];action?:{kind:'install';command:string}|{kind:'merge';branch:string;worker:string;jobId:string};status:'open'|'decided';decision?:string;reason?:string;createdAt:string;updatedAt:string};
-export type ProjectOverview={id:string;name:string;deletedAt?:string;path?:string;git?:boolean;goal:string;memory:{outcome:string;checkpoint:string;latest:string;nextStep:string;updatedAt:string}};
+export type Decision={id:string;projectId:string;title:string;context:string;options?:string[];action?:{kind:'install';command:string}|{kind:'merge';branch:string;worker:string;jobId:string}|{kind:'ask';assignmentId:string};status:'open'|'decided';decision?:string;reason?:string;createdAt:string;updatedAt:string};
+export type ProjectOverview={id:string;name:string;priority?:number;deletedAt?:string;path?:string;git?:boolean;goal:string;memory:{outcome:string;checkpoint:string;latest:string;nextStep:string;updatedAt:string}};
 export type Workspace={revision:number;secretary:{id:'mara';name:string;role:'Secretary';voice:'eleanor';characterKey:string};projects:ProjectOverview[];workers:Worker[];assignments:Assignment[];decisions:Decision[];briefings:Briefing[];activity:{at:string;projectId?:string;message:string}[];inbox?:{projectId:string;worker:string;text:string;at:string}[]};
 export type Sandbox={write:string[];deny:string[];secrets:string[];network:boolean;addDir:string};
 export interface CodexRunner {
@@ -37,7 +37,7 @@ const resultSchema=z.object({name:text.max(40),summary:text.max(12000),artifacts
 
 /** Product state is an index and compact brief. Native Codex owns conversation history. */
 export class AgencyWorkspace {
- private data:Workspace;private dir:string;private office:string;private asks=new Map<string,number>();private running=false;private stopped=false;private wake?:ReturnType<typeof setTimeout>;private current?:{id:string;runId:string;threadId?:string};private seen=new Map<string,{files:Set<string>;said?:string}>();
+ private data:Workspace;private dir:string;private office:string;private asks=new Map<string,number>();private running=false;private stopped=false;private wake?:ReturnType<typeof setTimeout>;private current=new Map<string,{id:string;runId:string;threadId?:string}>();private poke?:()=>void;private seen=new Map<string,{files:Set<string>;said?:string}>();
  constructor(private store:OfficeStore,private projects:Projects,private codex:CodexRunner,private notify:(workspace:Workspace)=>void=()=>{},private options:{autoStart?:boolean;claude?:CodexRunner;brain?:CodexRunner;defaultProvider?:Provider}={}){
   this.dir=realpathSync(store.root);this.office=resolve(this.dir,'office');
   const p=resolve(store.root,'workspace.json');
@@ -78,10 +78,10 @@ export class AgencyWorkspace {
   const existing='existing' in project,made=existing?`This folder already has the room "${project.name}"; it is now selected and keeps its memory. Later calls use project_id "selected". `:`Room "${project.name}" created and now selected; later calls use project_id "selected". `;
   if(!goal)return {committed:true,selected:true,project,executionStarted:false,note:made+(existing?'Nothing is queued':'Empty project created; nothing is queued')+'. If the user asked for work, call delegate_work for this project now, before speaking.'};
   const r=this.queue(this.project(project.id),goal);
-  return {committed:true,selected:true,project,executionStarted:true,planning:true,assignment:r.assignment,assignments:[r.assignment],note:made+'Donna\'s brain is planning this goal now; workers appear when the plan lands. Do not delegate the same work again.'};
+  return {committed:true,selected:true,project,executionStarted:true,planning:true,assignment:r.assignment,assignments:[r.assignment],note:made+'Donna\'s brain is on this goal and picks the team itself. Do not delegate the same work again.'};
  }
  renameProject(id:string,value:unknown){this.project(id);const p=this.projects.rename(id,value);this.syncProjects();this.log(`Renamed project to ${p.name}`,id);this.save();return {committed:true,project:p};}
- deleteProject(id:string){const p=this.project(id);for(const a of this.data.assignments.filter(a=>a.projectId===id&&['working','queued','waiting'].includes(a.status))){a.revision++;this.state(a,'paused','Project moved to Recently deleted; files and session retained');}this.projects.setDeleted(id,true);this.syncProjects();this.log(`Moved ${p.name} to Recently deleted`,id);this.save();const cur=this.current&&this.data.assignments.find(a=>a.id===this.current!.id&&a.projectId===id);if(cur&&this.current!.threadId)void this.runner(cur)?.interrupt(this.current!.threadId).catch(()=>{});return {committed:true};}
+ deleteProject(id:string){const p=this.project(id);for(const a of this.data.assignments.filter(a=>a.projectId===id&&['working','queued','waiting'].includes(a.status))){a.revision++;this.state(a,'paused','Project moved to Recently deleted; files and session retained');}this.projects.setDeleted(id,true);this.syncProjects();this.log(`Moved ${p.name} to Recently deleted`,id);this.save();for(const a of this.data.assignments.filter(a=>a.projectId===id))this.halt(a);return {committed:true};}
  restoreProject(id:string){const p=this.projects.setDeleted(id,false);this.syncProjects();this.log(`Restored ${p.name}; paused work stays paused`,id);this.save();return {committed:true,project:p};}
  private assignment(id:string){const a=this.data.assignments.find(a=>a.id===id);if(!a)throw Error('Unknown assignment');return a;}
  private look(){return looks[this.data.workers.filter(k=>!k.lead).length%4];}
@@ -95,7 +95,16 @@ export class AgencyWorkspace {
  private engines(ps:(Provider|undefined)[]){if(ps.includes('claude')&&!this.options.claude)throw Error('Claude Code is not connected in this office');}
  private isCurrent(a:Assignment,revision:number,runId:string){return a.revision===revision&&a.runId===runId&&a.status==='working';}
  private state(a:Assignment,status:ExecutionStatus,action?:string){a.status=status;const w=this.worker(a);if(w.assignmentId===a.id){w.status=status;w.currentAction=action;}}
- private kick(){if(this.options.autoStart===false||this.stopped)return;clearTimeout(this.wake);this.wake=setTimeout(()=>void this.pump(),50);}
+ private kick(){if(this.stopped)return;if(this.running){this.poke?.();return;}if(this.options.autoStart===false)return;clearTimeout(this.wake);this.wake=setTimeout(()=>void this.pump(),50);}
+ /** Brain steps run one per project (the brain session is per project); Codex/Claude worker rows share one writer. ponytail: no cap on parallel rooms (each is one Opus session + up to 4 Sonnet subagents); add a cap if rate limits bite. */
+ private lane(a:Assignment){return a.kind?a.projectId:'writer';}
+ private halt(a:Assignment){const c=this.current.get(this.lane(a));if(c?.id===a.id&&c.threadId)void this.runner(a)?.interrupt(c.threadId).catch(()=>{});}
+ /** Room priority: lower goes first, absent is 0. */
+ private rank(projectId:string){return this.data.projects.find(p=>p.id===projectId)?.priority??0;}
+ /** Live rooms, first to last; the sort is stable, so ties keep creation order. */
+ rooms(){return this.data.projects.filter(p=>!p.deletedAt).sort((a,b)=>(a.priority??0)-(b.priority??0));}
+ /** Queued rows that may start, in pick order: room rank first, then array order (stable). Only the one-writer lane competes on it. */
+ private ready(){return this.data.assignments.filter(a=>a.status==='queued'&&!a.agent&&a.dependsOn.every(id=>{const d=this.assignment(id);return d.agent||['review','done'].includes(d.status);})).sort((a,b)=>this.rank(a.projectId)-this.rank(b.projectId));}
  setSecretary(value:unknown){const {name}=z.object({name:text.regex(/^[A-Za-z][A-Za-z '-]{0,39}$/)}).parse(value);if(this.data.secretary.name!=='Secretary'&&this.data.secretary.name!==name)throw Error('Secretary identity is already established.');this.data.secretary.name=name;this.save();return {committed:true,secretary:this.data.secretary};}
  updateProject(value:unknown){const a=z.object({project_id:z.string().uuid(),goal:text.max(2000).optional(),checkpoint:text.max(1000).optional(),next_step:text.max(1000).optional()}).parse(value),p=this.project(a.project_id);if(a.goal){p.goal=a.goal;p.memory.outcome=a.goal;}if(a.checkpoint)p.memory.checkpoint=a.checkpoint;if(a.next_step)p.memory.nextStep=a.next_step;p.memory.updatedAt=now();this.log('Updated project brief',p.id);this.save();return {committed:true,project:p};}
  /** The voice's entry: queue a planning step for Donna's brain, the project's persistent lead session. */
@@ -107,15 +116,15 @@ export class AgencyWorkspace {
   if(dup)return {committed:false,planning:true,alreadyQueued:true,assignment:dup,note:'already queued: this goal is already in progress here. Tell the user it is in progress; do not hand it over again.',progress:this.progress(p.id)};
   return this.queue(p,goal);
  }
- private queue(p:ProjectOverview,goal:string,network?:true){
+ private queue(p:ProjectOverview,goal:string,network?:true,dependsOn:string[]=[]){
   let lead=this.data.workers.find(w=>w.projectId===p.id&&w.lead);
   if(!lead){lead={id:'lead-'+randomUUID(),projectId:p.id,provider:'claude',lead:true,name:this.data.secretary.name,role:'Lead',responsibility:'Plans the team, reviews its results and writes the briefing',characterKey:this.data.secretary.characterKey,status:'queued',assignmentId:''};this.data.workers.push(lead);}
   const cwd=this.cwd(p);
-  const plan:Assignment={id:randomUUID(),projectId:p.id,workerId:lead.id,provider:'claude',kind:'plan',title:'Plan: '+goal.slice(0,170),brief:goal,acceptance:'A valid plan for this request',status:'queued',revision:1,cwd,sessionId:lead.sessionId,dependsOn:[],reasoningEffort:'medium',artifacts:[],createdAt:now(),...(network&&{network})};
-  this.data.assignments.push(plan);Object.assign(lead,{assignmentId:plan.id,status:'queued',currentAction:'Planning queued'});
-  Object.assign(p.memory,{latest:`Donna's brain is planning: ${goal.slice(0,300)}`,nextStep:'Wait for the plan; workers appear when it lands.',updatedAt:now()});
+  const plan:Assignment={id:randomUUID(),projectId:p.id,workerId:lead.id,provider:'claude',kind:'plan',title:'Plan: '+goal.slice(0,170),brief:goal,acceptance:'A valid plan for this request',status:'queued',revision:1,cwd,sessionId:lead.sessionId,dependsOn:[...dependsOn],reasoningEffort:'medium',artifacts:[],createdAt:now(),...(network&&{network})};
+  this.data.assignments.push(plan);const why=this.why(plan);Object.assign(lead,{assignmentId:plan.id,status:'queued',currentAction:why});
+  Object.assign(p.memory,{latest:`Donna's brain on "${goal.slice(0,300)}": ${why}`,nextStep:"Donna's brain picks the team itself; hear the briefing when the work is done.",updatedAt:now()});
   this.log(`Donna's brain is planning: ${goal.slice(0,120)}`,p.id);this.save();this.kick();
-  return {committed:true,planning:true,assignment:plan,note:'Donna\'s brain is planning this now; workers appear when the plan lands. Say it is being planned; do not name workers or a team size.'};
+  return {committed:true,planning:true,assignment:plan,note:`Donna's brain is on it and picks the team itself (${why}). Say it is being worked on; do not name workers or a team size.`};
  }
  /** Execute a plan from Donna's brain: create the workers and their queued assignments atomically. */
  staff(projectId:string,value:unknown){
@@ -129,21 +138,23 @@ export class AgencyWorkspace {
   for(const [i,w] of a.workers.entries()){
    const id=ids.get(w.key)!,old=w.reuse_worker_id?this.data.workers.find(k=>k.id===w.reuse_worker_id):undefined,provider:Provider=w.provider??old?.provider??this.options.defaultProvider??'codex';
    const worker:Worker=old||{id:'worker-'+randomUUID(),projectId:p.id,provider,role:w.role,responsibility:w.responsibility,characterKey:this.look(),status:'queued',assignmentId:id};
-   Object.assign(worker,{provider,role:w.role,responsibility:w.responsibility,status:'queued',assignmentId:id,currentAction:'Waiting for the local executor'});if(!old)this.data.workers.push(worker);
+   Object.assign(worker,{provider,role:w.role,responsibility:w.responsibility,status:'queued',assignmentId:id});if(!old)this.data.workers.push(worker);
    const assignment:Assignment={id,projectId:p.id,workerId:worker.id,provider,title:w.title||w.role,brief:w.brief,acceptance:w.acceptance,status:'queued',revision:1,cwd,sessionId:worker.sessionId,dependsOn:w.depends_on.map(d=>ids.get(d)!),reasoningEffort:w.reasoning_effort,artifacts:[]};
    this.data.assignments.push(assignment);created.push(assignment);
   }
+  for(const x of created)this.worker(x).currentAction=this.why(x);
   this.log(`Donna's brain allocated ${a.workers.length} worker(s): ${a.rationale}`,p.id);this.save();this.kick();return {committed:true,assignments:created,workers:created.map(a=>this.worker(a))};
  }
- revise(value:unknown){const v=z.object({assignment_id:text,brief:text.max(6000),acceptance:text.max(2000).optional(),title:text.max(180).optional()}).parse(value),a=this.assignment(v.assignment_id);if(a.agent)throw Error("Use message_worker to change a subagent's work");this.project(a.projectId);a.brief=v.brief;if(v.acceptance)a.acceptance=v.acceptance;if(v.title)a.title=v.title;a.revision++;a.error=undefined;this.state(a,'queued','Requirements updated; awaiting execution');this.log(`Revised assignment: ${a.title}`,a.projectId);this.save();if(this.current?.id===a.id&&this.current.threadId)void this.runner(a)?.interrupt(this.current.threadId).catch(()=>{});this.kick();return {committed:true,assignment:a};}
- pause(id:string):{committed:boolean;assignment:Assignment}{const a=this.assignment(id);if(a.agent)return this.pause(a.agent.brainId);this.project(a.projectId);if(a.status==='done')throw Error('Accepted work is already complete');a.revision++;this.state(a,'paused','Paused by the user; files retained');for(const c of this.data.assignments.filter(c=>c.agent?.brainId===id&&c.status==='working'))this.state(c,'paused','Paused with Donna\'s brain; it re-checks this on its next turn');this.log(`Paused: ${a.title}`,a.projectId);this.save();if(this.current?.id===id&&this.current.threadId)void this.runner(a)?.interrupt(this.current.threadId).catch(()=>{});return {committed:true,assignment:a};}
+ revise(value:unknown){const v=z.object({assignment_id:text,brief:text.max(6000),acceptance:text.max(2000).optional(),title:text.max(180).optional()}).parse(value),a=this.assignment(v.assignment_id);if(a.agent)throw Error("Use message_worker to change a subagent's work");this.project(a.projectId);a.brief=v.brief;if(v.acceptance)a.acceptance=v.acceptance;if(v.title)a.title=v.title;a.revision++;a.error=undefined;this.state(a,'queued','Requirements updated; awaiting execution');this.log(`Revised assignment: ${a.title}`,a.projectId);this.save();this.halt(a);this.kick();return {committed:true,assignment:a};}
+ pause(id:string):{committed:boolean;assignment:Assignment}{const a=this.assignment(id);if(a.agent)return this.pause(a.agent.brainId);this.project(a.projectId);if(a.status==='done')throw Error('Accepted work is already complete');a.revision++;this.state(a,'paused','Paused by the user; files retained');for(const c of this.data.assignments.filter(c=>c.agent?.brainId===id&&c.status==='working'))this.state(c,'paused','Paused with Donna\'s brain; it re-checks this on its next turn');this.log(`Paused: ${a.title}`,a.projectId);this.save();this.halt(a);return {committed:true,assignment:a};}
  resume(id:string):{committed:boolean;assignment:Assignment}{const a=this.assignment(id);if(a.agent)return this.resume(a.agent.brainId);this.project(a.projectId);if(!['paused','failed','waiting'].includes(a.status))throw Error('Only paused, failed or waiting work can resume');a.revision++;a.error=undefined;this.state(a,'queued','Queued to resume its native session');this.log(`Queued resume: ${a.title}`,a.projectId);this.save();this.kick();return {committed:true,assignment:a};}
  accept(id:string){const a=this.assignment(id);this.project(a.projectId);if(a.status!=='review')throw Error('Only a delivered result can be accepted');for(const f of a.artifacts)this.artifact(a.id,f.path);this.state(a,'done','Accepted by the user');this.log(`Accepted: ${a.title}`,a.projectId);this.save();return {committed:true,assignment:a};}
- decide(value:unknown){const v=z.object({id:text.optional(),project_id:z.string().uuid(),title:text.max(200).optional(),context:z.string().max(4000).optional(),options:z.array(text.max(500)).max(6).optional(),status:z.enum(['open','decided']),decision:text.max(2000).optional(),reason:z.string().max(3000).optional()}).parse(value);const p=this.project(v.project_id);let d=v.id?this.data.decisions.find(d=>d.id===v.id):undefined;const was=d?.status;if(v.id&&!d)throw Error('Unknown decision');if(d&&d.projectId!==p.id)throw Error('Wrong decision project');if(v.status==='decided'&&!v.decision)throw Error('A decision needs an explicit outcome');if(!d){if(!v.title)throw Error('A decision title is required');d={id:randomUUID(),projectId:p.id,title:v.title,context:v.context||'',status:v.status,createdAt:now(),updatedAt:now()};this.data.decisions.push(d);}Object.assign(d,{status:v.status,updatedAt:now()});if(v.title)d.title=v.title;if(v.context!==undefined)d.context=v.context;if(v.options)d.options=v.options;if(v.decision)d.decision=v.decision;if(v.reason!==undefined)d.reason=v.reason;this.log(v.status==='decided'?`Decision: ${d.decision}${d.reason?' — '+d.reason:''}`:`Needs a decision: ${d.title}`,p.id);p.memory.updatedAt=now();this.save();if(d.action&&was==='open'&&v.status==='decided')this.act(d,p);return {committed:true,decision:d};}
+ decide(value:unknown){const v=z.object({id:text.optional(),project_id:z.string().uuid().optional(),title:text.max(500).optional(),context:z.string().max(4000).optional(),options:z.array(text.max(500)).max(6).optional(),status:z.enum(['open','decided']),decision:text.max(2000).optional(),reason:z.string().max(3000).optional()}).parse(value);let d=v.id?this.data.decisions.find(d=>d.id===v.id):undefined;const was=d?.status;if(v.id&&!d)throw Error('Unknown decision');const pid=d?.projectId??v.project_id;if(!pid)throw Error('A project is required');const p=this.project(pid);if(v.status==='decided'&&!v.decision)throw Error('A decision needs an explicit outcome');if(!d){if(!v.title)throw Error('A decision title is required');d={id:randomUUID(),projectId:p.id,title:v.title,context:v.context||'',status:v.status,createdAt:now(),updatedAt:now()};this.data.decisions.push(d);}Object.assign(d,{status:v.status,updatedAt:now()});if(v.title)d.title=v.title;if(v.context!==undefined)d.context=v.context;if(v.options)d.options=v.options;if(v.decision)d.decision=v.decision;if(v.reason!==undefined)d.reason=v.reason;this.log(v.status==='decided'?`Decision: ${d.decision}${d.reason?' — '+d.reason:''}`:`Needs a decision: ${d.title}`,p.id);p.memory.updatedAt=now();this.save();if(d.action&&was==='open'&&v.status==='decided')this.act(d,p);return {committed:true,decision:d};}
 /** An answered decision that carries an action is applied after it is saved: yes opens the install turn, or takes the worker's side of a conflict. */
  private act(d:Decision,p:ProjectOverview){
   const x=d.action!,yes=/^\s*(?:yes|yeah|yep|sure|ok(?:ay)?|go ahead|do it|allow|approve|use|take)\b/i.test(d.decision||'');
   if(x.kind==='install'){if(yes)this.queue(p,`The user said yes to this install: ${x.command}. Package registries are reachable for this turn only; run it, then finish the job and end with the final JSON.`,true);else{this.log(`Install declined: ${x.command}`,p.id);this.save();}return;}
+  if(x.kind==='ask'){const s=this.assignment(x.assignmentId);if(s.status==='waiting'){s.completedAt=now();s.summary=`Answered: ${d.decision}`;this.state(s,'done','Question answered');}this.queue(p,`The user answered your question "${d.title}": ${d.decision}`,undefined,s.dependsOn);return;}
   let failed='';
   if(yes)try{const m=merge(this.assignment(x.jobId).cwd,x.branch,'theirs');if(!m.ok)failed=` The merge still failed in ${m.files.join(', ')}.`;}catch(e){failed=` The merge failed: ${String((e as Error).message).slice(0,200)}.`;}
   this.queue(p,`The user decided the merge conflict for ${x.worker}'s work: "${d.decision}". The office applied it. Re-check the PROJECT DIRECTORY, run the tests, and end with the final JSON.${failed}`);
@@ -210,19 +221,56 @@ RELEVANT DECISIONS: ${JSON.stringify(this.data.decisions.filter(d=>d.projectId==
 Execute the task now using your native tools. Keep the implementation minimal; use existing tools and the standard library when practical. Stay focused on your assigned scope and avoid duplicating peer deliverables. Do not start additional agents or sessions; the lead owns staffing. Inspect existing project files before changing them. Work only inside the project directory; do not read private credentials, unrelated workspaces or sessions. Never create fake success records, invented test outcomes or mock results presented as real. Keep existing unrelated files. Verify behavior with proportional meaningful checks; do not build an exhaustive test framework for a small change. Report actual commands and limitations honestly. No external sending, publishing, payment or destructive unrelated operations are authorized. If essential information is missing, explain it in needsInput and stop safely.
 At completion your LAST message MUST be only a JSON object (no fence) with {"name":"your chosen name","summary":"what actually changed and any limitations","artifacts":["relative/path/to/actual/nonempty/file"],"verification":["actual command and observed result"],"needsInput":"only if blocked"}. Artifacts must exist inside the project directory; do not list generated dependencies, secrets or absolute paths. Your native session owns detailed conversation and tool history; no separate transcript file is needed.`;
  }
- /** One sentence about a subagent: what it is doing now, or how it ended. */
- private sentence(c:Assignment){const w=this.worker(c),v:CrewView={name:w.name||'A subagent',status:c.status,title:c.title,action:w.assignmentId===c.id?w.currentAction:undefined,actionAt:w.assignmentId===c.id?w.actionAt:undefined,startedAt:c.startedAt,completedAt:c.completedAt,error:c.error};return statusSentence(v);}
+ /** What a row waits on, in words the voice can say. */
+ private why(a:Assignment):string{
+  const as=this.data.assignments,w=this.worker(a),act=w.assignmentId===a.id?w.currentAction:undefined,lc=(t:string)=>t[0].toLowerCase()+t.slice(1),short=(x:Assignment)=>(x.kind==='plan'?x.brief:x.title).replace(/\s+/g,' ').slice(0,60);
+  if(a.status==='paused')return !act?'paused':/^paused/i.test(act)?lc(act):`paused (${lc(act)})`;
+  if(a.status==='failed')return `stopped: ${(a.error||'unknown error').replace(/^Error:\s*/,'').slice(0,120)}`;
+  const ask=this.data.decisions.filter(d=>d.projectId===a.projectId&&d.status==='open').at(-1),dep=a.dependsOn.map(id=>this.assignment(id)).find(d=>!d.agent&&!['review','done'].includes(d.status));
+  if(a.status==='waiting'&&ask)return `waiting for your answer on "${ask.title}"`;
+  if(dep&&['queued','waiting'].includes(a.status)){const dw=this.worker(dep);return `waiting for ${dw.name||`the ${dw.role} worker`}'s "${short(dep)}" ${['queued','working'].includes(dep.status)?'to finish':`(${dep.status})`}`;}
+  if(a.status!=='queued')return a.status;
+  const l=this.lane(a),rd=this.ready(),ahead=[...as.filter(x=>x!==a&&!x.agent&&x.status==='working'&&this.lane(x)===l),...rd.slice(0,Math.max(0,rd.indexOf(a))).filter(x=>this.lane(x)===l)];
+  if(!ahead.length)return 'starting now';
+  const h=ahead[0],room=h.projectId===a.projectId?'':` in ${this.data.projects.find(p=>p.id===h.projectId)?.name}`;
+  return `queued behind "${short(h)}"${room} (${ahead.length===1?'one job':`${ahead.length} jobs`} ahead)`;
+ }
+ /** One sentence about a subagent or Codex worker: what it is doing now, what it waits on, or how it ended. */
+ private sentence(c:Assignment){const w=this.worker(c),name=w.name||`The ${w.role} worker`;if(['queued','waiting'].includes(c.status))return `${name} is ${this.why(c)}.`;const v:CrewView={name,status:c.status,title:c.title,action:w.assignmentId===c.id?w.currentAction:undefined,actionAt:w.assignmentId===c.id?w.actionAt:undefined,startedAt:c.startedAt,completedAt:c.completedAt,error:c.error};return statusSentence(v);}
  /** One state-derived line the voice can quote for "how's it going?"; undefined when nothing was ever delegated. */
  progress(projectId:string):string|undefined{
   const as=this.data.assignments.filter(a=>a.projectId===projectId),plan=as.filter(a=>a.kind==='plan').at(-1);if(!plan)return;
-  if(plan.status==='working')return `Your brain is on "${plan.brief.slice(0,120)}": ${as.filter(c=>c.agent?.brainId===plan.id).map(c=>this.sentence(c)).join(' ')||'planning the team'}`;
-  if(plan.status==='review')return `Your brain is done with "${plan.brief.slice(0,120)}"; the briefing is ready.`;
-  if(plan.status!=='done')return `Your brain is planning "${plan.brief.slice(0,120)}" (${plan.status})${['failed','paused'].includes(plan.status)&&plan.error?`: ${plan.error}`:''}`;
+  const goal=`"${plan.brief.slice(0,120)}"`;
+  if(plan.status==='working'){const crew=as.filter(c=>c.agent?.brainId===plan.id);return crew.length?`Donna's brain is on ${goal}: ${crew.map(c=>this.sentence(c)).join(' ')}`:`Donna's brain is reading the project and choosing the team for ${goal} (started ${dur(Date.now()-Date.parse(plan.startedAt||''))} ago).`;}
+  if(plan.status==='waiting')return `Donna's brain is ${this.why(plan)}.`;
+  if(plan.status==='review')return `"${plan.title}" is done; the briefing is ready.`;
+  if(plan.status!=='done')return `Donna's brain on ${goal}: ${this.why(plan)}`;
   // ponytail: overlapping rounds report the newest review only
-  const review=as.filter(a=>a.kind==='review').at(-1);if(!review)return 'Plan done.';
-  const crew=review.dependsOn.map(id=>as.find(a=>a.id===id)).flatMap(a=>a?[a]:[]).map(a=>{const w=this.worker(a);return `${w.name||w.role}: ${a.status}${a.status==='working'&&w.currentAction?` (${w.currentAction})`:''}`;});
-  const r={queued:'waits for the team',working:'you are reviewing their work now',review:'done; the briefing is ready',done:'accepted'}[review.status as string]||review.status;
-  return `Plan done. Team: ${crew.join('; ')}. Review: ${r}`;
+  const review=as.filter(a=>a.kind==='review').at(-1);if(!review)return `Donna's brain has planned ${goal}.`;
+  const crew=review.dependsOn.map(id=>as.find(a=>a.id===id)).flatMap(a=>a?[a]:[]).map(a=>this.sentence(a)).join(' ');
+  const r=review.status==='queued'&&!this.ready().includes(review)?'Donna reviews once the team is done.':review.status==='working'?'Donna is reviewing their work now.':review.status==='review'?"Donna's review is done; the briefing is ready.":review.status==='done'?'The briefing was accepted.':`Donna's review is ${this.why(review)}.`;
+  return `${crew} ${r}`.trim();
+ }
+ /** Say aloud that rooms run side by side: two or more live rooms have a brain step or a worker running now. */
+ parallel():string|undefined{
+  const names=this.rooms().filter(p=>this.data.assignments.some(a=>a.projectId===p.id&&a.status==='working'&&!a.agent)).map(p=>`"${p.name}"`);
+  if(names.length>1)return `Rooms run in parallel: ${names.slice(0,-1).join(', ')} and ${names.at(-1)} are ${names.length===2?'both':'all'} working now.`;
+ }
+ /** "do the site first", "pause the game": find the room by the name the user said (or the selected one), then reorder, pause or resume all of it. */
+ setPriority(value:unknown,selected?:string){
+  const v=z.object({room:text.max(80).default('selected'),action:z.enum(['first','last','pause','resume'])}).parse(value),live=this.rooms(),n=norm(v.room),sel=n==='selected',w=words(v.room);
+  const hit=sel?live.filter(p=>p.id===selected):live.filter(p=>norm(p.name)===n),pool=hit.length||sel?hit:live.filter(p=>[...words(p.name)].some(x=>w.has(x)));
+  if(pool.length!==1)throw Error(`${pool.length?`Which room is "${v.room}"?`:sel?'No room is selected.':`No room called "${v.room}".`} Rooms: ${live.map(p=>`"${p.name}"`).join(', ')||'none yet'}.`);
+  const p=pool[0],q=`"${p.name}"`,others=live.filter(x=>x!==p).map(x=>x.priority??0);
+  if(v.action==='first'||v.action==='last'){
+   if(others.length)p.priority=v.action==='first'?Math.min(...others)-1:Math.max(...others)+1;
+   this.log(`Room priority: ${p.name} goes ${v.action}`,p.id);this.save();
+   return {committed:true,projectId:p.id,note:`The ${q} room ${v.action==='first'?'is first now':'goes last now'}. Rooms still run side by side; it goes ${v.action} when they compete (the Codex writer).`};
+  }
+  const pausing=v.action==='pause',todo=this.data.assignments.filter(a=>a.projectId===p.id&&!a.agent&&(pausing?['queued','working','waiting'].includes(a.status):a.status==='paused'));
+  for(const a of todo)pausing?this.pause(a.id):this.resume(a.id);
+  if(!todo.length)return {committed:false,projectId:p.id,note:pausing?`Nothing in ${q} is running or waiting, so there is nothing to pause.`:`Nothing in ${q} is paused.`};
+  return {committed:true,projectId:p.id,note:pausing?`Paused ${q}; its files and sessions are kept.`:`Resumed ${q}; the paused work is queued again.`};
  }
  private named(worker:string,projectId?:string){
   const ws=this.data.workers.filter(w=>!w.lead&&w.name&&this.data.projects.some(p=>p.id===w.projectId&&!p.deletedAt)),n=norm(worker);
@@ -234,16 +282,17 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
  workerStatus(worker:string,projectId?:string):{committed:false;status:string}{
   const line=(w:Worker)=>{const c=this.data.assignments.find(a=>a.id===w.assignmentId);return c?this.sentence(c):`${w.name} is ${w.status}.`;};
   if(norm(worker)!=='all')return {committed:false,status:line(this.named(worker,projectId))};
-  const live=this.data.projects.filter(p=>!p.deletedAt&&(!projectId||p.id===projectId)).map(p=>p.id),ws=this.data.workers.filter(w=>live.includes(w.projectId));
-  const lines=[...ws.filter(w=>w.lead&&w.currentAction).map(w=>`Donna's brain: ${w.currentAction}`),...ws.filter(w=>!w.lead&&w.name).slice(-8).map(line)];
+  const live=this.rooms().filter(p=>!projectId||p.id===projectId).map(p=>p.id),ws=live.flatMap(id=>this.data.workers.filter(w=>w.projectId===id));
+  const lead=(w:Worker)=>{const a=this.data.assignments.find(a=>a.id===w.assignmentId);return `Donna's brain: ${a&&['queued','waiting'].includes(a.status)?this.why(a):w.currentAction}`;};
+  const par=projectId?undefined:this.parallel(),lines=[...ws.filter(w=>w.lead&&w.currentAction).map(lead),...ws.filter(w=>!w.lead&&(w.name||w.role)).slice(-8).map(line),...(par?[par]:[])];
   return {committed:false,status:lines.join(' ')||'Nobody is working yet.'};
  }
  /** Pass the user's words to a subagent through Donna's brain: into its live session if it is running now, else on its next turn. */
  message(value:unknown){
   const v=z.object({project_id:z.string().uuid().optional(),worker:text.max(80),text:text.max(2000)}).parse(value),w=this.named(v.worker,v.project_id),p=this.project(w.projectId);
-  const line=`MESSAGE FOR ${w.name} (from the user, through Donna's voice): ${v.text}`,cur=this.current&&this.data.assignments.find(a=>a.id===this.current!.id&&a.projectId===p.id&&a.kind==='plan');
+  const line=`MESSAGE FOR ${w.name} (from the user, through Donna's voice): ${v.text}`,cur=this.current.get(p.id),live=cur&&this.data.assignments.some(a=>a.id===cur.id&&a.kind==='plan');
   const done=(delivered:'now'|'queued')=>{this.log(`Message for ${w.name} ${delivered==='now'?'sent':'queued'}: ${v.text.slice(0,100)}`,p.id);this.save();return {committed:true as const,delivered,worker:w.name!,note:`Donna's brain forwards it to ${w.name} ${delivered==='now'?'now':'on its next turn'}; tell the user you'll pass it on.`};};
-  if(cur&&this.current!.threadId&&this.options.brain?.inject?.(this.current!.threadId,line))return done('now');
+  if(live&&cur!.threadId&&this.options.brain?.inject?.(cur!.threadId,line))return done('now');
   if(this.data.assignments.some(a=>a.kind==='plan'&&a.projectId===p.id&&['queued','working'].includes(a.status)))(this.data.inbox??=[]).push({projectId:p.id,worker:w.name!,text:v.text,at:now()});
   else this.queue(p,line);
   return done('queued');
@@ -269,7 +318,7 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
   if(conflict){
    const files=conflict.join(', '),d=this.decide({project_id:c.projectId,title:`Merge conflict: ${name}'s work`,context:`${name}'s changes conflict with the job branch in ${files}. Use ${name}'s version, or keep the current version?`,options:[`Use ${name}'s version`,'Keep the current version'],status:'open'}).decision;
    d.action={kind:'merge',branch:c.git!.branch,worker:name,jobId:job!.id};
-   const t=this.current?.threadId;if(t)this.options.brain?.inject?.(t,`MERGE CONFLICT: ${name}'s work conflicts in ${files}; it is not merged and the user decides. Say so in your summary.`);
+   const t=this.current.get(c.projectId)?.threadId;if(t)this.options.brain?.inject?.(t,`MERGE CONFLICT: ${name}'s work conflicts in ${files}; it is not merged and the user decides. Say so in your summary.`);
   }
  }
  private spawn(a:Assignment,ev:Extract<AgentEvent,{kind:'spawn'}>){
@@ -280,6 +329,7 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
    else if(k.projectId===a.projectId&&!inUse.includes(k.status))w=k;
   }
   Object.assign(w,{responsibility:ev.description.slice(0,300),status:'working',assignmentId:id,currentAction:`Starting: ${ev.description.slice(0,120)}`,actionAt:now()});
+  const lead=this.worker(a);if(lead.currentAction==='Reading the project and choosing the team')Object.assign(lead,{currentAction:'Leading the team while they work',actionAt:now()});
   // A git room gives every worker its own checkout, named as the brain was told: <worktrees>/<Name>. ponytail: a job-named or twice-used Name falls back to / shares a dir; the skill asks for unique names.
   const dir=a.git&&resolve(this.wt(this.project(a.projectId)),(ev.name||agentName(ev.description)).replace(/[^A-Za-z0-9-]/g,'').replace(/^job$/i,'')||'Worker');
   const row:Assignment={id,projectId:a.projectId,workerId:w.id,provider:'claude',title:ev.description.slice(0,180),brief:ev.prompt.slice(0,6000),acceptance:"Reports back to Donna's brain",status:'working',revision:1,runId:a.runId,cwd:dir||a.cwd,...(dir&&{git:{...a.git!}}),dependsOn:[],artifacts:[],startedAt:now(),createdAt:now(),agent:{toolUseId:ev.toolUseId,brainId:a.id,model:ev.model,effort:ev.effort}};
@@ -326,15 +376,17 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
    const plan=parsePlan(text),{assignments}=this.staff(a.projectId,plan);
    const review:Assignment={id:randomUUID(),projectId:a.projectId,workerId:a.workerId,provider:'claude',kind:'review',title:plan.title,brief:a.brief,acceptance:'Every deliverable checked against its acceptance; one briefing written.',status:'queued',revision:1,cwd:a.cwd,sessionId:a.sessionId,dependsOn:assignments.map(x=>x.id),reasoningEffort:'medium',artifacts:[],createdAt:now(),...(a.git&&{git:structuredClone(a.git)})};
    this.data.assignments.push(review);a.summary=plan.rationale;a.completedAt=now();this.state(a,'done','Plan delivered');
-   Object.assign(this.worker(a),{assignmentId:review.id,status:'queued',currentAction:'Waiting for the team to deliver'});
+   Object.assign(this.worker(a),{assignmentId:review.id,status:'queued',currentAction:'Donna reviews once the team is done'});
    this.log(`Donna planned ${assignments.length} worker(s) for ${plan.title}`,a.projectId);this.save();return;
   }
-  const r=brainReviewSchema.parse(lastJson(text));r.summary=redact(r.summary);r.verification=r.verification.map(redact);
+  const r=brainReviewSchema.parse(lastJson(text)),q=(r.ask||r.needsInput)?.slice(0,500);r.summary=redact(r.summary);r.verification=r.verification.map(redact);
   if(a.kind==='plan'){this.wrapUp(a);a.title=r.title||a.brief.slice(0,120);}else if(a.git)this.seal(a);
-  a.summary=r.summary+(r.needsInput?`\n\nNeeds your input: ${r.needsInput}`:'');a.verification=r.verification;a.completedAt=now();this.state(a,'review','Briefing written; awaiting your review');
-  Object.assign(p.memory,{latest:`Donna reviewed: ${r.summary.slice(0,1200)}`,nextStep:r.needsInput||'Hear the briefing and review the deliverables.',updatedAt:now()});
-  this.log(`Donna reviewed: ${a.title}`,a.projectId);
-  if(r.needsInput)this.decide({project_id:a.projectId,title:`Input needed: ${a.title}`,context:r.needsInput,status:'open'});
+  a.summary=r.summary;a.verification=r.verification;
+  // A question parks the step as 'waiting' (needs you): no briefing until the answer's turn finishes the job.
+  if(q)this.state(a,'waiting',`Waiting for your answer: ${q}`);else{a.completedAt=now();this.state(a,'review','Briefing written; awaiting your review');}
+  Object.assign(p.memory,{latest:q?`Donna's brain is waiting for your answer: ${q}`:`Donna reviewed: ${r.summary.slice(0,1200)}`,nextStep:q?`Answer Donna's question: ${q}`:'Hear the briefing and review the deliverables.',updatedAt:now()});
+  this.log(q?`Donna asks: ${q}`:`Donna reviewed: ${a.title}`,a.projectId);
+  if(q)this.decide({project_id:a.projectId,title:q,context:r.summary.slice(0,4000),status:'open'}).decision.action={kind:'ask',assignmentId:a.id};
   if(r.install)this.decide({project_id:a.projectId,title:'Allow a package install',context:`Donna's brain wants to run: ${r.install}. Allow it? Package registries open for one turn.`,options:['Yes, allow it','No'],status:'open'}).decision.action={kind:'install',command:r.install};
   this.save();
   const mail=(this.data.inbox??[]).filter(m=>m.projectId===a.projectId);
@@ -347,7 +399,7 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
   const crew=this.data.assignments.filter(c=>c.agent?.brainId===a.id);
   this.endCrew(crew.filter(c=>c.status==='working'),'Did not report back');
   this.endCrew(this.data.assignments.filter(c=>c.agent&&c.projectId===a.projectId&&c.status==='paused'),'Lost in a restart');
-  a.dependsOn=crew.filter(c=>['review','done'].includes(c.status)).map(c=>c.id);
+  a.dependsOn=a.dependsOn.filter(id=>['review','done'].includes(this.assignment(id).status));
   const covered=new Set(crew.flatMap(c=>c.artifacts.map(f=>f.path))),own=[...(this.seen.get(a.id)?.files??[])],started=Date.parse(a.startedAt||'')||0;
   if(a.git){this.seal(a);a.artifacts=this.deliver(a,a.runId!,a.git.files!.filter(f=>!covered.has(f)),true);return;}
   // ponytail: walks the whole directory tree once per turn; fine for a hackathon-sized room.
@@ -368,49 +420,57 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
   if(p.git&&a.git){const wt=this.wt(p);mkdirSync(wt,{recursive:true});return {write:[wt],deny:[gitDir(a.git.repo),a.cwd],secrets:secretFiles([a.git.repo,a.cwd]),network:!!a.network,addDir:this.office};}
   return {write:[a.cwd],deny:[],secrets:secretFiles([a.cwd]),network:!!a.network,addDir:this.office};
  }
+/** Each pass starts every ready row whose lane is free without awaiting it, then waits for a lane to finish or a kick. Resolves when nothing runs and nothing can start. */
  async pump(){
   if(this.running||this.stopped)return;this.running=true;
+  const live=new Map<string,Promise<void>>();
   try{
    for(;;){
     if(this.stopped)break;
     let blockedChanged=false;
     for(const a of this.data.assignments.filter(a=>a.status==='queued')){const bad=a.dependsOn.map(id=>this.assignment(id)).find(d=>!d.agent&&['failed','paused','waiting'].includes(d.status));if(bad){this.state(a,'waiting',`Waiting for dependency: ${bad.title}`);a.error=`Dependency ${bad.title} is ${bad.status}; resume after it is resolved.`;blockedChanged=true;}}
     if(blockedChanged)this.save();
-    const a=this.data.assignments.find(a=>a.status==='queued'&&!a.agent&&a.dependsOn.every(id=>{const d=this.assignment(id);return d.agent||['review','done'].includes(d.status);}));if(!a)break;
-    if(a.kind)a.sessionId??=this.worker(a).sessionId;
-    const beforeHealth=a.revision,runner=this.runner(a),name=label(a.provider);
-    if(!runner){a.error='Claude Code is not connected in this office';this.state(a,'failed',a.error);this.log(a.error,a.projectId);this.save();continue;}
-    const health=await runner.status();
-    if(this.stopped)break;
-    if(a.status!=='queued'||a.revision!==beforeHealth)continue;
-    if(!health.available||health.authenticated===false||health.modelAvailable===false){a.error=health.error||`Local ${name} needs authentication`;this.state(a,'failed',a.error);this.log(a.error,a.projectId);this.save();continue;}
-    const revision=a.revision,runId=randomUUID();a.runId=runId;a.startedAt=now();a.completedAt=undefined;a.error=undefined;this.current={id:a.id,runId,threadId:a.sessionId};this.state(a,'working',a.kind?(a.kind==='plan'?'Planning the team':'Reviewing the team\'s work'):a.sessionId?`Resuming native ${name} session`:`Creating native ${name} session; agent will name itself`);this.log(`Local ${name} started: ${a.title}`,a.projectId);this.save();const started=performance.now();
-    try{
-     const room=this.project(a.projectId);
-     if(a.kind==='plan'&&room.git)this.openJob(a,room);
-     const prompt=this.prompt(a),sandbox=a.kind?this.sandbox(a,room):undefined;
-     const result=await runner.run({cwd:a.cwd,threadId:a.sessionId,reasoningEffort:a.reasoningEffort||'low',prompt,...(sandbox&&{sandbox}),onThread:id=>{a.sessionId=id;this.worker(a).sessionId=id;if(this.current?.runId===runId)this.current.threadId=id;if(a.status!=='working')void runner.interrupt(id).catch(()=>{});this.save();},onEvent:e=>{if(a.revision!==revision||a.runId!==runId||a.status!=='working')return;if(a.kind){this.observe(a,e.params);return;}const item=e.params?.item;let action:string|undefined;if(e.method==='item/started'&&item?.type==='commandExecution')action=`Running: ${String(item.command||'local command').slice(0,180)}`;if(e.method==='item/started'&&item?.type==='fileChange')action='Updating project files';if(e.method==='claude/assistant'){const blocks=e.params?.message?.content,tool=Array.isArray(blocks)?blocks.find((c:any)=>c?.type==='tool_use'):undefined;if(tool)action=['Edit','Write'].includes(tool.name)?'Updating project files':'Reading project files';}if(action){this.worker(a).currentAction=action;this.save();}}});
-     appendFileSync(resolve(this.store.root,'executions.jsonl'),JSON.stringify({at:now(),assignmentId:a.id,projectId:a.projectId,provider:a.provider||'codex',runId,revision,threadId:result.threadId,turnId:result.turnId,status:result.status,model:result.model,reasoningEffort:result.reasoningEffort,elapsedMs:performance.now()-started,usage:result.usage,usageMissing:result.usage===undefined,error:result.error,usageScope:'Native thread total is cumulative. Do not sum totals from resumed runs.'})+'\n');
-     // Pausing or revising the task invalidates an old completion, even if cancellation races.
-     if(!this.isCurrent(a,revision,runId))continue;
-     a.elapsedMs=performance.now()-started;a.tokens=result.usage;a.usageMissing=result.usage===undefined;a.sessionId=result.threadId||a.sessionId;this.worker(a).sessionId=a.sessionId;
-     if(result.status!=='completed')throw Error(result.error||`Native ${name} turn ${result.status}`);
-     if(a.kind){this.lead(a,result.text);continue;}
-     const raw=result.text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');const delivered=resultSchema.parse(JSON.parse(raw));
-     const files=this.deliver(a,runId,delivered.artifacts);
-     if(!files.length&&!delivered.needsInput)throw Error('No real deliverable files were returned');
-     const w=this.worker(a);if(!w.name){let name=delivered.name.replace(/[^A-Za-z '-]/g,'').trim();if(!name)throw Error('Agent did not choose a valid English name');const taken=this.data.workers.filter(k=>k.id!==w.id).map(k=>k.name);if(taken.includes(name))name+=` ${this.data.workers.indexOf(w)+1}`;w.name=name;}
-     a.summary=delivered.summary;a.artifacts=files;a.verification=delivered.verification;a.completedAt=now();this.state(a,delivered.needsInput?'waiting':'review',delivered.needsInput||'Real files delivered; awaiting your review');a.error=delivered.needsInput;
-     const p=this.project(a.projectId);p.memory.latest=`${w.name}: ${a.summary.slice(0,1200)}`;p.memory.nextStep=delivered.needsInput||'Review the actual deliverables and verification evidence.';p.memory.updatedAt=now();
-     this.log(`${w.name} ${delivered.needsInput?'needs input':'delivered for review'}: ${a.title}`,a.projectId);
-     if(delivered.needsInput)this.decide({project_id:a.projectId,title:`Input needed: ${a.title}`,context:delivered.needsInput,status:'open'});
-     // Wake only dependency waits; never silently resume a human-paused task.
-     if(!delivered.needsInput)for(const dependent of this.data.assignments.filter(k=>k.status==='waiting'&&k.dependsOn.includes(a.id)&&k.error?.startsWith('Dependency '))){if(dependent.dependsOn.every(id=>['review','done'].includes(this.assignment(id).status))){dependent.error=undefined;this.state(dependent,'queued','Dependencies delivered; queued');}}
-     this.save();
-    }catch(err){if(this.isCurrent(a,revision,runId)){a.error=String(err).slice(0,2000);if(a.kind==='plan')this.endCrew(this.data.assignments.filter(c=>c.agent?.brainId===a.id&&c.status==='working'),a.error);a.elapsedMs=performance.now()-started;a.completedAt=now();this.state(a,'failed',a.error);this.project(a.projectId).memory.latest=`Execution failed: ${a.title}. ${a.error}`;this.project(a.projectId).memory.updatedAt=now();this.log(`Execution failed: ${a.title}`,a.projectId);this.save();}}
-    finally{this.seen.delete(a.id);if(this.current?.runId===runId)this.current=undefined;}
+    for(const a of this.ready()){const l=this.lane(a);if(!live.has(l))live.set(l,this.execute(a).finally(()=>live.delete(l)));}
+    if(!live.size)break;
+    await Promise.race([...live.values(),new Promise<void>(r=>{this.poke=r;})]);
    }
-  }finally{this.running=false;}
+  }finally{this.running=false;this.poke=undefined;}
  }
- close(){this.stopped=true;clearTimeout(this.wake);this.codex.close();this.options.claude?.close();this.options.brain?.close();}
+ private async execute(a:Assignment){
+  const lane=this.lane(a);
+  if(a.kind)a.sessionId??=this.worker(a).sessionId;
+  const beforeHealth=a.revision,runner=this.runner(a),name=label(a.provider);
+  if(!runner){a.error='Claude Code is not connected in this office';this.state(a,'failed',a.error);this.log(a.error,a.projectId);this.save();return;}
+  const health=await runner.status();
+  if(this.stopped)return;
+  if(a.status!=='queued'||a.revision!==beforeHealth)return;
+  if(!health.available||health.authenticated===false||health.modelAvailable===false){a.error=health.error||`Local ${name} needs authentication`;this.state(a,'failed',a.error);this.log(a.error,a.projectId);this.save();return;}
+  const revision=a.revision,runId=randomUUID();a.runId=runId;a.startedAt=now();a.completedAt=undefined;a.error=undefined;this.current.set(lane,{id:a.id,runId,threadId:a.sessionId});this.state(a,'working',a.kind?(a.kind==='plan'?'Reading the project and choosing the team':'Reviewing the team\'s work'):a.sessionId?`Resuming native ${name} session`:`Creating native ${name} session; agent will name itself`);this.log(`Local ${name} started: ${a.title}`,a.projectId);this.save();const started=performance.now();
+  try{
+   const room=this.project(a.projectId);
+   if(a.kind==='plan')room.memory.latest=`Donna's brain is reading the project and choosing the team for "${a.brief.slice(0,300)}".`;
+   if(a.kind==='plan'&&room.git)this.openJob(a,room);
+   const prompt=this.prompt(a),sandbox=a.kind?this.sandbox(a,room):undefined;
+   const result=await runner.run({cwd:a.cwd,threadId:a.sessionId,reasoningEffort:a.reasoningEffort||'low',prompt,...(sandbox&&{sandbox}),onThread:id=>{a.sessionId=id;this.worker(a).sessionId=id;const c=this.current.get(lane);if(c?.runId===runId)c.threadId=id;if(a.status!=='working')void runner.interrupt(id).catch(()=>{});this.save();},onEvent:e=>{if(a.revision!==revision||a.runId!==runId||a.status!=='working')return;if(a.kind){this.observe(a,e.params);return;}const item=e.params?.item;let action:string|undefined;if(e.method==='item/started'&&item?.type==='commandExecution')action=`Running: ${String(item.command||'local command').slice(0,180)}`;if(e.method==='item/started'&&item?.type==='fileChange')action='Updating project files';if(e.method==='claude/assistant'){const blocks=e.params?.message?.content,tool=Array.isArray(blocks)?blocks.find((c:any)=>c?.type==='tool_use'):undefined;if(tool)action=['Edit','Write'].includes(tool.name)?'Updating project files':'Reading project files';}if(action){this.worker(a).currentAction=action;this.save();}}});
+   appendFileSync(resolve(this.store.root,'executions.jsonl'),JSON.stringify({at:now(),assignmentId:a.id,projectId:a.projectId,provider:a.provider||'codex',runId,revision,threadId:result.threadId,turnId:result.turnId,status:result.status,model:result.model,reasoningEffort:result.reasoningEffort,elapsedMs:performance.now()-started,usage:result.usage,usageMissing:result.usage===undefined,error:result.error,usageScope:'Native thread total is cumulative. Do not sum totals from resumed runs.'})+'\n');
+   // Pausing or revising the task invalidates an old completion, even if cancellation races.
+   if(!this.isCurrent(a,revision,runId))return;
+   a.elapsedMs=performance.now()-started;a.tokens=result.usage;a.usageMissing=result.usage===undefined;a.sessionId=result.threadId||a.sessionId;this.worker(a).sessionId=a.sessionId;
+   if(result.status!=='completed')throw Error(result.error||`Native ${name} turn ${result.status}`);
+   if(a.kind){this.lead(a,result.text);return;}
+   const raw=result.text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');const delivered=resultSchema.parse(JSON.parse(raw));
+   const files=this.deliver(a,runId,delivered.artifacts);
+   if(!files.length&&!delivered.needsInput)throw Error('No real deliverable files were returned');
+   const w=this.worker(a);if(!w.name){let name=delivered.name.replace(/[^A-Za-z '-]/g,'').trim();if(!name)throw Error('Agent did not choose a valid English name');const taken=this.data.workers.filter(k=>k.id!==w.id).map(k=>k.name);if(taken.includes(name))name+=` ${this.data.workers.indexOf(w)+1}`;w.name=name;}
+   a.summary=delivered.summary;a.artifacts=files;a.verification=delivered.verification;a.completedAt=now();this.state(a,delivered.needsInput?'waiting':'review',delivered.needsInput||'Real files delivered; awaiting your review');a.error=delivered.needsInput;
+   const p=this.project(a.projectId);p.memory.latest=`${w.name}: ${a.summary.slice(0,1200)}`;p.memory.nextStep=delivered.needsInput||'Review the actual deliverables and verification evidence.';p.memory.updatedAt=now();
+   this.log(`${w.name} ${delivered.needsInput?'needs input':'delivered for review'}: ${a.title}`,a.projectId);
+   if(delivered.needsInput)this.decide({project_id:a.projectId,title:`Input needed: ${a.title}`,context:delivered.needsInput,status:'open'});
+   // Wake only dependency waits; never silently resume a human-paused task.
+   if(!delivered.needsInput)for(const dependent of this.data.assignments.filter(k=>k.status==='waiting'&&k.dependsOn.includes(a.id)&&k.error?.startsWith('Dependency '))){if(dependent.dependsOn.every(id=>['review','done'].includes(this.assignment(id).status))){dependent.error=undefined;this.state(dependent,'queued','Dependencies delivered; queued');}}
+   this.save();
+  }catch(err){if(this.isCurrent(a,revision,runId)){a.error=String(err).slice(0,2000);if(a.kind==='plan')this.endCrew(this.data.assignments.filter(c=>c.agent?.brainId===a.id&&c.status==='working'),a.error);a.elapsedMs=performance.now()-started;a.completedAt=now();this.state(a,'failed',a.error);this.project(a.projectId).memory.latest=`Execution failed: ${a.title}. ${a.error}`;this.project(a.projectId).memory.updatedAt=now();this.log(`Execution failed: ${a.title}`,a.projectId);this.save();}}
+  finally{this.seen.delete(a.id);if(this.current.get(lane)?.runId===runId)this.current.delete(lane);}
+ }
+ close(){this.stopped=true;clearTimeout(this.wake);this.poke?.();this.codex.close();this.options.claude?.close();this.options.brain?.close();}
 }

@@ -28,7 +28,7 @@ export function agentEvents(e:any):AgentEvent[]{
   if(b.type==='tool_use'){
    const i=b.input||{},file=str(i.file_path)||str(i.path);
    if(parent){
-    const action=EDITS.includes(b.name)&&file?`Editing ${file}`:b.name==='Read'&&file?`Reading ${file}`:b.name==='Bash'?`Running ${(str(i.description)||str(i.command)||'a command').slice(0,80)}`:['Glob','Grep'].includes(b.name)?'Searching the project':undefined;
+    const action=EDITS.includes(b.name)&&file?`Editing ${file}`:b.name==='Read'&&file?`Reading ${file}`:b.name==='Bash'?`Running ${(str(i.description)||str(i.command)?.replace(/^\s*cd\s+\S+\s*&&\s*/,'')||'a command').slice(0,80)}`:['Glob','Grep'].includes(b.name)?'Searching the project':undefined;
     if(action)out.push({kind:'action',parent,tool:b.name,action,file:EDITS.includes(b.name)||b.name==='Read'?file:undefined});
    }else if(b.name==='Agent'&&str(b.id))out.push({kind:'spawn',toolUseId:b.id,name:str(i.name),description:str(i.description)||'Subagent',prompt:str(i.prompt)||'',model:str(i.model),effort:str(i.effort)});
    else if(b.name==='SendMessage'&&str(i.to))out.push({kind:'message',to:i.to,text:str(i.message)||''});
@@ -59,7 +59,7 @@ export function parseTranscript(lines:string[]){
  }
  return {agents:[...ags.values()],note};
 }
-const dur=(ms:number)=>{const s=Math.max(0,Math.round(ms/1000));return s<60?`${s} s`:`${Math.round(s/60)} min`;};
+export const dur=(ms:number)=>{const s=Math.max(0,Math.round(ms/1000));return s<60?`${s} s`:`${Math.round(s/60)} min`;};
 export type CrewView={name:string;status:string;title:string;action?:string;actionAt?:string;startedAt?:string;completedAt?:string;error?:string};
 /** One sentence the voice can read aloud for "how is X doing?". */
 export function statusSentence(c:CrewView,now=Date.now()):string{

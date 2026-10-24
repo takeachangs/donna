@@ -8,12 +8,12 @@ import {OfficeStore} from './state.js';
 import {HiggsColleague,type Job} from './higgs.js';
 import {Projects} from './projects.js';
 import {AgencyExecutors} from './executors.js';
-import {AgencyWorkspace,type Workspace} from './workspace.js';
+import {AgencyWorkspace,type Workspace,type Decision} from './workspace.js';
 import {secretaryInstructions,secretaryTools,resolveProjectTarget,hangsUp,pickUpNotice} from './secretary.js';
 import {serveWeb} from './static.js';
 import {log} from './log.js';
 import {doctor,dataDir,version} from './doctor.js';
-import {completedBriefing,holdReason,openQuestion,resultNotice,hold,type Briefing,type Presentation} from './briefings.js';
+import {completedBriefing,holdReason,openQuestion,resultNotice,questionNotice,hold,type Briefing,type Presentation} from './briefings.js';
 
 const executors=new AgencyExecutors(),boot=await doctor(executors);
 for(const p of boot.problems)log('boot')(`${p.fatal?'FATAL':'warn'}: ${p.message}`);
@@ -67,12 +67,12 @@ wss.on('connection',(client,req)=>{
  clients.add(client);log('ws')(`client connected (${clients.size} open)`);let selected=projects.list()[0]?.id||'',view='secretary',started=false,ready=false,voice:HiggsColleague|undefined,closed=false;
  let presentation:Presentation|undefined;
  let walks:{callId:string;projectId?:string;workerId?:string;job:string}[]=[];
- const floor={userAt:0,voiceAt:0,userSpeaking:false,playing:false,question:false};let said='',saidFor='',pending:{id:string;since:number}[]=[],seen=new Set<string>(),announceJob:Job|undefined,heldWhy='',timer:ReturnType<typeof setInterval>|undefined,bye=false,pickup:string|undefined;
+ const floor={userAt:0,voiceAt:0,userSpeaking:false,playing:false,question:false};let asked='',said='',saidFor='',pending:{id:string;since:number;q?:true}[]=[],seen=new Set<string>(),announceJob:Job|undefined,heldWhy='',timer:ReturnType<typeof setInterval>|undefined,bye=false,pickup:string|undefined;
  const watch=(e:any)=>{const t=Date.now();
   if(e.type==='speech_started'){floor.userSpeaking=true;floor.userAt=t;floor.question=false;floor.playing=false;}
   else if(e.type==='thinking'&&floor.userSpeaking){floor.userSpeaking=false;floor.userAt=t;}
   else if(e.type==='speech_text'){if(e.responseId!==saidFor){saidFor=e.responseId;said='';}said+=e.delta;}
-  else if(e.type==='turn_done'){floor.voiceAt=t;floor.question=!e.cancelled&&openQuestion(said);}
+  else if(e.type==='turn_done'){floor.voiceAt=t;floor.question=!e.cancelled&&(openQuestion(said)||e.jobId===asked);}
   else if(e.type==='await_playback')floor.playing=true;
   else if(e.type==='interrupted')floor.playing=false;
   else if(e.type==='user_transcript')bye=hangsUp(String(e.text||''));
@@ -84,8 +84,8 @@ wss.on('connection',(client,req)=>{
  const room=()=>selected?store.load(selected):undefined;
  // Keep old prose out of every turn. Full preserved drafts remain available on
  // an explicit read; current project memory describes the ongoing work.
- const progress=()=>Object.fromEntries(workspace.snapshot().projects.filter(p=>!p.deletedAt).flatMap(p=>{const t=workspace.progress(p.id);return t?[[p.name,t]]:[];}));
- const current=()=>({selected_project_id:projects.list().some(p=>p.id===selected)?selected:null,...(projects.list().length?{}:{note:'No projects yet; the office is only you. A room is created when the user asks for work.'}),progress:progress(),view,workspace:workspace.snapshot(),legacy:selected?{documents:room()!.documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
+ const progress=()=>Object.fromEntries(workspace.rooms().flatMap(p=>{const t=workspace.progress(p.id);return t?[[p.name,t]]:[];}));
+ const current=()=>({selected_project_id:projects.list().some(p=>p.id===selected)?selected:null,...(workspace.parallel()?{parallel:workspace.parallel()}:{}),...(projects.list().length?{}:{note:'No projects yet; the office is only you. A room is created when the user asks for work.'}),progress:progress(),view,workspace:workspace.snapshot(),legacy:selected?{documents:room()!.documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
  const read=(id?:string)=>id?{...current(),project:workspace.snapshot().projects.find(p=>p.id===id),legacy:store.load(id)}:current();
  function run(name:string,args:any,job:Job):any{
   if(name==='read_briefing'&&job===announceJob)throw Error('Only announce the result and ask whether the user wants it now; read it after they say yes.');
@@ -100,6 +100,7 @@ wss.on('connection',(client,req)=>{
   if(name==='control_assignment'){if(args.action==='pause')return workspace.pause(args.assignment_id);if(args.action==='resume')return workspace.resume(args.assignment_id);if(args.action==='accept')return workspace.accept(args.assignment_id);throw Error('Unknown control action');}
   if(name==='record_decision')return workspace.decide(args);
   if(name==='worker_status')return workspace.workerStatus(args.worker,projects.list().some(p=>p.id===selected)?selected:undefined);
+  if(name==='set_priority')return workspace.setPriority(args,projects.list().some(p=>p.id===selected)?selected:undefined);
   if(name==='message_worker')return workspace.message({project_id:projects.list().some(p=>p.id===selected)?selected:undefined,worker:args.worker,text:args.text});
   if(name==='prepare_command_room'){view='command';emit({type:'view',view:'command'});return {committed:true,...read(args.project_id)};}
   throw Error('Unknown secretary tool');
@@ -117,26 +118,32 @@ wss.on('connection',(client,req)=>{
    const n=norm(r?.worker||args.worker),w=ws.workers.filter(w=>!w.lead&&w.name&&norm(w.name)===n&&ws.projects.some(p=>p.id===w.projectId&&!p.deletedAt)).sort((a,b)=>Number(b.projectId===here)-Number(a.projectId===here))[0];
    return w?{projectId:w.projectId,workerId:w.id}:undefined;
   }
+  if(name==='set_priority')return r?.projectId?{projectId:r.projectId}:undefined;
   if(name==='read_briefing'){const b=ws.briefings.find(b=>b.id===presentation?.briefingId);return b?{projectId:b.projectId}:undefined;}
   if(name==='read_workspace'||name==='delegate_work'||name==='create_project'){const id=r?.project?.id||(args.project_id&&args.project_id!=='selected'?args.project_id:here);return id?{projectId:id}:undefined;}
  }
- const onLanded=(w:Workspace)=>{for(const b of w.briefings)if(b.status==='queued'&&!seen.has(b.id)){seen.add(b.id);pending.push({id:b.id,since:Date.now()});console.log(`[ring] landed ${b.id} for ${w.projects.find(p=>p.id===b.projectId)?.name||'a project'}`);}};
+ const onLanded=(w:Workspace)=>{for(const b of w.briefings)if(b.status==='queued'&&!seen.has(b.id)){seen.add(b.id);pending.push({id:b.id,since:Date.now()});console.log(`[ring] landed ${b.id} for ${w.projects.find(p=>p.id===b.projectId)?.name||'a project'}`);}
+  for(const d of w.decisions)if(d.status==='open'&&d.action&&!seen.has(d.id)){seen.add(d.id);pending.push({id:d.id,since:Date.now(),q:true});console.log(`[ring] question ${d.id} (${d.action.kind}) for ${w.projects.find(p=>p.id===d.projectId)?.name||'a project'}`);}};
  async function announce(){
   if(!ready||!voice||closed)return;
-  const bs:Briefing[]=[];pending=pending.filter(p=>{try{const b=workspace.briefing(p.id);if(b.id===presentation?.briefingId){console.log(`[ring] dropped ${p.id}: presented by user`);return false;}bs.push(b);return true;}catch{console.log(`[ring] dropped ${p.id}: no longer queued`);return false;}});
-  if(!bs.length)return;
-  const now=Date.now(),names=workspace.snapshot().projects,label=bs.map(b=>`"${b.title}" for ${names.find(p=>p.id===b.projectId)?.name||'a project'} (briefing_id ${b.id})`).join('; '),why=holdReason({now,heldSince:pending[0].since,voiceBusy:voice.busy,...floor});
+  const ws=workspace.snapshot(),names=ws.projects,nm=(id:string)=>names.find(p=>p.id===id)?.name||'a project',bs:Briefing[]=[],qs:Decision[]=[];
+  pending=pending.filter(p=>{
+   if(p.q){const d=ws.decisions.find(d=>d.id===p.id);if(d?.status!=='open'){console.log(`[ring] dropped ${p.id}: question no longer open`);return false;}qs.push(d);return true;}
+   try{const b=workspace.briefing(p.id);if(b.id===presentation?.briefingId){console.log(`[ring] dropped ${p.id}: presented by user`);return false;}bs.push(b);return true;}catch{console.log(`[ring] dropped ${p.id}: no longer queued`);return false;}});
+  // Briefings first; otherwise the oldest open question, one per tick. ponytail: no re-ask within a call, and a question can land mid-conversation once the floor is quiet.
+  const take=bs.length?pending.filter(p=>!p.q):pending.slice(0,1);if(!take.length)return;
+  const q=bs.length?undefined:qs[0],label=q?`question "${q.title.slice(0,60)}" for ${nm(q.projectId)}`:bs.map(b=>`"${b.title}" for ${nm(b.projectId)} (briefing_id ${b.id})`).join('; '),now=Date.now(),why=holdReason({now,heldSince:take[0].since,voiceBusy:voice.busy,...floor});
   if(why){if(why!==heldWhy)console.log(`[ring] holding ${label}: ${why}`);heldWhy=why;return;}
-  heldWhy='';const since=pending[0].since;pending=[];console.log(`[ring] announcing ${label} after ${((now-since)/1000).toFixed(1)} s`);
+  heldWhy='';const since=take[0].since;pending=pending.filter(p=>!take.includes(p));console.log(`[ring] ${q?'asking':'announcing'} ${label} after ${((now-since)/1000).toFixed(1)} s`);
   for(const b of bs)emit({type:'ring',briefingId:b.id});
   const who=pickup;pickup=undefined;
-  try{announceJob=await voice.ask(resultNotice(bs.map(b=>({id:b.id,title:b.title,project:names.find(p=>p.id===b.projectId)?.name||'the project',names:b.contributors.map(c=>c.name)})),who));}catch(err){emit({type:'error',message:String(err)});}
+  try{announceJob=await voice.ask(q?questionNotice({id:q.id,question:q.action?.kind==='ask'?q.title:`${q.title}. ${q.context}`.slice(0,400),project:nm(q.projectId),options:q.options},who):resultNotice(bs.map(b=>({id:b.id,title:b.title,project:names.find(p=>p.id===b.projectId)?.name||'the project',names:b.contributors.map(c=>c.name)})),who));if(q)asked=announceJob.id;}catch(err){emit({type:'error',message:String(err)});}
  }
  client.on('message',raw=>{void(async()=>{try{
   const e=JSON.parse(raw.toString());
   if(e.type==='start'){
    if(started)throw Error('Already started');started=true;
-   seen=new Set(workspace.snapshot().briefings.filter(b=>b.status==='queued').map(b=>b.id));landed.add(onLanded);
+   seen=new Set(workspace.snapshot().briefings.filter(b=>b.status==='queued').map(b=>b.id));landed.add(onLanded);onLanded(workspace.snapshot());
    if(e.roomId){if(!projects.list().some(p=>p.id===e.roomId))throw Error('Select a registered project');selected=e.roomId;}
    if(['secretary','command','project'].includes(e.view))view=e.view;
    if(selected)emit({type:'state',state:room()});emit({type:'workspace',workspace:workspace.snapshot()});emit({type:'focus',agentId:'mara'});

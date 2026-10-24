@@ -54,6 +54,7 @@ async function planned(f:ReturnType<typeof fixture>,workers:object[]){
   return pumping;
 }
 
+const banned=/plan lands|wait(ing)? for the plan|finaliz|Planning queued/i;
 describe('Donna\'s brain',()=>{
   it('parses a fenced or prose-prefixed plan and rejects malformed ones',()=>{
     const good=plan([work('page')]);
@@ -68,19 +69,19 @@ describe('Donna\'s brain',()=>{
     const f=fixture(),queued=f.workspace.delegate({project_id:f.project.id,goal:'Build a page and its form.'}).assignment;
     const before=f.workspace.snapshot(),lead=before.workers.find(w=>w.id===queued.workerId)!;
     expect(lead.lead).toBe(true);expect(before.assignments).toHaveLength(1);expect(before.assignments[0]).toMatchObject({kind:'plan',status:'queued'});
-    expect(f.workspace.progress(f.project.id)).toBe('Your brain is planning "Build a page and its form." (queued)');
+    expect(f.workspace.progress(f.project.id)).toBe('Donna\'s brain on "Build a page and its form.": starting now');
     const pumping=f.workspace.pump();await until(()=>f.brain.pending.length===1);
     expect(f.brain.pending[0].input.prompt).toContain('Build a page and its form.');expect(f.brain.pending[0].input.prompt).toContain(queued.cwd);
     f.brain.reply(0,plan([work('page'),work('form',['page'])]),'Plan:\n');
     await until(()=>f.codex.pending.length===1);await new Promise(r=>setTimeout(r,20));
     expect(f.codex.pending).toHaveLength(1);expect(f.codex.pending[0].input.prompt).toContain('Produce page.');
-    expect(f.workspace.progress(f.project.id)).toMatch(/^Plan done\. Team: \w+: working \(.+\); \w+: queued\. Review: waits for the team$/);
+    expect(f.workspace.progress(f.project.id)).toMatch(/^The page worker is creating native Codex session; agent will name itself, on it for \d+ s\. The form worker is waiting for the page worker's "page" to finish\. Donna reviews once the team is done\.$/);expect(f.workspace.workerStatus('all',f.project.id).status).not.toMatch(banned);
     f.codex.deliver(0,{name:'Rowan',path:'page.html'});await until(()=>f.codex.pending.length===2);expect(f.codex.pending[1].input.prompt).toContain('Produce form.');
     f.codex.deliver(1,{name:'Ellis',path:'form.js'});await until(()=>f.brain.pending.length===2);
     expect(f.brain.pending[1].input.threadId).toBe(f.brain.pending[0].threadId);
     f.brain.reply(1,{summary:'Rowan and Ellis built the page and form.',verification:['Read both files']});await pumping;
     const snap=f.workspace.snapshot();
-    expect(f.workspace.progress(f.project.id)).toBe('Plan done. Team: Rowan: review; Ellis: review. Review: done; the briefing is ready');
+    expect(f.workspace.progress(f.project.id)).toMatch(/^Rowan finished "page" \d+ s ago\. Ellis finished "form" \d+ s ago\. Donna's review is done; the briefing is ready\.$/);
     expect(snap.assignments.map(a=>[a.kind||a.title,a.status])).toEqual([['plan','done'],['page','review'],['form','review'],['review','review']]);
   });
   it('writes exactly one briefing from the review, credited to the crew rather than the lead',async()=>{
@@ -109,12 +110,37 @@ describe('Donna\'s brain',()=>{
     expect(()=>f.workspace.delegate({project_id:f.project.id,goal:'Build it'})).toThrow('brain is not connected');expect(f.workspace.snapshot()).toEqual(before);
     expect(()=>f.workspace.createProject({name:'New room',brief:'Build it',initial_work:'Build it'})).toThrow('brain is not connected');expect(f.projects.list()).toEqual(catalog);expect(f.workspace.snapshot()).toEqual(before);
   });
-  it('still lands the briefing and records one open decision when the review needs input',async()=>{
+  it('parks the review as waiting and asks one open question instead of landing a briefing',async()=>{
     const f=fixture(),pumping=planned(f,[work('page')]);
     await until(()=>f.codex.pending.length===1);f.codex.deliver(0,{name:'Rowan',path:'page.html'});await until(()=>f.brain.pending.length===2);
     f.brain.reply(1,{summary:'The page works.',verification:['Read page.html'],needsInput:'Should the form use dark mode?'});await pumping;
     const snap=f.workspace.snapshot(),open=snap.decisions.filter(d=>d.status==='open');
-    expect(snap.assignments.find(a=>a.kind==='review')!.status).toBe('review');expect(snap.briefings).toHaveLength(1);expect(snap.briefings[0].summary).toContain('Should the form use dark mode?');
-    expect(open).toHaveLength(1);expect(open[0].context).toBe('Should the form use dark mode?');
+    expect(snap.assignments.find(a=>a.kind==='review')!.status).toBe('waiting');expect(snap.briefings).toHaveLength(0);
+    expect(open).toHaveLength(1);expect(open[0]).toMatchObject({title:'Should the form use dark mode?',context:'The page works.',action:{kind:'ask'}});
+  });
+  it('explains the one-writer lane in words: a second worker queues behind the first, an unanswered question blocks its own row',async()=>{
+    const f=fixture(),pumping=planned(f,[work('page'),work('form')]);
+    await until(()=>f.codex.pending.length===1);await new Promise(r=>setTimeout(r,20));
+    const p=f.workspace.progress(f.project.id)!;expect(p).toContain('The form worker is queued behind "page" (one job ahead).');expect(p).not.toMatch(banned);
+    expect(f.workspace.workerStatus('all',f.project.id).status).toContain('queued behind "page" (one job ahead)');
+    expect(f.workspace.snapshot().workers.find(w=>w.role==='form')!.currentAction).toBe('queued behind "page" (one job ahead)');
+    f.codex.reply(0,{name:'Rowan',summary:'Needs a choice.',artifacts:[],verification:[],needsInput:'Dark or light?'});
+    await until(()=>f.codex.pending.length===2);
+    const snap=f.workspace.snapshot();expect(snap.assignments.find(a=>a.title==='page')!.status).toBe('waiting');
+    expect(f.workspace.progress(f.project.id)).toContain('Rowan is waiting for your answer on "Input needed: page".');
+    f.codex.deliver(1,{name:'Ellis',path:'form.js'});
+    f.workspace.resume(snap.assignments.find(a=>a.title==='page')!.id);await until(()=>f.codex.pending.length===3);f.codex.deliver(2,{name:'Rowan',path:'page.html'});
+    await until(()=>f.brain.pending.length===2);f.brain.reply(1,{summary:'Done.'});await pumping;
+  });
+  it('orders the one-writer lane by room priority, and the jobs-ahead counts and room order follow it',async()=>{
+    const f=fixture(),game=f.projects.create({name:'Game',brief:'x'});f.workspace.syncProjects();
+    f.workspace.staff(f.project.id,plan([work('alpha'),work('beta')]));f.workspace.staff(game.id,plan([work('gamma'),work('delta')]));
+    f.workspace.setPriority({room:'the game',action:'first'});
+    const pumping=f.workspace.pump();await until(()=>f.codex.pending.length===1);expect(f.codex.pending[0].input.prompt).toContain('Produce gamma.');
+    const all=f.workspace.workerStatus('all').status;
+    expect(all).toMatch(/^The gamma worker is .*The delta worker is queued behind "gamma" \(one job ahead\)\. The alpha worker is queued behind "gamma" in Game \(2 jobs ahead\)\. The beta worker is queued behind "gamma" in Game \(3 jobs ahead\)\.$/);
+    expect(f.workspace.rooms().map(r=>r.name)).toEqual(['Game','Demo']);expect(all).not.toMatch(banned);
+    for(const [i,k] of ['gamma','delta','alpha','beta'].entries()){await until(()=>f.codex.pending.length===i+1);expect(f.codex.pending[i].input.prompt).toContain(`Produce ${k}.`);f.codex.deliver(i,{name:`W${i}`,path:`${k}.md`});}
+    await pumping;
   });
 });
