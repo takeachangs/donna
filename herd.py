@@ -306,6 +306,9 @@ def trim(tool, inp):  # scalars only, strings cut: an Agent call keeps name/desc
 CHECKS = re.compile(r"\b(tests?|pytest|vitest|selftest|typecheck|tsc|npm|lint)\b")
 
 
+META = {"ToolSearch", "TodoWrite", "Skill", "ListAgents", "ReadNotifications", "AskUserQuestion", "Monitor"}  # bookkeeping, never an action: the previous one stays
+
+
 def action(e):  # a worker's last PostToolUse event (or None), in words, at most 40 chars (#65): "Writing index.html", "Running checks"
     if not e: return ""
     tool, inp = e.get("tool"), e.get("input") or {}
@@ -314,7 +317,7 @@ def action(e):  # a worker's last PostToolUse event (or None), in words, at most
          else "Searching the code" if tool in ("Read", "Grep", "Glob", "LS")
          else ("Running checks" if CHECKS.search(c) else "Committing the work" if "git commit" in c else "Running a command") if tool == "Bash"
          else "Looking it up" if tool in ("WebFetch", "WebSearch")
-         else ("Reporting to Donna" if str(inp.get("to")).lower() in ("team-lead", "lead", "main", "donna") else f"Messaging {inp['to']}") if tool == "SendMessage" and inp.get("to") else "Hiring help" if tool == "Agent" else f"Using {tool}")
+         else ("Reporting to Donna" if str(inp.get("to")).lower() in ("team-lead", "lead", "main", "donna") else f"Messaging {inp['to']}") if tool == "SendMessage" and inp.get("to") else "Hiring help" if tool == "Agent" else "Working")
     return s[:40]
 
 
@@ -460,6 +463,7 @@ def office(now=None):
         elif ev in ("SubagentStop", "Stop") and a in rows: r = rows[a]; r["t1"] = r["t1"] or ts; r["summary"] = r["summary"] or e.get("result")  # its background_tasks say "running": ignored. Never a new row (#44): Claude Code's own helpers fire a bare one (agent_type "") after the brain's Stop. A Stop with an agent: a teammate went idle (#65)
         elif ev == "UserPromptSubmit" and not a: lead.update(t=ts, ask=ts, hires=[])
         elif ev == "Stop" and not a: lead["stop"] = ts
+        elif ev == "PostToolUse" and tool in META: pass
         elif ev == "PostToolUse":
             if a:
                 r = row(a, e)
@@ -595,6 +599,7 @@ def _selfcheck_office():
     assert [action({"tool": t, "input": i}) for t, i in [("Bash", {"command": "cd /private/tmp/x && uv run pytest -q"}), ("Bash", {"command": "cd /private/tmp/x"}),
             ("Read", {"file_path": "/a/b.py"}), ("Grep", {"pattern": "x"})]] == ["Running checks", "Running a command", "Reading b.py", "Searching the code"]
     assert [action({"tool": "SendMessage", "input": {"to": t}}) for t in ("team-lead", "Maya")] == ["Reporting to Donna", "Messaging Maya"]  # a worker reporting back reads "Reporting to Donna"
+    assert action({"tool": "Zap", "input": {}}) == "Working"  # unknown tool: "Working", never "Using Zap"
     assert len(action({"tool": "Write", "input": {"file_path": "/a/" + "x" * 60}})) == 40  # #65: worker actions in words, at most 40 chars
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["HIGGS_HOME"] = tmp
