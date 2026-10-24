@@ -7,6 +7,7 @@
   uv run bridge.py --backend session      # the /call skill: a Claude Code session answers via ~/.higgs/inbox.jsonl + outbox.jsonl
   uv run bridge.py --backend fake         # 6 s sleep instead of Claude (no Claude credits)
   uv run bridge.py --text "a | b"         # headless: typed turns instead of the mic; exits after the last result is spoken
+  uv run bridge.py --silence-ms 1000      # VAD silence before a turn ends (live mic default 800 ms; --text/--wav keep the server's 500)
   uv run bridge.py --ring --backend session   # Donna's phone: no call open; a `say` in ~/.higgs/herd/donna/outbox.jsonl rings,
                                           # Enter calls her; hangs up on "bye", 60 s of silence or Higgs idle timeout
                                           # every call starts with ~/.higgs/herd/donna/context.txt; tasks go through herd.py send
@@ -62,10 +63,12 @@ ap.add_argument("--mic", help="substring of the input device name, e.g. MacBook"
 ap.add_argument("--out", help="substring of the output device name, e.g. AirPods")
 ap.add_argument("--project", help="directory the claude backend works in (default: ./sandbox)")
 ap.add_argument("--ring", action="store_true", help="no session until Donna's outbox gets a `say` (or you press Enter); one call at a time, then wait again")
+ap.add_argument("--silence-ms", type=int, help="server VAD silence (ms) that ends a user turn; default 800 on a live mic, server default (500) otherwise")
 args = ap.parse_args()
 if args.ring:
     if args.text: ap.error("--ring cannot be combined with --text")
     INBOX, OUTBOX, CONTEXT = (os.path.join(DONNA, f) for f in ("inbox.jsonl", "outbox.jsonl", "context.txt"))   # Donna's files (herd.py)
+MIC = not (args.wav or args.text or args.ring and args.silent)   # a live mic: real speech pauses longer than TTS
 HERE = os.path.dirname(os.path.abspath(__file__))
 SANDBOX = os.path.abspath(os.path.expanduser(args.project)) if args.project else os.path.join(HERE, "sandbox")
 
@@ -260,6 +263,7 @@ async def call(seed: str) -> str:
     log("connecting…")
     async with higgslive.connect(playback=not args.silent, model=args.model) as conn:
         await conn.session.start(session={"instructions": PROMPT, "delegation": {"type": "client"}, "voice": args.voice,
+            **({"turn_detection": {"type": "server_vad", "silence_duration_ms": args.silence_ms or 800}} if MIC or args.silence_ms else {}),
             **({"input": [{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": seed}]}]} if seed else {})})
 
         async def run_delegation(did, task):
@@ -285,7 +289,7 @@ async def call(seed: str) -> str:
                     await conn.input_audio.append(data[i:i+step]); await asyncio.sleep(0.1)
                 log("wav finished")
             tasks.append(asyncio.create_task(play_wav())); log("streaming wav as mic")
-        elif not (args.text or args.ring and args.silent):   # ring+silent: headless, no mic
+        elif MIC:   # ring+silent: headless, no mic
             import array
             meter = {"n": 0, "peak": 0}
             def on_mic(indata, frames, t, status):

@@ -18,17 +18,17 @@
             elif ev.type == "session.output_audio.delta":
                 play(base64.b64decode(ev.delta))
         await conn.input_audio.append(pcm16_24k_bytes)
-        await conn.session.thinking.append(content="reading the config", delegation_id=did)   # silent: context only
+        await conn.session.thinking.append(content="reading the config", delegation_id=did)   # silent: kept here for agent_status
         await conn.session.commentary.append(content="Done, it's open.", delegation_id=did)   # spoken, when the voice is free
         await conn.session.instructions.append(content="The user is now on the pricing page.")
 
 How it maps: the voice model calls a function tool; this layer leaves the call OPEN (Higgs tool calls are asynchronous: the
 conversation continues with the output outstanding), requests one response so the model acknowledges, and emits
-`session.delegation.created`. Thinking appends become user-role text items with no response requested, deleted when the
-result lands. The first commentary append for a delegation waits until the voice is idle, the user is quiet and playback has
+`session.delegation.created`. Thinking appends never reach Higgs (as conversation items the model answered them instead of
+the user); the layer keeps the latest one per delegation for `agent_status`. The first commentary append for a delegation waits until the voice is idle, the user is quiet and playback has
 drained, then returns the real `function_call_output` and requests one response. Instructions appends re-send session.update.
 """
-import asyncio, base64, itertools, json, logging, os, re, time
+import asyncio, base64, json, logging, os, re, time
 from pathlib import Path
 from types import SimpleNamespace
 import websockets
@@ -45,21 +45,22 @@ STATUS_DEF = {"type": "function", "name": STATUS, "description": "Says what the 
               "who is working on what and for how long, who is idle, what finished. Use it whenever the user asks how it's going, "
               "what's happening, or whether something is done.", "parameters": {"type": "object", "properties": {}}}
 MECHANICS = f"""## Delegation mechanics
-You cannot create, open, read, run, or look up anything yourself; the {TOOL} tool hands the job to an agent that can.
-Call {TOOL} first, then speak. Never say you can't, never ask for confirmation first. Describe the task in plain English as
-a complete request (what, where, what the result should be), never as a shell command or code.
-{TOOL} runs in the background; its result arrives later as the tool's output, often several turns after the call. Right after
-calling it, say in one short sentence that you've handed it off, then ask what else you can help with while it runs. Keep the
-conversation going on whatever the user brings up. Never guess or report the result before the tool's output arrives; when it
-does, bring it up as a natural aside and give the outcome in your own words. Never report an action as done, running, or sent
-unless you called {TOOL}.
-Messages starting with "[progress" are notes about a running task: never read them out; use them only if the user asks how it's going.
-When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; never claim progress or results you did not get from a tool."""
+Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
+same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
+After the call, one short sentence that it's underway.
+Reply to what the user just said. Mention a running task only if they ask or when its result arrives.
+{TOOL} hands the job to an agent on the user's computer. Describe the task in plain English as a complete request (what, where,
+what the result should be), never as a shell command or code. It runs in the background; its result arrives later as the tool's
+output, often several turns after the call. Never guess or report the result before it arrives; when it does, bring it up as a
+natural aside and give the outcome in your own words. Never report an action as done, running, or sent unless you called {TOOL}.
+When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; while a
+task is running, even a casual "how's it going" means the task. Never claim progress or results you did not get from a tool."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
 CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending)|should be running|backend result)")
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send)|let me\s+(creat|mak|check|look|run|open|see)|"
-                   r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html))")
+                   r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
+                   r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate)")   # asking permission instead of calling (Oct 24 call)
 PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c.txt: no paths in speech
 
 
@@ -70,7 +71,7 @@ def _for(secs: float) -> str:
 
 def status_summary(since: float, sent=(), now: float | None = None) -> str:
     """One spoken paragraph from $HIGGS_HOME/herd (status.json per agent + events.jsonl): who works on what and for how long,
-    who is idle, what finished since `since` (epoch). sent: (task, started_epoch, finished) for this call's own delegations."""
+    who is idle, what finished since `since` (epoch). sent: (task, started_epoch, finished[, latest_note]) for this call's own delegations."""
     now, herd = now or time.time(), Path(os.environ.get("HIGGS_HOME") or Path.home() / ".higgs") / "herd"
     evs = [json.loads(l) for l in (herd / "events.jsonl").read_text().splitlines() if l.strip()] if (herd / "events.jsonl").exists() else []
     sent_at = {e.get("id"): e for e in evs if e.get("ev") == "task.sent"}
@@ -87,8 +88,9 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
     for e in evs:
         if e.get("ev") == "task.done" and e.get("ts", 0) >= since:
             out.append(f"{e['agent']} finished {sent_at.get(e.get('id'), {}).get('task') or 'a task'}: {e.get('text', '')}")
-    for task, t, done in sent:
-        out.append(f"The task sent on this call, {task}, " + ("is finished." if done else f"has been running for {_for(now - t)}."))
+    for task, t, done, *note in sent:
+        out.append(f"The task sent on this call, {task}, " + ("is finished." if done else f"has been running for {_for(now - t)}"
+                   + (f", latest note: {note[0]}" if note and note[0] else "") + "."))
     return PATH.sub(r"\1", " ".join(out)) or "No agents are running and nothing has finished since the call started."
 
 
@@ -112,9 +114,8 @@ class Conn:
         self._st = dict(in_flight=False, user_speaking=False, spk_until=0.0, guarded=False, turn_delegated=False, last_user="", last_voice="", added=None)
         self._pending: set[str] = set()                   # delegations with no commentary yet
         self._open: set[str] = set()                      # function calls whose output we have not returned yet
-        self._notes: dict = {}                            # delegation id → ids of its progress items
+        self._notes: dict = {}                            # delegation id → its latest progress note, for agent_status only
         self._sent: dict = {}                             # delegation id → (task, epoch) for agent_status
-        self._seq = itertools.count()
         self._instructions = ""
         self._t0 = time.monotonic()
         self._tasks: list[asyncio.Task] = []
@@ -147,9 +148,8 @@ class Conn:
         await self._spoken.put((content[:1500], delegation_id))
 
     async def _thinking(self, content: str, delegation_id: str | None = None):
-        # user-role (assistant-role notes made the model continue them and invent results); deleted again when the result lands, so they are never echoed
-        iid = f"prog_{next(self._seq)}"; self._notes.setdefault(delegation_id, []).append(iid)   # ids must be unique: back-to-back notes land in the same ms
-        await self._item(f"[progress on the task you sent off]: {content[:1500]}", iid)
+        # client-side only: as user-role items the model answered the note instead of the user ("Hello." → "Still working on that index.html"), Oct 24 call
+        self._notes[delegation_id] = content[:1500]
         log.info("  ~ note: %s", content)
 
     async def _instructions_append(self, content: str, delegation_id: str | None = None):
@@ -163,8 +163,8 @@ class Conn:
         self._st.update(guarded=False, turn_delegated=False, last_user=content)
         await self._item(content); await self._send({"type": "response.create"})
 
-    async def _item(self, text: str, iid: str | None = None):
-        await self._send({"type": "conversation.item.create", "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}], **({"id": iid} if iid else {})}})
+    async def _item(self, text: str):
+        await self._send({"type": "conversation.item.create", "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}})
 
     async def _speak_loop(self):
         # ponytail: one result at a time, oldest first; no priority, no coalescing
@@ -173,7 +173,6 @@ class Conn:
             st = self._st
             while st["in_flight"] or st["user_speaking"] or time.monotonic() < st["spk_until"] + 1.0:   # voice idle, user quiet, playback drained + a beat
                 await asyncio.sleep(0.1)
-            for iid in self._notes.pop(did, []): await self._send({"type": "conversation.item.delete", "item_id": iid})   # progress served its purpose; the result replaces it
             st["added"] = asyncio.Event()
             if did in self._open:   # the native path: the call stayed open all this time; this is its real output (confirmed with Boson, Oct 23)
                 self._open.discard(did)
@@ -227,14 +226,15 @@ class Conn:
             st["in_flight"] = False
             calls = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == TOOL and o.get("executor") != "server"][:1]   # server-side tools (web_search, Oct 23) need no output from us. [:1]: 1.0 fires 2-3 near-duplicate calls for one request (9/12, probe/r15/A-tools.md); extras left open cause no error
             status = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == STATUS and o.get("executor") != "server"][:1]
+            self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})   # before the status answer: a status call in
+            self._open.update(c["call_id"] for c in calls)   # the same response must see this task running, or it reads "idle" and says "done"
             for c in status:   # synchronous: answered now, never enters _pending/_open
-                text = status_summary(self._t0 - time.monotonic() + time.time(), [(t, ts, d not in self._open) for d, (t, ts) in self._sent.items()])
+                text = status_summary(self._t0 - time.monotonic() + time.time(), [(t, ts, d not in self._open, self._notes.get(d)) for d, (t, ts) in self._sent.items()])
                 await self._send({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": c["call_id"], "output": text}})
                 log.info("%s → %s", STATUS, text)
             if status and not calls:
                 st["guarded"] = True; await self._send({"type": "response.create"})   # same socket, so the output is added before the reply is made
                 self._emit("response.done", calls=1, pending=len(self._pending)); return
-            self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})
             if self.delegation and not calls and self._fake_claim() and not st["guarded"] and not st["turn_delegated"]:
                 st["guarded"] = True   # ponytail: one forced retry per user turn, no loop
                 log.info("GUARD: reply claimed or offered a task without calling %s — nudging", TOOL)
@@ -242,7 +242,7 @@ class Conn:
             spoke = any(o.get("type") == "message" and any(p.get("text") or p.get("transcript") for p in o.get("content", [])) for o in ev["response"].get("output", []))
             for c in calls:
                 did, task = c["call_id"], json.loads(c["arguments"]).get("task", "")
-                st["turn_delegated"] = True; self._pending.add(did); self._open.add(did)
+                st["turn_delegated"] = True; self._pending.add(did)
                 if not spoke: await self._send({"type": "response.create"})   # 1.5 speaks a preamble in the call response itself; a second ack would make it talk twice. No output yet: the call stays open and the model acknowledges. Bare: a body with instructions/tool_choice makes it greet from scratch
                 self._tasks.append(asyncio.create_task(self._still_working(did)))
                 self._emit("session.delegation.created", delegation={"id": did, "task": task}, offset_ms=int((time.monotonic() - self._t0) * 1000))
@@ -279,7 +279,9 @@ if __name__ == "__main__":   # self-check: no network
     assert CLAIM.search("i've sent that off") and not CLAIM.search("sure, what else?")
     assert all(CLAIM.search(x) for x in ("i've handed that task off", "i've handed off the task", "i'm handing off the request"))
     assert ASKED.search("make me a page") and OFFER.search("i'll create it for you")
-    assert TOOL in MECHANICS and "[progress" in MECHANICS and STATUS in MECHANICS
+    assert all(OFFER.search(x) for x in ("i can't create files myself, but i can delegate that. shall i set that up?", "shall i set that up?",
+                                         "want me to delegate that?", "would you like me to hand that off?")) and not OFFER.search("sure, what else?")
+    assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
         os.environ["HIGGS_HOME"], h, now = tmp, Path(tmp) / "herd", time.time()
@@ -297,4 +299,15 @@ if __name__ == "__main__":   # self-check: no network
         assert "donna is idle." in s and "donna finished make hello.txt: written to hello.txt" in s and "old" not in s, s
         assert "open the page, has been running for a few seconds" in s and "/" not in s and "{" not in s, s
         assert "finished" not in status_summary(now, (), now)   # done before the call: not reported
+        c, sent = Conn(None, 24000), []   # thinking.append sends Higgs nothing; agent_status still reports the note
+        async def rec(ev): sent.append(ev)
+        c._send, c._sent, c._open = rec, {"d1": ("make index.html", now)}, {"d1"}
+        asyncio.run(c.session.thinking.append(content="writing index.html", delegation_id="d1"))
+        assert sent == [], sent
+        asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "function_call", "name": STATUS, "call_id": "s1"}]}}))
+        assert "make index.html, has been running for a few seconds, latest note: writing index.html." in sent[0]["item"]["output"], sent
+        sent.clear()   # status + delegate_task in one response: the status answer already counts the new task as running
+        asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "function_call", "name": STATUS, "call_id": "s2"},
+                                                                                 {"type": "function_call", "name": TOOL, "call_id": "d2", "arguments": '{"task": "open it"}'}]}}))
+        assert "open it, has been running" in sent[0]["item"]["output"], sent
     print("ok")
