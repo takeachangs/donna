@@ -38,12 +38,13 @@ URL = "wss://api.boson.ai/v1/realtime?model="
 TOOL = "delegate_task"   # NOT "delegate": the server reserves that name for its own server-side tool (returns executor:"server", adds a `reason` arg; "delegation service not configured")
 TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an agent on the user's computer that can "
             "create or edit files, open pages or files in the browser, run commands, read code, check git, look things up, calculate. "
-            "Use it for ANY request to make, add, change, design, open, run, check, find or compute something. The task is a plain-English request, not a command.",
+            "Use it for ANY request to make, add, change, design, open, run, check, find or compute something, including what is in a "
+            "file, folder or directory. The task is a plain-English request, not a command.",
             "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}
 STATUS = "agent_status"   # answered at once by this layer from the herd files; never left open
-STATUS_DEF = {"type": "function", "name": STATUS, "description": "Says what the agents on the user's computer are doing right now: "
-              "who is working on what and for how long, who is idle, what finished. Use it whenever the user asks how it's going, "
-              "what's happening, or whether something is done.", "parameters": {"type": "object", "properties": {}}}
+STATUS_DEF = {"type": "function", "name": STATUS, "description": "Says how the tasks already sent are going: "
+              "who is working on what and for how long, who is idle, what finished. Use it when the user asks how it's going "
+              f"or whether something is done. Never for files, folders, the directory or what anything contains: that is {TOOL}.", "parameters": {"type": "object", "properties": {}}}
 MECHANICS = f"""## Delegation mechanics
 Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
 same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
@@ -56,7 +57,9 @@ what the result should be), never as a shell command or code. It runs in the bac
 output, often several turns after the call. Never guess or report the result before it arrives; when it does, bring it up as a
 natural aside and give the outcome in your own words. Never report an action as done, running, or sent unless you called {TOOL}.
 When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; while a
-task is running, even a casual "how's it going" means the task. Never claim progress or results you did not get from a tool."""
+task is running, even a casual "how's it going" means the task. {STATUS} is only for how a task you sent is going: a question
+about files, folders, the directory, the computer or what anything contains is a {TOOL}. If {STATUS} can't answer what they
+asked, never say you're checking the status. Never claim progress or results you did not get from a tool."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
 CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching)|should be running|backend result)")
