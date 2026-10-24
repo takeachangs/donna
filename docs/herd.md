@@ -65,7 +65,7 @@ user ⇄ speaker+mic (later: Twilio) ⇄ Higgs voice "Donna" ⇄ bridge.py ⇄ D
     meta.json  inbox.jsonl  outbox.jsonl  status.json
   <worker>/                      # kind: claude (headless, --resume'd per task; pre-warmed at new)
     meta.json                    # {name, kind, project, parent: "donna", created}
-    inbox.jsonl                  # {id, task, context, from, ts}
+    inbox.jsonl                  # {id, task, context, from, ts} (+ transcript, in_reply_to, replaces: §6)
     outbox.jsonl                 # {id, kind: note|say, text, ts}
     status.json                  # {state, task_id, task, last_note, started, unread}
 ```
@@ -116,17 +116,20 @@ Same flow on Twilio later: `ring` dials instead of opening the speaker.
    Donna's outbox with no call open makes the speaker ring.
 4. Hand Jerrold §4 first, before any of 1–3, so the scene is built against the same lines in parallel.
 5. Twilio (`E-twilio.md`): replace the speaker/mic with the phone adapter; `ring` dials.
-6. Busy-Donna hook (issue #5): the wait loop only runs between tasks, so a `PostToolUse` hook hands Donna new inbox
-   lines mid-work. `bridge.py hook` (stdlib, ~20 ms) reads the hook JSON on stdin, acts only when its `cwd` is
-   `project` in `donna/meta.json`, reads `inbox.jsonl` from `donna/.hook_offset` (separate from the wait loop's
-   `.offset`) and prints `hookSpecificOutput.additionalContext` with each task and its `herd.py reply` lines. The owner
-   registers it in `.claude/settings.json` of the folder Donna runs in (or passes it to `claude --settings`):
-   ```json
-   {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [
-     {"type": "command", "command": "python3 /Users/seongminchang/projects/higgs-hackathon/bridge.py hook"}]}]}}
-   ```
-   Check: `uv run herd.py send donna ping; echo '{"session_id":"x","cwd":"'$PWD'"}' | python3 bridge.py hook` prints
-   the JSON once, nothing the second time, nothing for another `cwd`.
+6. Busy-Donna hook (issue #5; folded into the office hook by #26): the wait loop only runs between tasks, so the
+   brain's own `PostToolUse` hands Donna new inbox lines mid-work. `herd.py hook PostToolUse` (stdlib, ~40 ms, also
+   logs the event and re-renders `office.json`, `docs/office-state.md`) acts only for the brain: no `agent_id` (a
+   subagent's tool call never consumes the inbox) and `session_id` equal to `donna/meta.json` `session` (or, before one
+   is recorded, `cwd` equal to `project`). It reads `inbox.jsonl` from `donna/.hook_offset` (separate from the wait
+   loop's `.offset`) and prints `hookSpecificOutput.additionalContext` with each task, its transcript and its
+   `herd.py reply` lines. Install: `claude --settings ~/projects/higgs-hackathon/hooks/office.json` (all six events).
+   Check: `uv run herd.py` (the self-check replays a scripted brain + subagent through the hook).
+
+Oct 24 (#26), what changed from the design above: workers are not `herd.py new` sessions but the brain's own Agent-tool
+subagents (named Sonnets, `run_in_background`); Claude Code dispatches, the hooks report them to the office. Inbox lines
+from the voice carry `"transcript": [[role, text], ...]` (the call's last 12 turns, `user`/`assistant`) in place of
+`context`, and `"replaces": "<id>"` when the user corrected an earlier task (the brain fails the old one with
+"Replaced by the corrected request."; the voice has already dropped its result).
 
 Not Saturday: approvals, context %, more than one level, several voices, real remuda as a backend.
 
