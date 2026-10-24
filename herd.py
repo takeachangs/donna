@@ -61,6 +61,17 @@ def root() -> Path:  # resolved per call so tests can set HIGGS_HOME
     return home() / "herd"
 
 
+def project_context(project=None):
+    project = project or rj(root() / "donna" / "meta.json").get("project")
+    if not project: return "No project is attached. Ask the person to attach a project before looking up their files."
+    return (f"Current attached project: {Path(project).name}. Project directory: {project}. "
+            "Here, this project, our projects, and all projects mean the attached office project and its task worktrees. "
+            "Answer from this project's files, task records and workers only. Never enumerate parent or sibling directories, "
+            "scan the computer, or query the saved Codex/Claude project catalogue. Other folders are not office projects. "
+            "If the person means a different project, explain that it is not attached; do not silently expand scope. "
+            "Donna's implementation and runtime directories are support files, not additional user projects.")
+
+
 def die(msg):
     sys.exit(f"herd: {msg}")
 
@@ -184,6 +195,7 @@ def send(name, task, context=None, frm="user", tid=None, reply_to=None, transcri
     d = agent_dir(name)
     tid = tid or os.urandom(4).hex()
     line = {"id": tid, "task": task, "context": context, "from": frm, "ts": time.time()}
+    line["project"] = rj(d / "meta.json").get("project")
     if transcript is not None:  # [[role, text], ...] role "user"|"assistant": the call so far, printed by the hook instead of `context`
         line["transcript"] = transcript
     if with_:  # #28: the person is on the line with this worker: the brain forwards the words to them and says their answer
@@ -232,6 +244,7 @@ def run(name, tid):  # #66: one turn of a codex worker: take, a note per command
             tid = next(iter(pending))
             brief = (f"You are Donna, the orchestrator. Read {Path(__file__).parent}/.claude/skills/call/SKILL.md. "
                 f"The Donna checkout is {Path(__file__).parent}; task repo {m['project']}. "
+                + project_context(m["project"]) + " "
                 f'Use "{getattr(sys, "_base_executable", sys.executable)}" -X utf8 "{Path(__file__).resolve()}" for herd commands. '
                 "This native Windows host already registered you and wakes your exact session for each request/result. "
                 "Do not register again, start a bridge, or wait for inbox input. Handle the pending tasks below and return. "
