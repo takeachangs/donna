@@ -2,7 +2,7 @@ import {initLocale,setLocale,t} from '../i18n'
 import {Engine} from '../render/Engine'
 import {AgencyScene} from './Scene'
 import {OfficeAudio} from './Audio'
-import type {State,Colleague,Doc,Project,Workspace,View,Assignment,Decision} from './types'
+import type {State,Colleague,Doc,Project,Workspace,View,Assignment,Decision,Briefing} from './types'
 import './style.css'
 import './board.css'
 initLocale();setLocale('en')
@@ -12,8 +12,8 @@ root.innerHTML=`<main class="agency-shell">
  <nav class="agency-rail" aria-label="${t('agency.rooms')}">
   <a class="agency-brand" href="agency.html"><span class="brand-mark" aria-hidden="true">c.</span><span>${t('agency.title')}</span></a>
   <p class="rail-label">${t('agency.workspace')}</p>
-  <button id="secretary-room" class="nav-item" aria-pressed="true"><span class="nav-icon" aria-hidden="true">◉</span>${t('agency.secretary_short')}</button>
-  <button id="command-room" class="nav-item" aria-pressed="false"><span class="nav-icon" aria-hidden="true">⊞</span>${t('agency.command_room')}</button>
+  <button id="command-room" class="nav-item" aria-pressed="true"><span class="nav-icon" aria-hidden="true">⊞</span>${t('agency.command_room')}</button>
+  <button id="secretary-room" class="nav-item" aria-pressed="false"><span class="nav-icon" aria-hidden="true">◉</span>${t('agency.secretary_short')}</button>
   <div class="rail-heading"><p class="rail-label">${t('agency.projects')}</p><button id="new-project" class="icon-button" aria-label="${t('agency.new_room')}" title="${t('agency.new_room')}">+</button></div>
   <div id="project-nav"></div><label class="sr-only" for="project-select">${t('agency.project')}</label><select id="project-select" hidden></select>
   <div class="rail-bottom"><button id="settings" class="nav-item">${t('agency.settings')}</button><span class="local-caption">${t('agency.local_workspace')}</span></div>
@@ -21,7 +21,7 @@ root.innerHTML=`<main class="agency-shell">
  <header class="agency-header"><div><p id="scene-context">${t('agency.subtitle')}</p><h1 id="page-title">${t('agency.secretary_office')}</h1></div><button id="connect" class="primary">${t('agency.connect')}</button></header>
  <section class="agency-stage" aria-label="${t('agency.scene')}">
   <div class="scene-toolbar"><span id="scene-label">${t('agency.secretary_office')}</span><button id="overview" class="quiet-button" aria-label="${t('agency.overview')}">${t('agency.map')}</button></div>
-  <div id="agency-scene"></div><div id="roster" class="agency-roster" aria-label="${t('agency.team')}"></div>
+  <div id="agency-scene"><div id="handoff-status" class="handoff-status" role="status" hidden></div></div><div id="roster" class="agency-roster" aria-label="${t('agency.team')}"></div>
   <div class="agency-caption" aria-live="polite"><strong id="speaker"></strong><p id="caption">${t('agency.welcome')}</p></div>
   <footer class="agency-controls"><div class="agency-secretary-line"><strong id="secretary-name"></strong><span id="execution-health"></span></div>
    <div class="agency-actions"><button id="mic" disabled aria-pressed="false">${t('agency.mic_on')}</button><button id="meet" disabled>${t('agency.meet')}</button><button id="interrupt" disabled>${t('agency.interrupt')}</button></div>
@@ -32,6 +32,7 @@ root.innerHTML=`<main class="agency-shell">
  <aside class="agency-board"><header><div><p class="board-context" id="board-context"></p><h2 id="board-title">${t('agency.secretary_office')}</h2></div><span id="revision"></span></header><p id="goal"></p>
   <div class="workspace-counts"><div><strong id="count-decisions">0</strong><span>${t('agency.count_decisions')}</span></div><div><strong id="count-review">0</strong><span>${t('agency.count_review')}</span></div><div><strong id="count-active">0</strong><span>${t('agency.count_active')}</span></div></div>
   <div id="error" role="alert" hidden></div>
+  <section id="briefings-section"><div class="queue-heading"><h2>${t('agency.briefing_queue')}</h2><span id="briefing-count"></span></div><p class="agency-note">${t('agency.queue_intro')}</p><button id="present-next" disabled>${t('agency.present_next')}</button><div id="briefings"></div><details><summary>${t('agency.presented_briefings')}</summary><div id="briefing-history"></div></details></section>
   <section id="decisions-section"><h2>${t('agency.needs_decision')}</h2><div id="decisions"></div></section>
   <section id="results-section"><h2>${t('agency.ready_review')}</h2><div id="results"></div></section>
   <section id="assignments-section"><h2>${t('agency.in_progress')}</h2><div id="assignments"></div></section>
@@ -50,7 +51,7 @@ root.innerHTML=`<main class="agency-shell">
 </main>`
 const el=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById(id)! as T
 const make=<K extends keyof HTMLElementTagNameMap>(tag:K,cls='',text='')=>{const e=document.createElement(tag);e.className=cls;e.textContent=text;return e}
-let socket:WebSocket|undefined,audio:OfficeAudio|undefined,scene:AgencyScene|undefined,state:State|undefined,cast:Colleague[]=[],workspace:Workspace|undefined,ready=false,mic=false,currentResponse='',connected=false,firstTurnAt=0,projects:Project[]=[],selectedProject='',view:View='secretary',switching=false,polling=false
+let socket:WebSocket|undefined,audio:OfficeAudio|undefined,scene:AgencyScene|undefined,state:State|undefined,cast:Colleague[]=[],workspace:Workspace|undefined,ready=false,mic=false,currentResponse='',connected=false,firstTurnAt=0,projects:Project[]=[],selectedProject='',view:View='command',switching=false,polling=false
 const usage=new Map<string,any>(),heard=new Set<string>(),signatures=new Map<string,string>()
 let actionError='',transportError=''
 const roomKey='personal-agency-room'
@@ -61,12 +62,15 @@ const status=(text:string)=>{el('status').textContent=text}
 const paintError=()=>{el('error').hidden=!(actionError||transportError);el('error').textContent=actionError||transportError}
 const error=(message='')=>{if(!message){actionError='';transportError=''}else if(/^TransportError:|^SyntaxError:.*JSON|Unexpected end of JSON|Failed to fetch|fetch failed|NetworkError/.test(message)){transportError=message.replace(/^TransportError: /,'')}else actionError=message;paintError()}
 function clearTransportError(){if(!transportError)return;transportError='';paintError();if(el('status').textContent===t('agency.error'))status(t(connected?'agency.ready':'agency.offline_ready'))}
-const controls=(value:boolean)=>{ready=value;for(const id of ['mic','meet','interrupt','command','send'])(el(id) as HTMLButtonElement).disabled=!value}
+const controls=(value:boolean)=>{ready=value;document.body.dataset.ready=String(value);for(const id of ['mic','meet','interrupt','command','send'])(el(id) as HTMLButtonElement).disabled=!value;renderBriefings()}
 class TransportError extends Error{constructor(){super(t('agency.reconnecting_workspace'));this.name='TransportError'}}
 async function api<T=any>(url:string,body?:unknown):Promise<T>{let r:Response;try{r=await fetch(url,body===undefined?undefined:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})}catch{throw new TransportError()}if(r.status>=500)throw new TransportError();let value:any;try{value=await r.json()}catch{throw new TransportError()}if(!r.ok)throw Error(value.error||t('agency.request_failed'));return value}
 function section(id:string,value:unknown,render:()=>HTMLElement[]){const signature=JSON.stringify(value);if(signatures.get(id)===signature)return;signatures.set(id,signature);const host=el(id),open=new Set([...host.querySelectorAll<HTMLDetailsElement>('details[open]')].map(d=>d.dataset.key));host.replaceChildren(...render());for(const d of host.querySelectorAll<HTMLDetailsElement>('details'))if(open.has(d.dataset.key))d.open=true}
 function empty(text:string){return make('p','empty',text)}
-function command(text:string){if(!ready||!text.trim())return;audio?.stop();firstTurnAt=performance.now();currentResponse='';el('caption').textContent='';send({type:'text',text,agentId:'mara'});status(t('agency.thinking'))}
+// Text readers may already have read the full caption while speech is playing.
+// The text request cancels generation server-side; do not truncate its visible
+// conversation history to the audio playhead when they type a follow-up.
+function command(text:string){if(!ready||!text.trim())return;audio?.stop(false);firstTurnAt=performance.now();currentResponse='';el('caption').textContent='';send({type:'text',text,agentId:'mara'});status(t('agency.thinking'))}
 function openDoc(doc:Doc){el('document-title').textContent=doc.title;el('document-body').textContent=doc.body;el('document-meta').textContent=`${name(doc.author)} · v${doc.revision} · ${t('agency.draft')}`;el<HTMLAnchorElement>('document-download').href=`/agency-api/rooms/${state!.id}/documents/${doc.id}.md`;el<HTMLDialogElement>('document-dialog').showModal()}
 function renderLegacy(){section('documents',[selectedProject,state?.id,state?.documents],()=>state?.id===selectedProject&&state.documents.length?state.documents.map(doc=>{const b=make('button','agency-document');b.append(make('strong','',doc.title),make('span','',`${name(doc.author)} · v${doc.revision}`));b.onclick=()=>openDoc(doc);return b}):[empty(t('agency.empty_documents'))])}
 function assignmentCard(a:Assignment){
@@ -83,7 +87,7 @@ function assignmentCard(a:Assignment){
  if(a.status==='review')action('agency.accept','accept');if(['working','queued','waiting'].includes(a.status))action('agency.pause_work','pause');if(['paused','failed','waiting'].includes(a.status))action('agency.resume_work','resume');if(actions.childElementCount)row.append(actions)
  return row
 }
-function appendArtifacts(host:HTMLElement,a:Assignment,fullPath=false){
+function appendArtifacts(host:HTMLElement,a:Pick<Assignment,'artifacts'>,fullPath=false){
  for(const saved of [true,false]){const files=(a.artifacts||[]).filter(artifact=>!!artifact.snapshotAt===saved);if(!files.length)continue;const group=make('div','artifact-group');group.append(make('p','artifact-heading',t(saved?'agency.saved_deliverables':'agency.current_project_files')));const links=make('div','artifact-links');for(const artifact of files){const link=make('a','artifact-link',fullPath?artifact.path:artifact.path.split(/[\\/]/).pop()||artifact.path);if(artifact.url.startsWith('/')||/^https?:\/\//.test(artifact.url)){link.href=artifact.url;link.target='_blank';link.rel='noopener'}link.title=artifact.path;links.append(link)}group.append(links);if(!saved)group.append(make('p','artifact-note',t('agency.current_files_note')));host.append(group)}
 }
 function openWork(id:string){
@@ -104,8 +108,25 @@ function decisionCard(d:Decision){
  const row=make('article','decision-item');row.dataset.decisionId=d.id;row.append(make('strong','',d.title));if(view!=='project')row.append(make('p','item-meta',projectName(d.projectId)));row.append(make('p','item-summary',d.context))
  const form=make('form','decision-form'),label=make('label','',t('agency.your_decision')),input=make('textarea') as HTMLTextAreaElement;input.required=true;input.maxLength=2000;input.rows=2;input.id=`decision-${d.id}`;label.htmlFor=input.id;const submit=make('button','',t('agency.record_decision'));submit.type='submit';form.append(label);if(d.options?.length){const options=make('div','decision-options');for(const option of d.options){const b=make('button','',option);b.type='button';b.onclick=()=>{input.value=option;input.focus()};options.append(b)}form.append(options)}form.append(input,submit);form.onsubmit=e=>{e.preventDefault();submit.disabled=true;void(async()=>{try{await api(`/agency-api/decisions/${d.id}`,{decision:input.value});await loadWorkspace()}catch(err){error(String(err));submit.disabled=false}})()};row.append(form);return row
 }
+function presentBriefing(id?:string){if(!ready)return;setView('secretary');audio?.stop(false);firstTurnAt=performance.now();currentResponse='';el('caption').textContent='';send({type:'present_briefing',briefingId:id});status(t('agency.thinking'))}
+function openBriefing(b:Briefing){
+ const body=el('work-body');body.replaceChildren();el('work-title').textContent=b.title;el('work-meta').textContent=`${projectName(b.projectId)} · ${t('agency.with_donna')}`
+ body.append(make('h3','',t('agency.result_summary')),make('p','work-prose',b.summary));appendArtifacts(body,b,true)
+ if(b.verification.length){body.append(make('h3','',t('agency.verification')));const list=make('ul','verification');for(const v of b.verification)list.append(make('li','',v));body.append(list)}
+ if(b.contributors.length>1){body.append(make('h3','',t('agency.contributors')));for(const c of b.contributors)body.append(make('p','item-meta',`${c.name} · ${c.title}`))}
+ body.append(make('p','agency-note',t('agency.presentation_not_acceptance')))
+ if(b.status==='queued'){const done=make('button','',t('agency.mark_presented'));done.onclick=()=>void(async()=>{done.disabled=true;try{await api(`/agency-api/briefings/${b.id}/presented`,{});await loadWorkspace();el<HTMLDialogElement>('work-dialog').close()}catch(err){error(String(err));done.disabled=false}})();body.append(done)}
+ const dialog=el<HTMLDialogElement>('work-dialog');dialog.showModal();dialog.scrollTop=0
+}
+function renderBriefings(){
+ if(!workspace)return;const pending=(workspace.briefings||[]).filter(b=>b.status==='queued').sort((a,b)=>a.createdAt.localeCompare(b.createdAt)),history=(workspace.briefings||[]).filter(b=>b.status==='presented').slice(-12).reverse()
+ el('briefings-section').hidden=view==='project';el('briefing-count').textContent=String(pending.length);el<HTMLButtonElement>('present-next').disabled=!ready||!pending.length;el('present-next').title=t(ready?'agency.present_next':'agency.connect_to_present')
+ section('briefings',[pending,workspace.workers.map(w=>[w.id,w.name])],()=>pending.length?pending.map((b,i)=>{const row=make('article','briefing-card'),heading=make('div','briefing-title');heading.append(make('span','queue-number',String(i+1).padStart(2,'0')),make('h3','',b.title));row.append(make('p','item-project',projectName(b.projectId)),heading,make('p','summary-preview',b.summary),make('p','item-meta',`${name(b.workerId)} → ${workspace!.secretary.name}`));const actions=make('div','briefing-actions'),read=make('button','',t('agency.read_briefing')),replay=make('button','quiet-button',t('agency.show_handoff'));read.onclick=()=>openBriefing(b);replay.onclick=()=>{setView('command');el('agency-scene').scrollIntoView({block:'center',behavior:'instant'});scene?.replayHandoff(b.id)};actions.append(read,replay);row.append(actions);return row}):[empty(t('agency.queue_empty'))])
+ section('briefing-history',history,()=>history.length?history.map(b=>{const button=make('button','project-summary',`${projectName(b.projectId)} · ${b.title}`);button.onclick=()=>openBriefing(b);return button}):[empty(t('agency.no_presented'))])
+}
 function render(){
  if(!workspace)return
+ document.body.dataset.view=view;document.body.dataset.ready=String(ready)
  projects=workspace.projects;renderProjects();scene?.workspace(workspace)
  const project=workspace.projects.find(p=>p.id===selectedProject),all=view!=='project',assignments=workspace.assignments.filter(a=>all||a.projectId===selectedProject),decisions=workspace.decisions.filter(d=>d.status==='open'&&(all||d.projectId===selectedProject)),workers=workspace.workers.filter(w=>all||w.projectId===selectedProject)
  const title=view==='project'?project?.name||t('agency.project'):t(view==='command'?'agency.command_room':'agency.secretary_office')
@@ -115,15 +136,15 @@ function render(){
  section('decisions',[view,decisions],()=>decisions.length?decisions.map(decisionCard):[empty(t('agency.no_decisions'))])
  const results=assignments.filter(a=>a.status==='review'),active=assignments.filter(a=>['queued','working','waiting','paused','failed'].includes(a.status)),completed=assignments.filter(a=>a.status==='done')
  el('count-decisions').textContent=String(decisions.length);el('count-review').textContent=String(results.length);el('count-active').textContent=String(active.length)
- el('decisions-section').hidden=!decisions.length;el('results-section').hidden=!results.length;el('assignments-section').hidden=!active.length&&(decisions.length+results.length>0)
- const roster=view==='secretary'?[workspace.secretary]:workers
+ el('decisions-section').hidden=!decisions.length;el('results-section').hidden=view!=='project'||!results.length;el('assignments-section').hidden=!active.length
+ const roster=view==='secretary'?[workspace.secretary]:view==='command'?[workspace.secretary,...workers]:workers
  section('roster',[view,roster],()=>roster.length?roster.map(person=>{const b=make('button','person-chip');b.append(make('span','person-initial',person.name?.slice(0,1)||'·'));const text=make('span','person-caption');text.append(make('strong','',person.name||t('agency.naming')),make('small','',person.id==='mara'?t('agency.secretary_role'):t(`agency.status_${'status' in person?person.status:'queued'}`)));b.append(text);b.onclick=()=>{if(person.id==='mara'){setView('secretary');scene?.focus(person.id)}else{const w=workspace?.workers.find(w=>w.id===person.id);if(w)void switchProject(w.projectId).then(()=>scene?.focus(person.id)).catch(err=>error(String(err)))}};return b}):[make('p','roster-empty',t('agency.no_workers'))])
  const workerMeta=workers.map(w=>[w.id,w.name,w.role,w.currentAction]);section('results',[view,results,workerMeta],()=>results.length?results.map(assignmentCard):[empty(t('agency.no_results'))]);section('assignments',[view,active,workerMeta],()=>active.length?active.map(assignmentCard):[empty(t('agency.no_work'))]);section('completed',[view,completed,workerMeta],()=>completed.length?completed.map(assignmentCard):[empty(t('agency.no_completed'))])
  section('projects',workspace.projects,()=>workspace!.projects.map(p=>{const b=make('button','project-summary');b.append(make('strong','',p.name),make('span','',p.memory?.checkpoint||p.goal||t('agency.empty_goal')));if(p.memory?.latest)b.append(make('span','project-latest',p.memory.latest));b.onclick=()=>void switchProject(p.id).catch(err=>error(String(err)));return b}))
  section('team',workers,()=>workers.length?workers.map(w=>{const r=make('article','team-member');r.dataset.workerId=w.id;r.append(make('strong','',w.name||t('agency.naming')),make('span','item-meta',`${w.role} · ${t(`agency.status_${w.status}`)}`),make('p','',w.responsibility));return r}):[empty(t('agency.no_workers'))])
  section('history',workspace.activity,()=>workspace!.activity.slice(-20).reverse().map(a=>make('p','',`${a.projectId?projectName(a.projectId)+' · ':''}${a.message}`)))
  el('team-details').hidden=!workers.length;el('completed-details').hidden=!completed.length;renderLegacy()
- for(const [id,context] of [['secretary-room','secretary'],['command-room','command']])el(id).setAttribute('aria-pressed',String(view===context));el('secretary-name').textContent=`${workspace.secretary.name} · ${t('agency.secretary_role')}`;el('speaker').textContent=workspace.secretary.name
+ for(const [id,context] of [['secretary-room','secretary'],['command-room','command']])el(id).setAttribute('aria-pressed',String(view===context));el('secretary-name').textContent=`${workspace.secretary.name} · ${t('agency.secretary_role')}`;el('speaker').textContent=workspace.secretary.name;renderBriefings()
 }
 function meter(){
  const rows=[...usage.values()],sum=rows.reduce((n,r)=>n+(r.estimatedUSD||0),0),unknown=rows.filter(r=>r.usageMissing).length;el('meter').textContent=`${t('agency.estimate')} $${sum.toFixed(4)}${unknown?' + ?':''}`
@@ -167,7 +188,7 @@ async function switchProject(id:string){
  audio?.stop();selectedProject=id;rememberRoom();render();status(t('agency.switching'))
  if(connected){switching=true;controls(false);send({type:'switch_project',roomId:id})}else{state=await api<State>(`/agency-api/rooms/${id}`);renderLegacy();usage.clear();await loadUsage();status(t('agency.offline_ready'))}
 }
-el('secretary-room').onclick=()=>setView('secretary');el('command-room').onclick=()=>setView('command');el('overview').onclick=()=>scene?.overview()
+el('secretary-room').onclick=()=>setView('secretary');el('command-room').onclick=()=>setView('command');el('overview').onclick=()=>setView('command');el('present-next').onclick=()=>presentBriefing()
 el<HTMLSelectElement>('project-select').onchange=e=>void switchProject((e.target as HTMLSelectElement).value).catch(err=>error(String(err)))
 el('new-project').onclick=()=>el<HTMLDialogElement>('project-dialog').showModal();el('project-cancel').onclick=()=>el<HTMLDialogElement>('project-dialog').close()
 el('project-form').onsubmit=e=>{e.preventDefault();void(async()=>{const submit=el('project-form').querySelector<HTMLButtonElement>('[type=submit]')!;submit.disabled=true;el('project-error').hidden=true;try{const p=await api<Project>('/agency-api/projects',{name:el<HTMLInputElement>('project-name').value,brief:el<HTMLTextAreaElement>('project-brief').value});await loadWorkspace();el<HTMLDialogElement>('project-dialog').close();el<HTMLFormElement>('project-form').reset();await switchProject(p.id)}catch(err){el('project-error').hidden=false;el('project-error').textContent=String(err)}finally{submit.disabled=false}})()}
@@ -186,7 +207,7 @@ async function init(){
  projects=await api<Project[]>('/agency-api/projects');const candidateRoom=new URLSearchParams(location.search).get('room');selectedProject=candidateRoom&&/^[a-f0-9-]{36}$/.test(candidateRoom)?candidateRoom:localStorage.getItem(roomKey)||projects[0]?.id||''
  if(!selectedProject){const p=await api<Project>('/agency-api/projects',{name:t('agency.first_project')});selectedProject=p.id;projects.push(p)}
  state=await api<State>(`/agency-api/rooms/${selectedProject}`);if(!projects.some(p=>p.id===selectedProject))await api('/agency-api/projects/register',{id:selectedProject,name:state.projectName||t('agency.first_project')});rememberRoom();await loadWorkspace();await loadUsage()
- const engine=new Engine(el('agency-scene'));await engine.init();scene=new AgencyScene(engine,el('agency-scene'),cast,id=>{scene?.focus(id);if(id==='mara')setView('secretary');else{const worker=workspace?.workers.find(w=>w.id===id);if(worker)void switchProject(worker.projectId).catch(err=>error(String(err)))}},(n,total)=>status(`${t('agency.loading')} ${n}/${total}`),id=>void switchProject(id).catch(err=>error(String(err))));await engine.loadScene(scene);engine.start();render();scene.viewRoom('secretary');scene.focus('mara');status(t('agency.offline_ready'));if(!data.available)error(t('agency.missing_key'))
+ const engine=new Engine(el('agency-scene'));await engine.init();scene=new AgencyScene(engine,el('agency-scene'),cast,id=>{scene?.focus(id);if(id==='mara')setView('secretary');else{const worker=workspace?.workers.find(w=>w.id===id);if(worker)void switchProject(worker.projectId).catch(err=>error(String(err)))}},(n,total)=>status(`${t('agency.loading')} ${n}/${total}`),id=>void switchProject(id).catch(err=>error(String(err))),person=>{el('handoff-status').hidden=!person;el('handoff-status').textContent=person?t('agency.handoff_status',{name:person}):''});await engine.loadScene(scene);engine.start();render();scene.viewRoom(view==='project'?selectedProject:view);scene.focus('mara');status(t('agency.offline_ready'));if(!data.available)error(t('agency.missing_key'))
  window.setInterval(()=>{if(polling||document.visibilityState==='hidden')return;polling=true;void loadWorkspace().catch(err=>error(String(err))).finally(()=>{polling=false})},1500)
 }
 void init().catch(err=>{error(String(err));status(t('agency.error'))})

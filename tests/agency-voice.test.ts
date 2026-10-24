@@ -1,15 +1,15 @@
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach,expect,it,vi} from 'vitest';
-import {secretaryInstructions,secretaryTools} from '../apps/server/src/agency/secretary';
+import {secretaryInstructions,secretaryTools,resolveProjectTarget} from '../apps/server/src/agency/secretary';
 
-const transport=vi.hoisted(()=>({sockets:[] as any[]}));
+const transport=vi.hoisted(()=>({sockets:[] as any[],autoReady:true}));
 vi.mock('ws',async()=>{
  const {EventEmitter}=await import('node:events');
  class FakeSocket extends EventEmitter{
   static OPEN=1;readyState=1;sent:any[]=[];
-  constructor(){super();transport.sockets.push(this);queueMicrotask(()=>{this.emit('open');this.receive({type:'session.updated'})})}
+  constructor(){super();transport.sockets.push(this);queueMicrotask(()=>{this.emit('open');if(transport.autoReady)this.receive({type:'session.created',session:this.sent[0].session});else this.receive({type:'session.created',session:{instructions:'Provider default'}})})}
   send(text:string){this.sent.push(JSON.parse(text))}
   receive(event:unknown){this.emit('message',Buffer.from(JSON.stringify(event)))}
   close(){this.readyState=3;this.emit('close')}
@@ -18,22 +18,53 @@ vi.mock('ws',async()=>{
 });
 import {HiggsColleague} from '../apps/server/src/agency/higgs';
 const roots:string[]=[];
-afterEach(()=>{vi.unstubAllEnvs();transport.sockets=[];for(const dir of roots.splice(0)){if(!dir.startsWith(join(tmpdir(),'agency-voice-')))throw Error('Unexpected path');rmSync(dir,{recursive:true,force:true})}});
+afterEach(()=>{vi.unstubAllEnvs();transport.sockets=[];transport.autoReady=true;for(const dir of roots.splice(0)){if(!dir.startsWith(join(tmpdir(),'agency-voice-')))throw Error('Unexpected path');rmSync(dir,{recursive:true,force:true})}});
 
 it('configures only the dynamic secretary and supplies current project memory',async()=>{
  vi.stubEnv('BOSON_API_KEY','offline-fixture');
  const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);
  const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,()=>{},()=>({committed:true}),()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({goal:'Prepare launch',checkpoint:'One clear draft'}),tools:secretaryTools,voice:'eleanor'});
  await voice.connect();const socket=transport.sockets[0],session=socket.sent[0].session;
- expect(session.instructions).toBe(secretaryInstructions);
+ expect(session.instructions).toContain(secretaryInstructions);
+ expect(session.instructions).toContain('One clear draft');
  expect(session.tools.map((t:any)=>t.name)).toContain('delegate_work');
  expect(session.tools.map((t:any)=>t.name)).not.toContain('complete_task');
  await voice.ask('Make the plan smaller');
  const request=socket.sent.find((e:any)=>e.type==='conversation.item.create');
- expect(request.item.content[0].text).toContain('One clear draft');
- expect(request.item.content[0].text).toContain('Make the plan smaller');
+ expect(request.item.content[0].text).toBe('Make the plan smaller');
  socket.receive({type:'conversation.item.created',item:{id:request.item.id}});
  expect(socket.sent.at(-1).type).toBe('response.create');
+ voice.close();
+});
+
+it('waits for the configured session rather than the initial default session',async()=>{
+ vi.stubEnv('BOSON_API_KEY','offline-fixture');transport.autoReady=false;
+ const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);const events:any[]=[];
+ const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,e=>events.push(e),()=>({}),()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({}),tools:secretaryTools,voice:'eleanor'});
+ let ready=false;const pending=voice.connect().then(()=>{ready=true});await Promise.resolve();
+ expect(ready).toBe(false);expect(events.some(e=>e.type==='colleague_ready')).toBe(false);
+ transport.sockets[0].receive({type:'session.updated',session:transport.sockets[0].sent[0].session});await pending;expect(ready).toBe(true);voice.close();
+});
+
+it('keeps follow-up text intact, refreshes state separately and links inputs to responses',async()=>{
+ vi.stubEnv('BOSON_API_KEY','offline-fixture');
+ const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);let checkpoint='Draft';
+ const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,()=>{},()=>({}),()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({checkpoint}),tools:secretaryTools,voice:'eleanor'});
+ await voice.connect();const socket=transport.sockets[0];
+ for(const [i,text] of ['Write an opening.','The agency, not hardware.'].entries()){
+  checkpoint=i?'Revise opening':'Draft';const job=await voice.ask(text);
+  socket.receive({type:'conversation.item.created',item:{id:job.input!.itemId}});
+  socket.receive({type:'response.created',response:{id:`reply-${i}`}});
+  socket.receive({type:'response.done',response:{id:`reply-${i}`,status:'completed',output:[],usage:{input_tokens:12,output_tokens:2}}});
+ }
+ const messages=socket.sent.filter((e:any)=>e.type==='conversation.item.create');
+ expect(messages.map((e:any)=>e.item.content[0].text)).toEqual(['Write an opening.','The agency, not hardware.']);
+ expect(socket.sent.filter((e:any)=>e.type==='session.update').at(-1).session.instructions).toContain('Revise opening');
+ const inputs=readFileSync(join(dir,'inputs.jsonl'),'utf8').trim().split('\n').map(s=>JSON.parse(s));
+ const rows=readFileSync(join(dir,'calls.jsonl'),'utf8').trim().split('\n').map(s=>JSON.parse(s));
+ expect(inputs).toHaveLength(2);expect(rows[1].input.text).toBe('The agency, not hardware.');expect(rows[1].jobId).toBe(inputs[1].jobId);
+ const before=messages.length;socket.receive({type:'input_audio_buffer.speech_started'});
+ expect(socket.sent.filter((e:any)=>e.type==='conversation.item.create')).toHaveLength(before);
  voice.close();
 });
 
@@ -48,4 +79,26 @@ it('does not commit tool results from an interrupted voice response',async()=>{
  expect(tool).not.toHaveBeenCalled();
  const result=socket.sent.find((e:any)=>e.item?.type==='function_call_output');
  expect(JSON.parse(result.item.output).committed).toBe(false);voice.close();
+});
+
+it('resolves the selected project without guessing or silently replacing invalid targets',()=>{
+ const selected='09410879-ca31-495f-8746-025f15b85d30',other='b151db6a-edf3-4b63-87db-b27e321eaf39',ids=[selected,other];
+ expect(resolveProjectTarget('delegate_work',{project_id:'selected',checkpoint:'Save file'},selected,ids)).toEqual({project_id:selected,checkpoint:'Save file'});
+ expect(resolveProjectTarget('read_workspace',{},selected,ids).project_id).toBe(selected);
+ expect(resolveProjectTarget('delegate_work',{project_id:other},selected,ids).project_id).toBe(other);
+ expect(()=>resolveProjectTarget('delegate_work',{project_id:'09410879-ca31-495f-87db-b27e321eaf39'},selected,ids)).toThrow('Unknown project target');
+});
+
+it('stops identical failed tool retries instead of silently burning all five rounds',async()=>{
+ vi.stubEnv('BOSON_API_KEY','offline-fixture');
+ const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);const events:any[]=[],tool=vi.fn(()=>{throw Error('Unknown project')});
+ const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,e=>events.push(e),tool,()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({}),tools:secretaryTools,voice:'eleanor'});
+ await voice.connect();const socket=transport.sockets[0];const job=await voice.ask('Save the file');
+ socket.receive({type:'conversation.item.created',item:{id:job.input!.itemId}});
+ for(const n of [1,2]){
+  socket.receive({type:'response.created',response:{id:`retry-${n}`}});
+  socket.receive({type:'response.done',response:{id:`retry-${n}`,status:'completed',output:[{type:'function_call',call_id:`call-${n}`,name:'delegate_work',arguments:'{"project_id":"invalid"}'}]}});
+ }
+ expect(tool).toHaveBeenCalledTimes(1);expect(socket.sent.filter((e:any)=>e.type==='response.create')).toHaveLength(2);
+ expect(events.some(e=>e.type==='error'&&e.message.includes('repeated tool error'))).toBe(true);expect(voice.busy).toBe(false);voice.close();
 });

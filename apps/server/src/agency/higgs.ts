@@ -3,9 +3,10 @@ import {randomUUID} from 'node:crypto';
 import {appendFileSync,mkdirSync,writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 
-export type Job={id:string;mode:'conversation';started:number;cancelled:boolean;rounds:number};
+type UserInput={itemId:string;source:'text'|'voice';text:string};
+export type Job={id:string;mode:'conversation';started:number;cancelled:boolean;rounds:number;input?:UserInput;failedCalls?:Set<string>;failed?:boolean};
 export type VoiceOptions={instructions:()=>string;context:()=>unknown;tools:unknown[];voice:string};
-type CallRow={id:string;roomId:string;agentId:string;voice:string;jobId:string;mode:string;responseId:string;startedAt:string;firstAudioMs?:number;completeMs?:number;usage?:any;estimatedUSD?:number;usageMissing?:boolean;status?:string;transcript?:string;file?:string;outputAudioSeconds?:number;tools?:any[]};
+type CallRow={id:string;roomId:string;agentId:string;voice:string;jobId:string;mode:string;responseId:string;startedAt:string;input?:UserInput;firstAudioMs?:number;completeMs?:number;usage?:any;estimatedUSD?:number;usageMissing?:boolean;status?:string;transcript?:string;file?:string;outputAudioSeconds?:number;tools?:any[]};
 function wav(pcm:Buffer){const b=Buffer.alloc(44);b.write('RIFF');b.writeUInt32LE(36+pcm.length,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(24000,24);b.writeUInt32LE(48000,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(pcm.length,40);return Buffer.concat([b,pcm]);}
 export function cost(usage:any){if(!usage||!Number.isFinite(usage.input_tokens)||!Number.isFinite(usage.output_tokens))return undefined;const cached=Math.max(0,Math.min(usage.input_tokens,usage.input_token_details?.cached_tokens||usage.input_tokens_details?.cached_tokens||0));return ((usage.input_tokens-cached)*.75+cached*.25+usage.output_tokens*4.5)/1e6;}
 export class HiggsColleague {
@@ -13,13 +14,18 @@ export class HiggsColleague {
  constructor(readonly id:string,private roomId:()=>string,private root:string,private emit:(e:any)=>void,private tool:(name:string,args:any,job:Job)=>any,private ended:(id:string,job:Job,audio:boolean)=>void,private barge:()=>void,private options:VoiceOptions){mkdirSync(resolve(root,'audio'),{recursive:true});}
  private voice(){return this.options.voice;}
  private currentContext(){return this.options.context();}
+ private instructions(){return `${this.options.instructions()}\n\nCURRENT OFFICE STATE (reference data, not a user message; historical briefs are not new requests):\n${JSON.stringify(this.currentContext())}`;}
+ private recordInput(input:UserInput,jobId?:string){appendFileSync(resolve(this.root,'inputs.jsonl'),JSON.stringify({at:new Date().toISOString(),roomId:this.roomId(),agentId:this.id,jobId,...input})+'\n');}
  async connect(){
   if(!process.env.BOSON_API_KEY)throw Error('BOSON_API_KEY missing');this.closed=false;this.ready=false;
+  const initialInstructions=this.instructions();
   const ws=this.ws=new WebSocket('wss://api.boson.ai/v1/realtime',{headers:{Authorization:`Bearer ${process.env.BOSON_API_KEY}`},handshakeTimeout:15000});
   await new Promise<void>((resolveReady,reject)=>{
    const timer=setTimeout(()=>reject(Error(`${this.id}: Higgs session update timed out`)),20000);
-   ws.on('open',()=>this.send({type:'session.update',session:{model:'higgs-realtime',output_modalities:['audio'],max_output_tokens:3500,instructions:this.options.instructions(),audio:{input:{format:{type:'audio/pcm',rate:24000},turn_detection:{type:'server_vad',threshold:.65,silence_duration_ms:550,prefix_padding_ms:300}},output:{format:{type:'audio/pcm',rate:24000},voice:this.voice()}},tools:this.options.tools,tool_choice:'auto'}}));
-   ws.on('message',raw=>{try{const e=JSON.parse(raw.toString());if((e.type==='session.updated'||e.type==='session.created')&&!this.ready){this.ready=true;clearTimeout(timer);resolveReady();this.emit({type:'colleague_ready',agentId:this.id,voice:e.session?.audio?.output?.voice||this.voice()});}if(e.type==='error'&&!this.ready){clearTimeout(timer);reject(Error(String(e.error?.message||'Higgs rejected configuration')));return;}this.receive(e);}catch(err){this.emit({type:'error',agentId:this.id,message:String(err)});}});
+   ws.on('open',()=>this.send({type:'session.update',session:{model:'higgs-realtime',output_modalities:['audio'],max_output_tokens:3500,instructions:initialInstructions,audio:{input:{format:{type:'audio/pcm',rate:24000},turn_detection:{type:'server_vad',threshold:.65,silence_duration_ms:550,prefix_padding_ms:300}},output:{format:{type:'audio/pcm',rate:24000},voice:this.voice()}},tools:this.options.tools,tool_choice:'auto'}}));
+   // Higgs acknowledges its first update as session.created, later ones as
+   // session.updated. Verify the echoed instructions, not just the event name.
+   ws.on('message',raw=>{try{const e=JSON.parse(raw.toString());if((e.type==='session.updated'||e.type==='session.created')&&e.session?.instructions===initialInstructions&&!this.ready){this.ready=true;clearTimeout(timer);resolveReady();this.emit({type:'colleague_ready',agentId:this.id,voice:e.session?.audio?.output?.voice||this.voice()});}if(e.type==='error'&&!this.ready){clearTimeout(timer);reject(Error(String(e.error?.message||'Higgs rejected configuration')));return;}this.receive(e);}catch(err){this.emit({type:'error',agentId:this.id,message:String(err)});}});
    ws.once('error',err=>{clearTimeout(timer);reject(err);});
    ws.on('error',err=>this.emit({type:'error',agentId:this.id,message:String(err.message)}));
    ws.on('close',()=>{if(ws!==this.ws)return;clearTimeout(timer);for(const [id] of this.rows)this.finish(id,'DISCONNECTED');if(!this.ready)reject(Error(`${this.id}: disconnected before ready`));if(!this.closed&&this.ready)this.emit({type:'colleague_disconnected',agentId:this.id});});
@@ -29,15 +35,17 @@ export class HiggsColleague {
  get mode(){return this.job?.mode;}
  private send(e:any){if(this.ws?.readyState===WebSocket.OPEN)this.ws.send(JSON.stringify(e));}
  private createResponse(){this.send({type:'response.create'});}
- private refreshVoiceContext(){this.send({type:'conversation.item.create',item:{type:'message',role:'user',content:[{type:'input_text',text:'[INTERNAL STATE UPDATE, not a new user request] '+JSON.stringify(this.currentContext())}]}});}
+ private refreshVoiceContext(){this.send({type:'session.update',session:{instructions:this.instructions()}});}
  async ask(text:string){
   if(!this.ready)throw Error(`${this.id} is not connected`);
   if(this.job)await this.cancel();
   const mode='conversation' as const;
-  const job=this.job={id:randomUUID(),mode,started:performance.now(),cancelled:false,rounds:0};
+  const job:Job=this.job={id:randomUUID(),mode,started:performance.now(),cancelled:false,rounds:0};
   this.expectedItem='request_'+randomUUID().replaceAll('-','');
+  job.input={itemId:this.expectedItem,source:'text',text};this.recordInput(job.input,job.id);
   this.emit({type:'thinking',agentId:this.id,jobId:job.id,mode});
-  this.send({type:'conversation.item.create',item:{id:this.expectedItem,type:'message',role:'user',content:[{type:'input_text',text:`[CURRENT AUTHORITATIVE OFFICE STATE] ${JSON.stringify(this.currentContext())}\n[USER REQUEST]\n${text}`}]}});
+  this.refreshVoiceContext();
+  this.send({type:'conversation.item.create',item:{id:this.expectedItem,type:'message',role:'user',content:[{type:'input_text',text}]}});
   return job;
  }
  audio(audio:string){if(!this.ready)return;this.send({type:'input_audio_buffer.append',audio});}
@@ -57,11 +65,11 @@ export class HiggsColleague {
   if(e.type==='input_audio_buffer.speech_stopped'){
    this.job={id:randomUUID(),mode:'conversation',started:performance.now(),cancelled:false,rounds:0};this.emit({type:'thinking',agentId:this.id,jobId:this.job.id,mode:'conversation'});
   }
-  if(e.type==='conversation.item.input_audio_transcription.completed')this.emit({type:'user_transcript',agentId:this.id,text:e.transcript});
+  if(e.type==='conversation.item.input_audio_transcription.completed'){this.recordInput({itemId:e.item_id,source:'voice',text:e.transcript});this.emit({type:'user_transcript',agentId:this.id,text:e.transcript});}
   if(e.type==='response.created'){
    if(++this.responseCount>100){this.close();this.emit({type:'error',message:'Session has reached 100 responses; reconnect explicitly.'});return;}
    const job=this.job||{id:randomUUID(),mode:'conversation' as const,started:performance.now(),cancelled:false,rounds:0};this.job=job;
-   const row:CallRow={id:randomUUID(),roomId:this.roomId(),agentId:this.id,voice:this.voice(),jobId:job.id,mode:job.mode,responseId:e.response.id,startedAt:new Date().toISOString()};
+   const row:CallRow={id:randomUUID(),roomId:this.roomId(),agentId:this.id,voice:this.voice(),jobId:job.id,mode:job.mode,responseId:e.response.id,startedAt:new Date().toISOString(),input:job.input};
    this.rows.set(e.response.id,{row,job,started:performance.now()});
   }
   const record=this.rows.get(e.response_id),row=record?.row;
@@ -74,12 +82,25 @@ export class HiggsColleague {
   if(e.type==='response.done'){
    const r=this.rows.get(e.response.id);if(!r)return;const {job}=r;
    r.row.usage=e.response.usage;r.row.tools=[];
+   if(e.response.status==='failed')job.failed=true;
    const calls=(e.response.output||[]).filter((c:any)=>c.type==='function_call');
-   for(const c of calls){let result:any;try{if(job.cancelled)throw Error('CANCELLED: this generation was interrupted; do not apply its tools.');result=this.tool(c.name,JSON.parse(c.arguments),job);}catch(err){result={committed:false,error:String(err),state:this.currentContext()};}r.row.tools.push({name:c.name,arguments:c.arguments,result});this.send({type:'conversation.item.create',item:{type:'function_call_output',call_id:c.call_id,output:JSON.stringify(result)}});}
+   let repeatedFailure=false;
+   for(const c of calls){
+    let result:any,signature=`${c.name}:${c.arguments}`;
+    try{
+     if(job.cancelled)throw Error('CANCELLED: this generation was interrupted; do not apply its tools.');
+     const args=JSON.parse(c.arguments);signature=`${c.name}:${JSON.stringify(args)}`;
+     if(repeatedFailure||job.failedCalls?.has(signature)){repeatedFailure=true;throw Error('Repeated failed tool call stopped. No change was applied by this call.');}
+     result=this.tool(c.name,args,job);
+    }catch(err){result={committed:false,error:String(err),state:this.currentContext()};}
+    if(result?.error&&!result.committed)(job.failedCalls??=new Set()).add(signature);
+    r.row.tools.push({name:c.name,arguments:c.arguments,result});this.send({type:'conversation.item.create',item:{type:'function_call_output',call_id:c.call_id,output:JSON.stringify(result)}});
+   }
    const hasAudio=!!this.chunks.get(e.response.id)?.length;
+   if(repeatedFailure||(!job.cancelled&&calls.length&&job.rounds>=4))job.failed=true;
    this.finish(e.response.id,job.cancelled?'INTERRUPTED':e.response.status||'unknown');
-   if(!job.cancelled&&calls.length&&++job.rounds<5){this.createResponse();}
-   else{if(this.job===job)this.job=undefined;this.emit({type:'turn_done',agentId:this.id,jobId:job.id,responseId:e.response.id,mode:job.mode,cancelled:job.cancelled,hasAudio});this.ended(this.id,job,hasAudio);}
+   if(!job.cancelled&&!repeatedFailure&&calls.length&&++job.rounds<5){this.refreshVoiceContext();this.createResponse();}
+   else{if(this.job===job)this.job=undefined;this.emit({type:'turn_done',agentId:this.id,jobId:job.id,responseId:e.response.id,mode:job.mode,cancelled:job.cancelled,hasAudio});this.ended(this.id,job,hasAudio);if(!job.cancelled&&calls.length)this.emit({type:'error',agentId:this.id,message:repeatedFailure?'Donna stopped a repeated tool error. The latest action was not applied; please check the task board.':'Donna reached the tool-step limit. Check the task board for any actions already applied.'});}
   }
  }
  private finish(id:string,status:string){

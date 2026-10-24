@@ -4,6 +4,7 @@ import {resolve,relative,isAbsolute,sep} from 'node:path';
 import {z} from 'zod';
 import {OfficeStore} from './state.js';
 import {Projects} from './projects.js';
+import {reconcileBriefings,type Briefing} from './briefings.js';
 
 export type ExecutionStatus='queued'|'working'|'waiting'|'review'|'done'|'paused'|'failed';
 export type Artifact={path:string;url:string;size:number;storage?:string;snapshotAt?:string};
@@ -11,7 +12,7 @@ export type Worker={id:string;projectId:string;name?:string;role:string;responsi
 export type Assignment={id:string;projectId:string;workerId:string;title:string;brief:string;acceptance:string;status:ExecutionStatus;revision:number;runId?:string;cwd:string;sessionId?:string;dependsOn:string[];reasoningEffort?:'low'|'medium';summary?:string;artifacts:Artifact[];verification?:string[];error?:string;startedAt?:string;completedAt?:string;tokens?:unknown;usageMissing?:boolean;elapsedMs?:number};
 export type Decision={id:string;projectId:string;title:string;context:string;options?:string[];status:'open'|'decided';decision?:string;reason?:string;createdAt:string;updatedAt:string};
 export type ProjectOverview={id:string;name:string;goal:string;memory:{outcome:string;checkpoint:string;latest:string;nextStep:string;updatedAt:string}};
-export type Workspace={revision:number;secretary:{id:'mara';name:string;role:'Secretary';voice:'eleanor';characterKey:string};projects:ProjectOverview[];workers:Worker[];assignments:Assignment[];decisions:Decision[];activity:{at:string;projectId?:string;message:string}[]};
+export type Workspace={revision:number;secretary:{id:'mara';name:string;role:'Secretary';voice:'eleanor';characterKey:string};projects:ProjectOverview[];workers:Worker[];assignments:Assignment[];decisions:Decision[];briefings:Briefing[];activity:{at:string;projectId?:string;message:string}[]};
 export interface CodexRunner {
  status():Promise<{available:boolean;authenticated?:boolean;version?:string;error?:string;model?:string;reasoningEffort?:string;modelAvailable?:boolean}>;
  run(input:{cwd:string;prompt:string;threadId?:string;reasoningEffort?:'low'|'medium';onThread?:(id:string)=>void;onEvent?:(event:any)=>void}):Promise<{threadId:string;turnId?:string;text:string;status:'completed'|'failed'|'interrupted';usage?:unknown;error?:string;model?:string;reasoningEffort?:string}>;
@@ -28,8 +29,12 @@ export class AgencyWorkspace {
  private data:Workspace;private running=false;private stopped=false;private wake?:ReturnType<typeof setTimeout>;private current?:{id:string;runId:string;threadId?:string};
  constructor(private store:OfficeStore,private projects:Projects,private codex:CodexRunner,private notify:(workspace:Workspace)=>void=()=>{},private options:{autoStart?:boolean}={}){
   const p=resolve(store.root,'workspace.json');
-  this.data=existsSync(p)?JSON.parse(readFileSync(p,'utf8')):{revision:0,secretary:{id:'mara',name:'Secretary',role:'Secretary',voice:'eleanor',characterKey:'char-female-b'},projects:[],workers:[],assignments:[],decisions:[],activity:[]};
+  this.data=existsSync(p)?JSON.parse(readFileSync(p,'utf8')):{revision:0,secretary:{id:'mara',name:'Donna',role:'Secretary',voice:'eleanor',characterKey:'char-female-b'},projects:[],workers:[],assignments:[],decisions:[],briefings:[],activity:[]};
+  const needsBriefings=!this.data.briefings;this.data.briefings??=[];
+  // Adopt the user's chosen name without changing IDs, voices or project history.
+  if(['Secretary','Mara'].includes(this.data.secretary.name)){this.data.secretary.name='Donna';this.save();}
   this.syncProjects();
+  if(needsBriefings||reconcileBriefings(this.data.briefings,this.data.assignments,this.data.workers))this.save();
  }
  snapshot():Workspace{return structuredClone(this.data);}
  syncProjects(){
@@ -42,7 +47,9 @@ export class AgencyWorkspace {
   }
   if(changed)this.save();
  }
- private save(){this.data.revision++;const p=resolve(this.store.root,'workspace.json');writeFileSync(p+'.tmp',JSON.stringify(this.data,null,2));renameSync(p+'.tmp',p);this.notify(this.snapshot());}
+ private save(){reconcileBriefings(this.data.briefings,this.data.assignments,this.data.workers);this.data.revision++;const p=resolve(this.store.root,'workspace.json');writeFileSync(p+'.tmp',JSON.stringify(this.data,null,2));renameSync(p+'.tmp',p);this.notify(this.snapshot());}
+ briefing(id?:string){const b=id?this.data.briefings.find(b=>b.id===id):this.data.briefings.filter(b=>b.status==='queued').sort((a,b)=>a.createdAt.localeCompare(b.createdAt))[0];if(!b||b.status!=='queued')throw Error('No pending briefing with that ID');return structuredClone(b);}
+ presentBriefing(id:string){const existing=this.data.briefings.find(b=>b.id===id);if(existing?.status==='presented')return {committed:false,briefing:structuredClone(existing)};const b=this.briefing(id),stored=this.data.briefings.find(k=>k.id===b.id)!;stored.status='presented';stored.presentedAt=now();this.log(`Donna presented: ${b.title}`,b.projectId);this.save();return {committed:true,briefing:structuredClone(stored)};}
  private log(message:string,projectId?:string){this.data.activity.push({at:now(),projectId,message});this.data.activity=this.data.activity.slice(-120);}
  private project(id:string){const p=this.data.projects.find(p=>p.id===id);if(!p)throw Error('Unknown project; create or select a registered project first.');return p;}
  private assignment(id:string){const a=this.data.assignments.find(a=>a.id===id);if(!a)throw Error('Unknown assignment');return a;}

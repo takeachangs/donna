@@ -16,13 +16,25 @@ The client talks to `/agency-api/*` and `/agency-ws`. Only the backend holds the
 `artifacts/agency/` is private local runtime data, excluded from Git and source packages:
 
 - `projects.json`: project catalog.
-- `workspace.json`: secretary identity, project memory, assignments, decisions and activity.
+- `workspace.json`: secretary identity, project memory, assignments, decisions, persistent briefings and activity.
 - `rooms/`: compatible existing project records and old documents.
 - `workspaces/`: actual native execution directories.
 - `deliveries/`: versioned file snapshots for review.
-- `calls.jsonl`, `executions.jsonl`, `audio/`: usage evidence and retained speech.
+- `inputs.jsonl`, `calls.jsonl`, `executions.jsonl`, `audio/`: private input traces, usage evidence and retained speech. Text response rows link to the exact submitted text and job; old rows without inputs cannot establish what the user said.
+
+Donna's current workspace context is refreshed in session instructions, separate from actual user messages. Old draft bodies are read on demand. Current state establishes execution facts; the user's latest correction establishes intent. Typed follow-ups keep the caption history even if audio is still playing. Microphone interruption and explicit stop still use the audio playhead.
+
+Project tools accept `project_id: "selected"` so the secretary does not need to reconstruct UUIDs for the current room. Explicit unknown IDs are rejected, never silently redirected. Identical failed tool retries stop with a visible error; the total tool-round limit also reports an error rather than appearing to finish successfully.
 
 Existing native workspaces can contain absolute paths. Keep this directory in place during source refactors. Moving an existing installation to a different machine/path needs an explicit workspace-path migration; the source ZIP is not a user-data backup.
+
+## Floor and result handoff
+
+The Office floor is the global view (the internal `command` view identifier remains compatible). `floor.ts` gives each project a stable doorway onto the shared hall; growing a team expands its room outward, and new projects add rows. Donna's suite stays at the entrance. `Scene.ts` renders this persisted workspace and animates new deliveries; animation never commits completion or controls execution.
+
+`briefings.ts` reconciles terminal, successful workflow deliveries into immutable saved reports. Intermediate steps pass to their dependents, and the final report includes the dependency chain's file snapshots. Upstream revisions supersede stale queued reports until the terminal work is rerun. The server saves the queue even without a connected browser. Workers return to their desks after handoff; reloads do not replay historical trips.
+
+Donna uses `read_briefing` to read a queued report. A matching browser audio-clock completion marks it presented only after successful, uncancelled speech. Opening a report alone does not consume it; explicit **I've read this briefing** does. Presentation never accepts an assignment. Histories remain available, and interruption leaves reports queued. Outbound calls and unsolicited meeting requests are future work, not simulated features.
 
 ## Development and production
 

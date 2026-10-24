@@ -4,12 +4,13 @@ import {WebSocketServer,WebSocket} from 'ws';
 import {existsSync,readFileSync,appendFileSync,statSync} from 'node:fs';
 import {resolve,basename} from 'node:path';
 import {OfficeStore} from './state.js';
-import {HiggsColleague} from './higgs.js';
+import {HiggsColleague,type Job} from './higgs.js';
 import {Projects} from './projects.js';
 import {AgencyExecutors} from './executors.js';
 import {AgencyWorkspace} from './workspace.js';
-import {secretaryInstructions,secretaryTools} from './secretary.js';
+import {secretaryInstructions,secretaryTools,resolveProjectTarget} from './secretary.js';
 import {serveWeb} from './static.js';
+import {completedBriefing,type Presentation} from './briefings.js';
 
 const store=new OfficeStore(),root=store.root,projects=new Projects(store),executors=new AgencyExecutors(),codex=executors.codex;
 const clients=new Set<WebSocket>();
@@ -24,6 +25,7 @@ const server=createServer(async(req,res)=>{
  const u=new URL(req.url||'/','http://localhost'),parts=u.pathname.split('/').filter(Boolean);
  try{
   if(u.pathname==='/agency-api/workspace')return json(res,workspace.snapshot());
+  if(parts[0]==='agency-api'&&parts[1]==='briefings'&&parts[2]&&parts[3]==='presented'&&req.method==='POST'){await body(req);return json(res,workspace.presentBriefing(parts[2]));}
   if(u.pathname==='/agency-api/projects/register'&&req.method==='POST'){const p=projects.register(await body(req));workspace.syncProjects();return json(res,p);}
   if(u.pathname==='/agency-api/projects'){if(req.method==='POST'){const p=projects.create(await body(req));workspace.syncProjects();return json(res,p,201);}return json(res,projects.list());}
   if(u.pathname==='/agency-api/status'){const providers=await executors.status();return json(res,{available:!!process.env.BOSON_API_KEY,assistants:[workspace.snapshot().secretary],model:'higgs-realtime',codex:providers.codex,providers,execution:'local-codex',maxWorkersPerPlan:4});}
@@ -49,12 +51,17 @@ const wss=new WebSocketServer({server,path:'/agency-ws',maxPayload:24000});
 wss.on('connection',(client,req)=>{
  if(!local(req.headers.origin)){client.close(1008);return;}
  clients.add(client);let selected=projects.list()[0]?.id||'',view='secretary',started=false,ready=false,voice:HiggsColleague|undefined,closed=false;
+ let presentation:Presentation|undefined;
  const emit=(event:any)=>{if(!closed&&client.readyState===WebSocket.OPEN)client.send(JSON.stringify(event));};
  const room=()=>store.load(selected||projects.list()[0]?.id);
- const current=()=>({selected_project_id:selected,view,workspace:workspace.snapshot(),legacy:selected?{...room(),documents:room().documents.map(d=>({...d,body:d.body.slice(0,2500)}))}:undefined});
+ // Keep old prose out of every turn. Full preserved drafts remain available on
+ // an explicit read; current project memory describes the ongoing work.
+ const current=()=>({selected_project_id:selected,view,workspace:workspace.snapshot(),legacy:selected?{documents:room().documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
  const read=(id?:string)=>id?{...current(),project:workspace.snapshot().projects.find(p=>p.id===id),legacy:store.load(id)}:current();
- function tool(name:string,args:any):any{
+ function tool(name:string,args:any,job:Job):any{
+  args=resolveProjectTarget(name,args,selected,projects.list().map(p=>p.id));
   if(name==='read_workspace')return {committed:false,...read(args.project_id)};
+  if(name==='read_briefing'){const b=workspace.briefing(args.briefing_id);presentation={briefingId:b.id,job,audioComplete:false};view='secretary';emit({type:'view',view});return {committed:false,briefing:{title:b.title,project:workspace.snapshot().projects.find(p=>p.id===b.projectId)?.name,summary:b.summary,files:b.artifacts.map(f=>f.path),verification:b.verification,contributors:b.contributors},note:'Give a short spoken briefing using names, not internal IDs. Playback completion records presentation; it does not accept the work.'};}
   if(name==='set_secretary_identity')return workspace.setSecretary(args);
   if(name==='create_project'){const p=projects.create(args);workspace.syncProjects();selected=p.id;emit({type:'state',state:room()});return {committed:true,project:p};}
   if(name==='update_project')return workspace.updateProject(args);
@@ -72,18 +79,20 @@ wss.on('connection',(client,req)=>{
    if(e.roomId){if(!projects.list().some(p=>p.id===e.roomId))throw Error('Select a registered project');selected=e.roomId;}
    if(!selected)throw Error('Create a project room first');if(['secretary','command','project'].includes(e.view))view=e.view;
    emit({type:'state',state:room()});emit({type:'workspace',workspace:workspace.snapshot()});emit({type:'focus',agentId:'mara'});
-   voice=new HiggsColleague('mara',()=>selected,root,emit,tool,(_id,job,hasAudio)=>{if(!job.cancelled&&hasAudio)emit({type:'await_playback',jobId:job.id});},()=>emit({type:'interrupted'}),{instructions:()=>secretaryInstructions,context:current,tools:secretaryTools,voice:'eleanor'});
+   voice=new HiggsColleague('mara',()=>selected,root,emit,tool,(_id,job,hasAudio)=>{if(presentation?.job===job)presentation.audioComplete=!job.cancelled&&hasAudio;if(!job.cancelled&&hasAudio)emit({type:'await_playback',jobId:job.id});},()=>{presentation=undefined;emit({type:'interrupted'});},{instructions:()=>secretaryInstructions,context:current,tools:secretaryTools,voice:'eleanor'});
    for(let attempt=0;;attempt++){try{await voice.connect();break;}catch(err){voice.close();if(closed||attempt>=2||!String(err).includes('429'))throw err;emit({type:'connection_retry',attempt:attempt+1});await new Promise(r=>setTimeout(r,4000*(attempt+1)));}}
    if(closed){voice.close();return;}ready=true;emit({type:'ready',model:'higgs-realtime'});return;
   }
   if(!started||!voice)throw Error('Connect to the secretary first');
+  if(['text','interrupt','switch_project','present_briefing','stop'].includes(e.type))presentation=undefined;
+  if(e.type==='present_briefing'){if(!ready)throw Error('Secretary is connecting');const b=workspace.briefing(e.briefingId);emit({type:'interrupted'});await voice.ask(`Use read_briefing with briefing_id ${b.id}. Give me a natural spoken briefing in 2–3 sentences: who delivered what, the most useful check, and any action I need to take. Never read internal IDs or URLs aloud. Keep technical detail in the saved report. Do not accept the work or start new work.`);return;}
   if(e.type==='switch_project'){if(!projects.list().some(p=>p.id===e.roomId))throw Error('Unknown project');await voice.cancel();voice.clearInput();selected=e.roomId;view='project';emit({type:'interrupted'});emit({type:'state',state:room()});emit({type:'project_ready'});return;}
   if(e.type==='set_view'){if(!['secretary','command','project'].includes(e.view))throw Error('Unknown view');view=e.view;return;}
   if(e.type==='text'){if(!ready)throw Error('Secretary is connecting');if(typeof e.text!=='string'||!e.text.trim()||e.text.length>5000)throw Error('Invalid text');emit({type:'interrupted'});emit({type:'user_transcript',text:e.text});await voice.ask(e.text);return;}
   if(e.type==='audio'){if(typeof e.audio!=='string'||e.audio.length>16000||!/^[A-Za-z0-9+/]+=*$/.test(e.audio))throw Error('Invalid PCM frame');voice.audio(e.audio);return;}
   if(e.type==='interrupt'){if(typeof e.itemId==='string'&&Number.isFinite(e.audioEndMs))voice.truncate(e.itemId,e.audioEndMs);await voice.cancel();emit({type:'interrupted'});return;}
   if(e.type==='focus'){emit({type:'focus',agentId:'mara'});return;}
-  if(e.type==='played')return;
+  if(e.type==='played'){const id=completedBriefing(presentation,e.jobId);if(id){presentation=undefined;workspace.presentBriefing(id);}return;}
   if(e.type==='stop'){voice.close();client.close();return;}
  }catch(err){emit({type:'error',message:String(err)});}})();});
  client.on('close',()=>{closed=true;clients.delete(client);voice?.close();});

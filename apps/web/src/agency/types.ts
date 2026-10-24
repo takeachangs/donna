@@ -9,4 +9,5 @@ export type Worker={id:string;projectId:string;name?:string;role:string;responsi
 export type Assignment={id:string;projectId:string;workerId:string;title:string;brief:string;acceptance:string;status:WorkStatus;cwd:string;sessionId?:string;summary?:string;artifacts:{path:string;url:string;size?:number;snapshotAt?:string}[];verification?:string[];error?:string;startedAt?:string;completedAt?:string;tokens?:unknown;usageMissing?:boolean}
 export type Decision={id:string;projectId:string;title:string;context:string;options?:string[];status:'open'|'decided';decision?:string;reason?:string;createdAt:string}
 export type ProjectMemory={outcome:string;checkpoint:string;latest:string;nextStep:string;updatedAt:string}
-export type Workspace={revision:number;secretary:Colleague;projects:(Project&{goal:string;memory:ProjectMemory})[];workers:Worker[];assignments:Assignment[];decisions:Decision[];activity:{at:string;projectId?:string;message:string}[]}
+export type Briefing=import('../../../server/src/agency/briefings').Briefing
+export type Workspace={revision:number;secretary:Colleague;projects:(Project&{goal:string;memory:ProjectMemory})[];workers:Worker[];assignments:Assignment[];decisions:Decision[];briefings:Briefing[];activity:{at:string;projectId?:string;message:string}[]}

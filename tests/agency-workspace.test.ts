@@ -51,6 +51,23 @@ async function until(predicate:()=>boolean){
 }
 
 describe('agency native execution workspace',()=>{
+  it('persists a completed delivery at Donna and treats presentation separately from acceptance',async()=>{
+    const f=fixture();delegate(f);const pumping=f.workspace.pump();await until(()=>f.codex.pending.length===1);f.codex.deliver(0);await pumping;
+    const b=f.workspace.briefing();expect(b.summary).toContain('real local fixture');
+    const reopened=new AgencyWorkspace(f.store,f.projects,new ControlledCodex(),()=>{},{autoStart:false});workspaces.push(reopened);
+    expect(reopened.briefing().id).toBe(b.id);reopened.presentBriefing(b.id);
+    expect(reopened.snapshot().assignments[0].status).toBe('review');expect(reopened.snapshot().briefings[0].status).toBe('presented');expect(reopened.presentBriefing(b.id).committed).toBe(false);
+    expect(()=>reopened.briefing()).toThrow('No pending briefing');
+  });
+  it('adopts Donna while preserving projects, workers, deliveries and native sessions',()=>{
+    const f=fixture();delegate(f);const saved=f.workspace.snapshot();saved.secretary.name='Mara';
+    saved.workers[0].sessionId='preserved-native-session';
+    writeFileSync(resolve(f.root,'workspace.json'),JSON.stringify(saved));
+    const second=new AgencyWorkspace(f.store,f.projects,new ControlledCodex(),()=>{},{autoStart:false});workspaces.push(second);
+    const next=second.snapshot();expect(next.secretary.name).toBe('Donna');expect(next.secretary.id).toBe('mara');
+    expect(next.projects).toEqual(saved.projects);expect(next.workers).toEqual(saved.workers);expect(next.assignments).toEqual(saved.assignments);expect(next.decisions).toEqual(saved.decisions);
+    expect(JSON.parse(readFileSync(resolve(f.root,'workspace.json'),'utf8')).secretary.name).toBe('Donna');
+  });
   it('adds compact project memory without rewriting existing project files',()=>{
     const f=fixture();let old=f.store.load(f.project.id);
     old.documents.push({id:'legacy',title:'Preserved draft',body:'Existing English deliverable that must survive the workspace migration.',author:'mara',revision:1,updatedAt:'2026-10-23T00:00:00Z'});f.store.save(old);
