@@ -11,13 +11,13 @@ Data dir below: `D=$(mktemp -d)`; logs are in `$D/calls.jsonl`, `$D/executions.j
 - [ ] Fresh data: `export AGENCY_DATA_DIR=$(mktemp -d)` (never the live office data).
 - [ ] `npm ci && npm run dev`; open http://127.0.0.1:5183/
 - [ ] Server log shows one line like `[engine] default worker engine: claude (...)`. It must name the engine you intend.
-- [ ] Footer engine status: default engine verified and enabled. Office shows Donna alone, no "Project 01" (after #8; before #8 an empty "Project 01" exists).
+- [ ] Engine status (⚙): default engine verified and enabled. Office shows Donna alone, no "Project 01" (after #8; before #8 an empty "Project 01" exists).
 - [ ] Browser: Chrome, click once on the page first (autoplay policy can mute the ring chime), allow the microphone when prompted.
 - [ ] Output device set (system output or AirPods). Laptop mic in, since an AirPods mic degrades STT.
-- [ ] Pre-flight voice test: click **Talk to secretary** (the mic goes live in the same click). Pass: Donna speaks first, "Hey, it's Donna. What do you need?". Say "Hello": a plain greeting, no talk of work. Then **Hang up**.
+- [ ] Pre-flight voice test: click **Call Donna** (the mic goes live in the same click). Pass: Donna speaks first, "Hey, it's Donna. What do you need?". Say "Hello": a plain greeting, no talk of work. Then **Hang up**.
 
 ## 2. Headless checks (typed text, no mic)
-Connect, then type into the goal box. Each check uses the same server and data dir.
+Call Donna, then type into **Type instead**. Each check uses the same server and data dir.
 
 - [ ] **Office loads.** Open the URL with DevTools open. Pass: no console errors; the office floor renders; no 4xx on `/agency-api/*`.
 - [ ] **Request acts in the same turn.** Type `make me a landing page for a bakery`. Look: `calls.jsonl` rows for this turn. Pass: `create_project` (with `initial_work` set; or `initial_work:null` followed by `delegate_work` in the same turn), and a final one-sentence reply saying what was confirmed. No "shall I", no "I can't". Was 6/6 on PR 7's harness; a claim with no call was about 1 in 6 on earlier prompts, so retry once if it happens.
@@ -29,11 +29,11 @@ Connect, then type into the goal box. Each check uses the same server and data d
 - [ ] **Second request while one runs.** Repeat the same goal within 2 minutes. Pass (after #8): one assignment only; the existing one is returned with `note: "already queued"` and Donna says it's in progress. Before #8 this duplicates; do not demo it.
 
 ## 3. Mic checks (presenter)
-- [ ] **Connect.** Talk to secretary (no separate microphone step). Pass: Donna picks up first with her name and replies to "Hello".
+- [ ] **Connect.** Call Donna (no separate microphone step). Pass: Donna picks up first with her name and replies to "Hello".
 - [ ] **10-second request with pauses (VAD 800 ms).** Say, with a 1 s pause in the middle: "I want a landing page for a bakery, um, with a menu section, and a contact form." Pass: Donna waits for the end and does not talk over you. If she cuts in, raise `AGENCY_VAD_SILENCE_MS=1000` and restart. Not measured with a real mic in Chamber.
 - [ ] **Interrupt.** While Donna speaks a long answer, say "stop, wait". Pass: she stops; a report being read stays queued.
 - [ ] **Announcement when connected.** Stay connected while the brain finishes. Pass: "The X is done, A and B finished it. Want the short version?" at a pause, not over you. Say "yes". Pass: she gives the short version, no file paths or check lists. Say "bye": she says goodbye and the call ends.
-- [ ] **Ring when disconnected.** Hang up, wait for the briefing. Pass: two-tone chime, **Calling** badge, the connect button reads **Answer Donna**, status "Donna is calling about ...", Donna walks to the entrance phone. Click **Answer Donna**: it connects with the mic live, Donna opens "Hey, it's Donna. The X is done… Want the short version?", you say yes and hear it; Donna walks back.
+- [ ] **Ring when disconnected.** Hang up, wait for the briefing. Pass: two-tone chime, **Ringing** pill, the call button reads **Answer**, status "Donna is calling about ...", Donna walks to the entrance phone. Click **Answer**: it connects with the mic live, Donna opens "Hey, it's Donna. The X is done… Want the short version?", you say yes and hear it; Donna walks back.
 - [ ] **Idle 5 min.** Not documented or verified anywhere. Try it once before the demo (leave the call open 5 min, then speak) and write down what happens. Do not rely on a long idle on stage.
 
 ## 4. Known limits and do not do on stage
@@ -54,10 +54,10 @@ Pre-start: connected, mic on, Donna alone in the office (after #8). Keep the typ
 |---|---|---|---|---|
 | 0:00 | "This is Chamber, your AI office. Hello Donna." | A greeting, no work talk | Empty floor, Donna at the suite | Type `hello` |
 | 0:20 | "Make me a landing page for a bakery with a contact form." | One short sentence confirming the project and the work are set up | Room appears; Donna "thinking" (plan) | Type the same text |
-| 0:45 | "How's it going?" | A status matching the state (planning, or a worker writing the page) | Crew desks appear, workers typing | Type it; or read the activity log aloud |
+| 0:45 | "How's it going?" | A status matching the state (planning, or a worker writing the page) | Crew desks appear, workers typing | Type it; or click the room and read its Work list |
 | 1:15 | (talk over the build) "Workers never talk to me; Donna's brain plans, runs, and reviews them." | Silent | Workers at desks; Donna "working" during review | Play the clip from here |
-| 1:45 | Say "bye" (or click **Hang up**) before the result lands to show the ring, if timing fits | - | Chime, **Calling** badge, Donna walks to the phone | Skip; stay connected and use the next row |
-| 2:00 | Click **Answer Donna**, then say "yes" | "Hey, it's Donna. The X is done, A and B finished it. Want the short version?" then the short version naming both workers | Delivery trip, report highlighted in the briefing queue | Click **Read report** and show Details/files |
+| 1:45 | Say "bye" (or click **Hang up**) before the result lands to show the ring, if timing fits | - | Chime, **Ringing** pill, Donna walks to the phone | Skip; stay connected and use the next row |
+| 2:00 | Click **Answer**, then say "yes" | "Hey, it's Donna. The X is done, A and B finished it. Want the short version?" then the short version naming both workers | Delivery trip, report at the top of Reports | Open the report in the drawer and show its files |
 | 2:40 | "Open the page." Open the file from the project room | - | Real `index.html` deliverable | Open the saved file from the data dir |
 | 2:55 | "Everything stays local; the voice talks, the brain plans, workers act." | - | Office floor | - |
 

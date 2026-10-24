@@ -835,7 +835,7 @@ export class NPC {
   private static loadStatusSvgs(): void {
     if (NPC.svgsLoaded) return
     NPC.svgsLoaded = true
-    const svgFiles = import.meta.glob('../assets/status-*.svg', { as: 'raw', eager: true }) as Record<string, string>
+    const svgFiles = import.meta.glob('../assets/status-*.svg', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
     for (const [path, content] of Object.entries(svgFiles)) {
       const name = path.match(/status-(\w+)\.svg$/)?.[1]
       if (name) NPC.STATUS_SVGS[name] = content
