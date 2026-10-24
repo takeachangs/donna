@@ -4,9 +4,10 @@
 """A scripted stand-in for Donna's brain (the /call session) for a headless check of the task lifecycle. Stdlib only.
 
     uv run tests/fake_donna.py          # the agent: watches the herd inbox, take -> note -> (ask ->) say
-    uv run tests/fake_donna.py --demo   # driver: temp HIGGS_HOME, agent thread + `bridge.py --ring --silent`, scripted turns
+    uv run tests/fake_donna.py --demo   # driver: temp HIGGS_HOME, agent thread + `bridge.py --ring --silent`, scripted turns;
+                                        # ends with a task still running at the goodbye, whose later say rings a second call
 """
-import json, os, queue, subprocess, sys, tempfile, threading, time
+import json, os, queue, signal, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -32,6 +33,8 @@ def work(herd, line):
     say(herd, tid, "note", "looking at the folder")
     if "quick" in task.lower():
         time.sleep(1.0); say(herd, tid, "say", "Twelve files, all small."); return
+    if "backup" in task.lower():  # still running when the user hangs up: this say must ring them (#32)
+        time.sleep(25); say(herd, tid, "say", "The backup of the notes folder is done."); return
     say(herd, tid, "ask", "Should the page be blue or green?")
     try:
         answer = answers.setdefault(tid, queue.Queue()).get(timeout=60)
@@ -69,7 +72,8 @@ def demo():
     logf = REPO / "bridge.log"
     start = logf.stat().st_size if logf.exists() else 0
     bridge = subprocess.Popen(["uv", "run", "-q", "bridge.py", "--ring", "--silent", "--backend", "session", "--max-seconds", "90"],
-                              cwd=REPO, stdin=subprocess.PIPE, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=os.environ.copy())
+                              cwd=REPO, stdin=subprocess.PIPE, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=os.environ.copy(),
+                              start_new_session=True)  # its own process group: the teardown kills this bridge (uv and its python), never a real phone
     pos = start
 
     def tail():
@@ -103,15 +107,22 @@ def demo():
         wait_log("answer → donna", 15)
         wait_log("→ commentary", 40)  # the final say, spoken after the lull
         time.sleep(3)
-        type_("Thanks, bye")
+        type_("Also make a backup of the notes folder.")
+        wait_log("DELEGATION", 20)  # sent from the call: the bridge claims its id
+        wait_log("VOICE", 20)
+        type_("Thanks, bye")  # the backup is still running: no "done" claim, the sign-off still closes
+        wait_log("call.ended", 30)
+        wait_log("call.ring", 40)  # the brain's later say for the call's own task rings
+        wait_log("VOICE", 30)
+        type_("Great, thanks. Bye.")
         wait_log("call.ended", 30)
         ok = True
     except Exception as e:
         print(f"FAILED: {e}")
     finally:
-        bridge.terminate()
+        os.killpg(bridge.pid, signal.SIGTERM)
         try: bridge.wait(10)
-        except subprocess.TimeoutExpired: subprocess.run(["pkill", "-f", "bridge.py --ring"])
+        except subprocess.TimeoutExpired: os.killpg(bridge.pid, signal.SIGKILL)
         print(tail())
     sys.exit(0 if ok else 1)
 

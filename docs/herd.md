@@ -28,7 +28,7 @@ Matrix. Decisions below are from Oct 23 ~23:00 and replace the earlier multi-voi
 | The herd outlives the ride | Workers live in `~/.higgs/herd/<name>/` and keep running when the call ends; a call (speaker now, phone later) is a *ride* that attaches to Donna. |
 | Butler = one coordinator, cascading spawn | Donna spawns workers with `herd.py new` + `send`; depth 1. The scene shows Donna with her workers around her. |
 | Verbs `new / ls / send / capture / close` | `herd.py`'s whole surface. Donna uses them from her shell; the bridge and the 3D scene read what they write. |
-| Mail with a `Next:` line | Already ours: each inbox line tells the agent how to reply (`bridge.py say\|note <id>`). Workers reply the same way, into Donna's view. |
+| Mail with a `Next:` line | Already ours: each inbox line tells the agent how to reply (`herd.py reply donna <id> say\|note`). Workers reply the same way, into Donna's view. |
 | Deferred reply (`pending{timeout, on_cancel}`) | The open `delegate_task` call in `higgslive.py`. Adopt the cancel reasons: a hang-up is `client_disconnected`; the result is held and Donna calls back. |
 | Code-built status, never screen text | "How's it going?" is answered from `status.json` of every worker, not by interrupting them. Same source drives the scene's entity states. |
 | Caller identity is advisory | Say so in our docs too: the PIN decides who talks (Twilio later); the sessions' own permission mode decides what they may do. |
@@ -53,8 +53,8 @@ user ⇄ speaker+mic (later: Twilio) ⇄ Higgs voice "Donna" ⇄ bridge.py ⇄ D
 - **Two voice tools only:** `delegate_task(task)` (unchanged) and `task_status()` (code-built from the herd: who is
   working on what, who is idle, what finished). No `spawn_agent` for the voice; Donna decides when to spawn.
 - **Donna's rules (in the `/call` skill):** never do work longer than a minute yourself; `herd.py new <name> --kind
-  claude --project DIR` then `herd.py send <name> "<task>"`; watch the workers' outboxes; `bridge.py note <id>` for
-  progress, `bridge.py say <id>` for results, ≤3 plain sentences; when the user is not on the line, a `say` rings them.
+  claude --project DIR` then `herd.py send <name> "<task>"`; watch the workers' outboxes; `herd.py reply donna <id> note` for
+  progress, `herd.py reply donna <id> say` for results, ≤3 plain sentences; when the user is not on the line, a `say` rings them.
 
 ## 4. The contract on disk (one directory per agent, one event log for everyone)
 
@@ -130,6 +130,11 @@ subagents (named Sonnets, `run_in_background`); Claude Code dispatches, the hook
 from the voice carry `"transcript": [[role, text], ...]` (the call's last 12 turns, `user`/`assistant`) in place of
 `context`, and `"replaces": "<id>"` when the user corrected an earlier task (the brain fails the old one with
 "Replaced by the corrected request."; the voice has already dropped its result).
+
+Oct 24 (#32): one inbox path. `bridge.py --backend session` always sends through `herd.send` to `herd/donna/inbox.jsonl`
+and reads `herd/donna/outbox.jsonl`, with or without `--ring`; the pre-herd `~/.higgs/inbox.jsonl`/`outbox.jsonl` and the
+`bridge.py say|note|take|ask|fail` CLI are gone (`herd.py reply donna …` is the reply path). A task still running when the
+user hangs up is released by the bridge at hang-up, so its later `say` rings them (`tests/fake_donna.py --demo` checks it).
 
 Not Saturday: approvals, context %, more than one level, several voices, real remuda as a backend.
 

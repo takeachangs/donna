@@ -4,7 +4,7 @@
 """Voice bridge: Higgs Realtime on the mic and speaker, a Claude Code session (or `claude -p`) as the brain.
 
   uv run bridge.py                        # mic + speaker; backend = headless `claude -p` in ./sandbox (or --project DIR)
-  uv run bridge.py --backend session      # the /call skill: a Claude Code session answers via ~/.higgs/inbox.jsonl + outbox.jsonl
+  uv run bridge.py --backend session      # the /call skill: tasks go to Donna's herd inbox (herd.py send), answers come from her outbox
   uv run bridge.py --backend fake         # 6 s sleep instead of Claude (no Claude credits)
   uv run bridge.py --text "a | b"         # headless: typed turns instead of the mic; exits after the last result is spoken
   uv run bridge.py --silence-ms 1000      # VAD silence before a turn ends (live mic default 800 ms; --text/--wav keep the server's 500)
@@ -12,18 +12,17 @@
                                           # Enter calls her; hangs up on "bye", 60 s of silence or Higgs idle timeout
                                           # every call starts with ~/.higgs/herd/donna/context.txt; tasks go through herd.py send
   uv run bridge.py --ring --silent        # headless Donna phone: each stdin line is Enter (no call open) or a typed turn (on a call)
-  uv run bridge.py say  ID "text"         # spoken result for delegation ID   (session backend)
-  uv run bridge.py note ID "text"         # quiet progress for delegation ID  (session backend)
-  uv run bridge.py take|ask|fail ID "text"   # started (silent) / a question for the user (spoken now) / could not finish (session backend)
   uv run bridge.py selftest               # offline checks (idle policy, sign-off, prompt size), no API call
 
-Delegations land in ~/.higgs/inbox.jsonl, one JSON line each: {"id", "task", "transcript": [[role, text], ...last 12], "replaces"?}.
-~/.higgs/context.txt, if present, is sent to the voice at the start of the call (first 4000 chars). If its first line is
+Session backend: delegations land in ~/.higgs/herd/donna/inbox.jsonl through herd.send, one JSON line each: {"id", "task",
+"transcript": [[role, text], ...last 12], "replaces"?, ...}; the brain answers with `herd.py reply donna ID take|note|ask|say|fail`.
+The call's seed is herd/donna/context.txt (session backend or --ring), else ~/.higgs/context.txt; if present it is sent to the
+voice at the start of the call (first 4000 chars). If its first line is
 `Calling about: <reason>` the voice speaks first and says why it's calling. The delegation layer itself is higgslive.py.
 While running, the bridge writes ~/.higgs/state.json ({"state": off|ringing|listening|thinking|speaking}, every 250 ms, `off`
 last) and re-renders ~/.higgs/office.json every second (herd.write_office, docs/office-state.md).
 """
-import argparse, asyncio, base64, contextlib, json, logging, os, queue, re, sys, threading, time, uuid
+import argparse, asyncio, base64, contextlib, json, logging, os, queue, re, sys, threading, time
 
 SIGN_OFF = "Hanging up now."   # the voice ends every goodbye with this (PROMPT); hearing it closes the call. The only copy: docs and the skill name it, code imports it
 IDLE_AFTER, NUDGE_AT, WARN_BEFORE = 60, 30, 10   # Mike's idle policy: nudge at 30 s of quiet, a cue at 50 s, hang up at 60 s; never while a task is pending
@@ -46,14 +45,10 @@ RATE = 24000
 HIGGS_DIR = os.path.expanduser(os.environ.get("HIGGS_DIR") or os.environ.get("HIGGS_HOME") or "~/.higgs")
 os.environ.setdefault("HIGGS_HOME", HIGGS_DIR)   # herd.py (imported below) reads HIGGS_HOME: keep both on the same directory
 import herd
-INBOX, OUTBOX, CONTEXT = (os.path.join(HIGGS_DIR, f) for f in ("inbox.jsonl", "outbox.jsonl", "context.txt"))
 HERD = os.path.join(HIGGS_DIR, "herd"); EVENTS = os.path.join(HERD, "events.jsonl"); DONNA = os.path.join(HERD, "donna")
+OUTBOX = os.path.join(DONNA, "outbox.jsonl")   # the session backend's only reply path: herd.py reply donna (one inbox path, #32)
 STATE = os.path.join(HIGGS_DIR, "state.json")
 CALLING_ABOUT = "Calling about:"
-if len(sys.argv) > 2 and sys.argv[1] in ("say", "note", "take", "ask", "fail"):   # the session's reply path
-    os.makedirs(HIGGS_DIR, exist_ok=True)
-    with open(OUTBOX, "a") as f: f.write(json.dumps({"kind": sys.argv[1], "id": sys.argv[2], "text": " ".join(sys.argv[3:])[:1500], "ts": time.time()}) + "\n")
-    sys.exit(0)
 
 # Mike's prompt.txt as the model. Measured Oct 24 with probe/r26 (text mode, higgs-realtime): first-turn delegation 24/24 (the old
 # prompt 29/30); an example ack line here ("I'll get the page started") made the model say it WITHOUT calling the tool (8/12).
@@ -82,7 +77,7 @@ If the user changes or corrects a request while you wait, the new version is the
 If the user talks over you, stop. A task keeps running; mention it when its result arrives.
 
 # Ending the call
-When the user says they are done ("that's all", "bye", "thanks, I'm good"), say a one-line goodbye ending with the exact words "{SIGN_OFF}" Those words close the call. Never say them in any other situation."""
+When the user says they are done ("that's all", "bye", "thanks, I'm good"), say a one-line goodbye ending with the exact words "{SIGN_OFF}" Those words close the call. Never say them in any other situation. If a task is still pending, the goodbye says you'll call them back with the result; never say or imply it finished."""
 
 if sys.argv[1:2] == ["selftest"]:   # offline: no session, no audio
     assert len(PROMPT) <= 3000 and PROMPT.count(SIGN_OFF) == 1, len(PROMPT)
@@ -99,7 +94,7 @@ if sys.argv[1:2] == ["selftest"]:   # offline: no session, no audio
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--backend", choices=["session", "claude", "codex", "fake"], default="claude",
-                help="session: any coding agent (Claude Code, Codex, …) watching ~/.higgs/inbox.jsonl answers via say/note; claude/codex: headless CLI in --project")
+                help="session: any coding agent (Claude Code, Codex, …) on the /call skill answers through the herd (herd.py reply donna); claude/codex: headless CLI in --project")
 ap.add_argument("--text", help="headless: typed user turns separated by |, instead of the mic")
 ap.add_argument("--silent", action="store_true", help="do not play audio")
 ap.add_argument("--wav", help="debug: stream this 24 kHz mono 16-bit WAV as the mic, in real time")
@@ -112,9 +107,8 @@ ap.add_argument("--project", help="directory the claude backend works in (defaul
 ap.add_argument("--ring", action="store_true", help="no session until Donna's outbox gets a `say` (or you press Enter); one call at a time, then wait again")
 ap.add_argument("--silence-ms", type=int, help="server VAD silence (ms) that ends a user turn; default 800 on a live mic, server default (500) otherwise")
 args = ap.parse_args()
-if args.ring:
-    if args.text: ap.error("--ring cannot be combined with --text")
-    INBOX, OUTBOX, CONTEXT = (os.path.join(DONNA, f) for f in ("inbox.jsonl", "outbox.jsonl", "context.txt"))   # Donna's files (herd.py)
+if args.ring and args.text: ap.error("--ring cannot be combined with --text")
+CONTEXT = os.path.join(DONNA if args.ring or args.backend == "session" else HIGGS_DIR, "context.txt")   # Donna's seed (the skill writes it)
 MIC = not (args.wav or args.text or args.ring and args.silent)   # a live mic: real speech pauses longer than TTS
 HERE = os.path.dirname(os.path.abspath(__file__))
 SANDBOX = os.path.abspath(os.path.expanduser(args.project)) if args.project else os.path.join(HERE, "sandbox")
@@ -163,11 +157,8 @@ def forward_answer(text, transcript):
     did, ASK["did"] = ASK["did"], None
     if not did: return
     log(f"answer → donna {did}: {text}")
-    if args.ring:
-        try: herd.send("donna", text, None, "voice", reply_to=did, transcript=transcript)
-        except SystemExit: log("answer not delivered: Donna is not on duty")
-    else:
-        with open(INBOX, "a") as f: f.write(json.dumps({"id": uuid.uuid4().hex[:8], "task": text, "transcript": transcript, "in_reply_to": did}) + "\n")
+    try: herd.send("donna", text, None, "voice", reply_to=did, transcript=transcript)
+    except SystemExit: log("answer not delivered: Donna is not on duty")
 
 def summarize_tool(name, inp):
     if inp.get("description"): return str(inp["description"])[:60].lower()
@@ -182,11 +173,8 @@ async def backend(did: str, task: str, transcript: list, progress, ask, replaces
     context = "\n".join(f"{r}: {t}" for r, t in transcript)
     if args.backend == "session":
         os.makedirs(os.path.dirname(OUTBOX), exist_ok=True); open(OUTBOX, "a").close()
-        if args.ring:   # through herd.py, so task.sent and unread fire; the call_id stays the line's id for the outbox match below
-            try: herd.send("donna", task, None, "voice", tid=did, transcript=transcript, replaces=replaces)
-            except SystemExit: return "Donna isn't on duty right now, so I couldn't hand that off.", "fail"
-        else:
-            with open(INBOX, "a") as f: f.write(json.dumps({"id": did, "task": task, "transcript": transcript, **({"replaces": replaces} if replaces else {})}) + "\n")
+        try: herd.send("donna", task, None, "voice", tid=did, transcript=transcript, replaces=replaces)   # task.sent + unread fire; the call_id stays the line's id for the outbox match below
+        except SystemExit: return "Donna isn't on duty right now, so I couldn't hand that off.", "fail"
         log(f"  → inbox {did}")
         t0 = time.monotonic()
         with open(OUTBOX) as f:
@@ -415,6 +403,7 @@ async def call(seed: str) -> str:
                     clear_spk(); st["play_until"] = 0.0; log("… user speaking (barge-in: playback cleared)")
                     if args.ring and not st["vu"]: st["vu"] = True; event("voice.user")
                 elif t == "session.input_speech_stopped": st["vu"] = False
+                elif t == "session.output_audio.discard": clear_spk(); st["play_until"] = 0.0; st.pop("audio_bytes", None)   # a reply that reported a result nobody sent (higgslive, #32)
                 elif t == "session.input_transcript.done":
                     log("USER:", ev.transcript); transcript.append(["user", ev.transcript]); forward_answer(ev.transcript, [list(x) for x in transcript[-12:]])
                     st["vu"] = False
@@ -451,7 +440,7 @@ async def call(seed: str) -> str:
             while not args.silent and not spk.empty(): await asyncio.sleep(0.1)   # let the goodbye finish playing
             await asyncio.sleep(0.5 if args.silent else 3)
         finally:
-            NOW.update(call=None, ringing=False)
+            NOW.update(call=None, ringing=False); CLAIMED.clear()   # a task still running at hang-up: its later say rings (watch_outbox skips claimed ids)
             for t in tasks + [ev_task]: t.cancel()
             if stream: stream.stop(); stream.close()
             spk.put(None); log("closed")

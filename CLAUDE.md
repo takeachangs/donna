@@ -16,9 +16,11 @@ server-side `_delegate` is a stub; 1.5's version is a thinking-only background m
 - `higgslive.py` — the layer, one file, OpenAI live-SDK shape: `connect()` → `session.start({instructions, delegation:{type:"client"}, input, voice, tools})`
   → events (`session.delegation.created` with `delegation.task`, audio/transcript deltas, `session.input_speech_started`)
   → `session.commentary.append` (spoken result), `.thinking.append` (silent progress), `.instructions.append`. Self-check: `uv run higgslive.py`.
-- `bridge.py` — mic/speaker app on top of it. Backends: `session` (any coding agent watching `~/.higgs/inbox.jsonl`,
-  replies with `bridge.py say|note <id> "…"`), `claude` / `codex` (headless CLI in `--project`, default `./sandbox`), `fake`.
-  `~/.higgs/context.txt` seeds the call; first line `Calling about: …` makes the voice speak first. Log: `bridge.log`.
+- `bridge.py` — mic/speaker app on top of it. Backends: `session` (the `/call` brain: every task goes through `herd.send` to
+  `~/.higgs/herd/donna/inbox.jsonl`, the brain replies with `herd.py reply donna <id> take|note|ask|say|fail "…"`; one path,
+  with or without `--ring`), `claude` / `codex` (headless CLI in `--project`, default `./sandbox`), `fake`. The seed is
+  `~/.higgs/herd/donna/context.txt` (session backend, `--ring`; else `~/.higgs/context.txt`); first line `Calling about: …`
+  makes the voice speak first. Log: `bridge.log`.
 - `/call` skill: `.claude/skills/call/SKILL.md`, symlinked at `.agents/skills/call` for Codex; `AGENTS.md` points Codex at it.
 - `probe/` — old POC (`poc_v1.py`, `poc_v1.log`) and probe scripts. `sandbox/` — where headless backends write.
 - `office/` — Donna's office (from Jerrold's Chamber), a display only: Three.js scene + Node server that draws `~/.higgs/office.json`.
