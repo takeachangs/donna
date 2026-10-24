@@ -16,6 +16,10 @@
                                           # (tmux attach -t donna to watch or type); each new task is typed into it, waking it
   uv run bridge.py selftest               # offline checks (idle policy, sign-off, prompt size), no API call
 
+Transfer (#28): the brain answers "get me Maya on the line" with `herd.py reply donna ID transfer Maya`; the bridge ends that
+Higgs session after the voice says so, plays a hold cue and opens a fresh one in Maya's voice (office.json workers[].voice) with
+worker_prompt; her turns go to the brain marked "with": "Maya"; "Putting Donna back on." (BACK) or 60 s of quiet opens Donna again.
+
 Session backend: delegations land in ~/.higgs/herd/donna/inbox.jsonl through herd.send, one JSON line each: {"id", "task",
 "transcript": [[role, text], ...last 12], "replaces"?, ...}; the brain answers with `herd.py reply donna ID take|note|ask|say|fail`.
 The call's seed is herd/donna/context.txt (session backend or --ring), else ~/.higgs/context.txt; if present it is sent to the
@@ -27,6 +31,7 @@ last) and re-renders ~/.higgs/office.json every second (herd.write_office, docs/
 import argparse, asyncio, base64, contextlib, json, logging, os, queue, re, sys, threading, time
 
 SIGN_OFF = "Hanging up now."   # the voice ends every goodbye with this (PROMPT); hearing it closes the call. The only copy: docs and the skill name it, code imports it
+BACK = "Putting Donna back on."   # #28: a worker's voice ends its part with this (worker_prompt); hearing it puts Donna back on the line
 IDLE_AFTER, NUDGE_AT, WARN_BEFORE = 60, 30, 10   # Mike's idle policy: nudge at 30 s of quiet, a cue at 50 s, hang up at 60 s; never while a task is pending
 NUDGE = "[note] The user has been quiet for a while. Ask once, in a few words, whether they're still there."
 
@@ -92,11 +97,31 @@ If the user changes or corrects a request while you wait, the new version is the
 # Interruptions
 If the user talks over you, stop. A task keeps running; mention it when its result arrives.
 
+# Putting the user through
+Asking to talk to someone working on their projects ("get me Maya on the line") is a delegation: call delegate_task; the agent puts them through.
+
 # Ending the call
 When the user says they are done ("that's all", "bye", "thanks, I'm good"), say a one-line goodbye ending with the exact words "{SIGN_OFF}" Those words close the call. Never say them in any other situation. If a task is still pending, the goodbye says you'll call them back with the result; never say or imply it finished."""
 
+def worker_prompt(name: str, project: str, what: str, recent: str) -> str:
+    """#28: the voice of a worker the user was put through to (a fresh session in their voice). Each question goes through
+    delegate_task; the brain forwards it to that worker (SendMessage) and says the worker's answer back."""
+    return f"""# Role
+You're {name}, a developer on {project}. Donna, the user's secretary, just put the user through to you on the phone.{f" You worked on: {what}." if what else ""} Speak for yourself only: first person, one or two short sentences, no file paths, ids or code. There is no set topic.
+
+# Every question
+Every question or request: call delegate_task with the user's words first, before you say anything; then only a few words, no details, until its answer arrives. The real {name} answers; the answer arrives as the tool's output: say it in your own words, in first person, as something you did and remember, never as something you looked up. Never make up details of your work. Anything outside your work is Donna's: offer to put her back.
+
+# Back to Donna
+When the user wants Donna back or is done with you ("put Donna back", "that's all", "transfer me back"), say a short goodbye ending with the exact words "{BACK}" When the user says goodbye to the whole call, end with the exact words "{SIGN_OFF}" Never say either in any other situation.
+
+# The call so far
+{recent}"""
+
 if sys.argv[1:2] == ["selftest"]:   # offline: no session, no audio
     assert len(PROMPT) <= 3000 and PROMPT.count(SIGN_OFF) == 1, len(PROMPT)
+    wp = worker_prompt("Maya", "the kids site", "Builds the quiz", "user: who built the quiz?")
+    assert wp.count(BACK) == 1 and wp.count(SIGN_OFF) == 1 and "You worked on: Builds the quiz." in wp and len(wp) < 2000, len(wp)
     done: dict = {}   # idle_action on a fake clock, speech at t=100 (Mike's cases)
     acts = [idle_action(t, 100, 0, False, done) for t in (110, 129, 130, 131, 149, 150, 151, 159, 160, 161)]
     assert acts == [None, None, "nudge", None, None, "warn", None, None, "hangup", None], acts
@@ -169,7 +194,8 @@ SAYS: asyncio.Queue = asyncio.Queue()   # ring: (kind, id, text) of unclaimed sa
 TYPED: asyncio.Queue = asyncio.Queue()  # ring: stdin lines: Enter while no call is open, a typed turn on a call
 ASK = {"did": None}            # the task whose question was just asked aloud; the user's next words answer it
 BYE = re.compile(r"\b(bye|goodbye|that'?s all|talk (to you )?later|hang up)\b")   # ring: the user's goodbye, a fallback for a voice that skips SIGN_OFF
-NOW: dict = {"call": None, "ringing": False}   # the open call's state dict (None = no call); state.json is read off it
+NOW: dict = {"call": None, "ringing": False, "with": None}   # the open call's state dict (None = no call); state.json is read off it; with: who the user talks to (#28)
+TURNS = [t.strip() for t in args.text.split("|")] if args.text else []   # --text: the typed turns, across every segment of the call
 
 def call_state(now: float) -> str:   # state.json's word (Mike's contract): thinking = a delegation has no result yet
     c = NOW["call"]
@@ -178,7 +204,7 @@ def call_state(now: float) -> str:   # state.json's word (Mike's contract): thin
 
 def write_state(s: str):
     try:
-        with open(STATE + ".tmp", "w") as f: json.dump({"state": s}, f)
+        with open(STATE + ".tmp", "w") as f: json.dump({"state": s, **({"with": NOW["with"]} if NOW["with"] and s != "off" else {})}, f)
         os.replace(STATE + ".tmp", STATE)
     except OSError: pass
 
@@ -191,12 +217,15 @@ async def state_loop():   # every 250 ms while the bridge runs; office.json ever
             except Exception as e: log("office.json write failed:", repr(e)) if n == 0 else None
         n += 1; await asyncio.sleep(0.25)
 
+def worker_on() -> str | None:   # the worker the user is talking to (#28), None while it is Donna
+    return NOW["with"] if NOW["with"] not in (None, "donna") else None
+
 def forward_answer(text, transcript):
     """The user's next words answer the question Donna asked for task ASK["did"]: hand them back to her as an inbox line."""
     did, ASK["did"] = ASK["did"], None
     if not did: return
     log(f"answer → donna {did}: {text}")
-    try: herd.send("donna", text, None, "voice", reply_to=did, transcript=transcript)
+    try: herd.send("donna", text, None, "voice", reply_to=did, transcript=transcript, with_=worker_on())
     except SystemExit: log("answer not delivered: Donna is not on duty")
 
 def summarize_tool(name, inp):
@@ -212,12 +241,12 @@ async def backend(did: str, task: str, transcript: list, progress, ask, replaces
     context = "\n".join(f"{r}: {t}" for r, t in transcript)
     if args.backend == "session":
         os.makedirs(os.path.dirname(OUTBOX), exist_ok=True); open(OUTBOX, "a").close()
-        try: herd.send("donna", task, None, "voice", tid=did, transcript=transcript, replaces=replaces)   # task.sent + unread fire; the call_id stays the line's id for the outbox match below
-        except SystemExit: return "Donna isn't on duty right now, so I couldn't hand that off.", "fail"
-        log(f"  → inbox {did}")
-        t0 = time.monotonic()
         with open(OUTBOX) as f:
-            f.seek(0, 2)
+            f.seek(0, 2)   # before the send: a reply faster than the send's own bookkeeping (a scripted brain, #28 run) was missed
+            try: herd.send("donna", task, None, "voice", tid=did, transcript=transcript, replaces=replaces, with_=worker_on())   # task.sent + unread fire; the call_id stays the line's id for the outbox match below
+            except SystemExit: return "Donna isn't on duty right now, so I couldn't hand that off.", "fail"
+            log(f"  → inbox {did}")
+            t0 = time.monotonic()
             while time.monotonic() - t0 < 600:
                 line = f.readline()
                 if not line: await asyncio.sleep(0.2); continue
@@ -228,7 +257,7 @@ async def backend(did: str, task: str, transcript: list, progress, ask, replaces
                 if k == "take": await progress("started")
                 elif k == "note": await progress(msg["text"])
                 elif k == "ask": await ask(msg["text"])   # the task is not finished: keep reading
-                else: return msg["text"][:800], k if k == "fail" else "say"
+                else: return msg["text"][:800], k if k in ("fail", "transfer") else "say"
         return "The session did not answer within ten minutes.", "fail"
     if args.backend == "fake":
         for step in ("looking at the folder", "writing the file", "opening it"):
@@ -312,17 +341,19 @@ async def watch_outbox():
         for line in data.splitlines():
             try:
                 m = json.loads(line)
-                if m.get("kind") in ("say", "ask", "fail") and m.get("text") and m.get("id") not in CLAIMED: SAYS.put_nowait((m["kind"], m["id"], m["text"]))
+                if m.get("kind") == "transfer" and not NOW["call"]: log(f"transfer to {m.get('text')} dropped: nobody is on the line"); continue   # never rings (#28)
+                if m.get("kind") in ("say", "ask", "fail", "transfer") and m.get("text") and m.get("id") not in CLAIMED: SAYS.put_nowait((m["kind"], m["id"], m["text"]))
             except Exception: continue
 
-async def call(seed: str) -> str:
-    """One session, start to hang-up. Returns why it ended."""
+async def call(seed: str, transcript: list, who: dict | None = None, opener: str | None = None) -> str:
+    """One Higgs session, start to hang-up, or one segment of a call (#28): `who` = the worker the user was put through to
+    ({name, voice, persona}), None for Donna; `opener` = what the voice says first. Returns why it ended: goodbye, silence, …,
+    "transfer:<name>" or "back"."""
     spk: queue.Queue = queue.Queue(); loop = asyncio.get_running_loop()
     st = {"done": False, "pending": 0, "spoke_result": False, "act": time.monotonic(), "play_until": 0.0, "bye": None, "vs": False, "vu": False}   # act: last user word or result; play_until: estimated end of the voice's audio
     def end(reason):
         if not st["done"]: st.update(done=True, reason=reason)
-    transcript: list[list[str]] = []   # [role, text], role "user"|"assistant" (Mike's shape); the last 12 go with every inbox line
-    turns = [t.strip() for t in args.text.split("|")] if args.text else []
+    turns = TURNS   # transcript: [role, text], role "user"|"assistant" (Mike's shape), kept across segments; the last 12 go with every inbox line
     sd = None
     if not args.silent or not (args.text or args.wav or args.ring): import sounddevice as sd
 
@@ -332,8 +363,11 @@ async def call(seed: str) -> str:
             if args.out: loop.call_soon_threadsafe(log, f"speaker: {sd.query_devices(odev)['name']}")
             with sd.RawOutputStream(samplerate=RATE, channels=1, dtype="int16", device=odev) as out:
                 import math, array
-                out.write(array.array("h", (int(6000 * math.sin(2 * math.pi * 880 * i / RATE)) for i in range(RATE // 5))).tobytes())
-                loop.call_soon_threadsafe(log, "speaker: played a short beep — if you did not hear it, output is going to the wrong device")
+                if who or opener:   # a transfer (#28): the hold cue, two soft rising tones, while the next voice connects
+                    out.write(b"".join(array.array("h", (int(a * math.sin(2 * math.pi * hz * i / RATE)) for i in range(RATE * 3 // 20))).tobytes() for hz, a in ((523, 3000), (0, 0), (659, 3000))))
+                else:
+                    out.write(array.array("h", (int(6000 * math.sin(2 * math.pi * 880 * i / RATE)) for i in range(RATE // 5))).tobytes())
+                    loop.call_soon_threadsafe(log, "speaker: played a short beep — if you did not hear it, output is going to the wrong device")
                 while (chunk := spk.get()) is not None: out.write(chunk)
         except Exception as e:
             loop.call_soon_threadsafe(log, f"SPEAKER THREAD CRASHED: {e!r}")
@@ -350,7 +384,8 @@ async def call(seed: str) -> str:
 
     log("connecting…")
     async with higgslive.connect(playback=not args.silent, model=args.model) as conn:
-        await conn.session.start(session={"instructions": PROMPT, "delegation": {"type": "client"}, "voice": args.voice,
+        await conn.session.start(session={"instructions": who["persona"] if who else PROMPT, "delegation": {"type": "client"}, "voice": who["voice"] if who else args.voice,
+            **({"relay": True} if who else {}),   # a worker's voice: every turn goes to the brain, and "I built it" is her history, not a made-up result
             **({"turn_detection": {"type": "server_vad", "silence_duration_ms": args.silence_ms or 800}} if MIC or args.silence_ms else {}),
             **({"input": [{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": seed}]}]} if seed else {})})
 
@@ -372,11 +407,17 @@ async def call(seed: str) -> str:
                     if sess: tasks.append(asyncio.create_task(deaf()))
                     text, kind = await backend(did, task, [list(x) for x in transcript[-12:]], progress, ask, replaces); heard.set()
                     log(f"backend done for {did} in {time.monotonic()-t:.1f}s")
-                    await conn.session.commentary.append(content=text, delegation_id=did, kind=kind)
+                    if kind == "transfer": await put_through(text.strip(), did)
+                    else: await conn.session.commentary.append(content=text, delegation_id=did, kind=kind)
             finally: st["pending"] -= 1
 
-        def check_bye(text):
-            if args.ring and BYE.search(text.lower().replace("’", "'")): st["bye"] = time.monotonic()   # no goodbye prompt: the model answers "bye" itself
+        async def put_through(name, did=None):   # #28: the brain said put them through: the voice says so, and the segment ends after that reply
+            st["next"] = f"transfer:{name}"; log(f"transfer: putting the user through to {name}")
+            await conn.session.commentary.append(content=("" if did else "[note] ") + f"Putting the user through to {name} now. Tell them in a few words, like: One sec, I'll put you through.",
+                                                 delegation_id=did, kind="transfer")
+
+        def check_bye(text):   # not with a worker: "that's all" means back to Donna there
+            if args.ring and not who and BYE.search(text.lower().replace("’", "'")): st["bye"] = time.monotonic()   # no goodbye prompt: the model answers "bye" itself
 
         async def typed_turn(text):
             transcript.append(["user", text]); forward_answer(text, [list(x) for x in transcript[-12:]])
@@ -387,10 +428,12 @@ async def call(seed: str) -> str:
             while True:
                 await asyncio.sleep(1); now = time.monotonic()
                 if st["bye"] and now - st["bye"] > 8: end("goodbye"); return   # fallback: no response.done after the goodbye
+                if st.get("switch") and now - st["switch"] > 8: end(st["next"]); return   # same for the put-through line
                 a = idle_action(now, st["act"], st["play_until"], st["pending"] > 0, done)
                 if a == "nudge": log(f"quiet for {NUDGE_AT} s, nudging"); await conn.session.commentary.append(content=NUDGE)
                 elif a == "warn": log(f"idle cue: hanging up in {WARN_BEFORE} s"); cue()
-                elif a == "hangup": log(f"idle for {IDLE_AFTER} s (no words, no audio, nothing pending), closing"); end("silence"); return
+                elif a == "hangup":   # with a worker, a quiet line goes back to Donna (#28)
+                    log(f"idle for {IDLE_AFTER} s (no words, no audio, nothing pending), " + ("back to Donna" if who else "closing")); end("back" if who else "silence"); return
 
         tasks, stream = [], None
         if args.wav:
@@ -422,6 +465,7 @@ async def call(seed: str) -> str:
                 while True:
                     kind, sid, text = await SAYS.get()
                     if kind == "ask": await conn.session.commentary.append(content=text, delegation_id=sid, kind="ask"); ASK["did"] = sid
+                    elif kind == "transfer": await put_through(text.strip())   # a worker the brain held for (busy, #28) is free now
                     elif kind == "fail": await conn.session.commentary.append(content=f"[note] Something you sent off could not be finished; tell the user in a sentence: {text}", delegation_id=sid, kind="fail")
                     else: await conn.session.commentary.append(content=f"[note] An update just came in from the work you sent off; tell the user in a sentence or two: {text}", delegation_id=sid, kind="say")   # the id: its commentary.appended marks it spoken
             async def typed():   # stdin lines on a call: typed turns (the headless check's only input)
@@ -435,8 +479,9 @@ async def call(seed: str) -> str:
                 t = ev.type
                 if os.environ.get("DEBUG") and t == "raw": log("  ev:", ev.raw_type)
                 if t == "session.started":
-                    log(f"session ready (backend: {args.backend})"); NOW["ringing"] = False
-                    if (first := seed.split("\n", 1)[0]).startswith(CALLING_ABOUT):   # the agent placed the call: the voice speaks first
+                    log(f"session ready (backend: {args.backend}, voice: {ev.voice})"); NOW["ringing"] = False
+                    if opener: await conn.session.commentary.append(content=opener)   # a transfer: "Hey, it's Maya." / "Hey, it's Donna again."
+                    elif (first := seed.split("\n", 1)[0]).startswith(CALLING_ABOUT):   # the agent placed the call: the voice speaks first
                         await conn.session.commentary.append(content=f"You placed this call. Open by saying in a few words why you are calling: {first[len(CALLING_ABOUT):].strip()}.")
                     elif turns: await typed_turn(turns.pop(0))
                     elif not args.wav: log("mic live — talk. Ctrl-C to hang up.")
@@ -464,10 +509,12 @@ async def call(seed: str) -> str:
                     secs = st.pop("audio_bytes", 0) / (RATE * 2); words = len(ev.transcript.split())
                     log(f"VOICE ({secs:.1f}s, {words / secs * 60:.0f} wpm):" if secs > 0.5 else "VOICE:", ev.transcript); transcript.append(["assistant", ev.transcript])
                     if SIGN_OFF[:-1].lower() in ev.transcript.lower(): st["bye"] = time.monotonic(); log("sign-off heard, closing after this reply")
+                    elif who and BACK[:-1].lower() in ev.transcript.lower(): st["back"] = True; log("back phrase heard, Donna after this reply")
                 elif t == "session.delegation.created":
                     rep = getattr(ev.delegation, "replaces", None)
                     log(f"DELEGATION {ev.delegation.id} @{ev.offset_ms}ms: {ev.delegation.task[:90]}" + (f" (replaces {rep})" if rep else "")); st["delegated"] = True
                     CLAIMED.add(ev.delegation.id); tasks.append(asyncio.create_task(run_delegation(ev.delegation.id, ev.delegation.task, rep)))
+                elif t == "session.commentary.appended" and ev.kind == "transfer": st["switch"] = time.monotonic()   # the put-through line is going out
                 elif t == "session.commentary.appended" and ev.delegation_id:
                     if ev.kind in ("say", "fail"): event("task.spoken", id=ev.delegation_id)   # office: that briefing is presented (#31)
                     if ev.kind != "dropped": st["spoke_result"] = True; st["act"] = time.monotonic()   # a result restarts the idle clock
@@ -475,6 +522,8 @@ async def call(seed: str) -> str:
                 elif t == "response.done":
                     st["vs"] = False
                     if st["bye"]: end("goodbye")
+                    elif st.get("switch"): end(st["next"])
+                    elif st.get("back"): end("back")
                     elif args.text and not ev.calls:   # headless pacing: next typed turn, or exit once everything is spoken
                         if turns: await asyncio.sleep(1.5); await typed_turn(turns.pop(0))
                         elif (st["spoke_result"] and not st["pending"]) or not st.get("delegated"):
@@ -487,14 +536,43 @@ async def call(seed: str) -> str:
             while not args.silent and not spk.empty(): await asyncio.sleep(0.1)   # let the goodbye finish playing
             await asyncio.sleep(0.5 if args.silent else 3)
         finally:
-            NOW.update(call=None, ringing=False); CLAIMED.clear()   # a task still running at hang-up: its later say rings (watch_outbox skips claimed ids)
+            CLAIMED.clear()   # a task still running at hang-up (or a transfer): its later say rings or comes in the next segment (watch_outbox skips claimed ids)
             for t in tasks + [ev_task]: t.cancel()
             if stream: stream.stop(); stream.close()
             spk.put(None); log("closed")
     return st.get("reason", "done")
 
+def worker(name: str, transcript: list) -> dict:
+    """#28: who the user is put through to: voice and work from office.json's worker of that name (herd.office), else a stand-in."""
+    o = herd.office()
+    w = next((w for w in o["workers"][1:] if w["name"].lower() == name.lower()), {})
+    what = next((a["title"] for a in o["assignments"] if a["id"] == w.get("assignmentId")), "")
+    recent = "\n".join(f"{'user' if r == 'user' else 'Donna'}: {x}" for r, x in transcript[-6:])
+    name = w.get("name") or name
+    return {"name": name, "voice": w.get("voice") or "oliver", "persona": worker_prompt(name, (o["projects"] or [{}])[0].get("name") or "this project", what, recent)}
+
+async def phone(seed: str) -> str:
+    """One call from the user's side: Donna, then maybe a worker and back (#28; a fresh Higgs session per segment, never a
+    session.update mid-call). Returns why it ended."""
+    transcript, who, opener = [], None, None
+    NOW["with"] = "donna"
+    try:
+        while True:
+            start = len(transcript); reason = await call(seed, transcript, who, opener)
+            if reason.startswith("transfer:"):
+                who = worker(reason.split(":", 1)[1], transcript); NOW["with"] = who["name"]; event("call.transfer", to=who["name"])
+                opener = f'[note] You are on the line now. Say exactly: "Hey, it\'s {who["name"]}."'
+            elif reason == "back":
+                seg = transcript[start:]; u = next((x for r, x in reversed(seg) if r == "user"), ""); a = next((x for r, x in reversed(seg) if r == "assistant"), "")
+                seed = (context_seed() + f"\nYou put the user through to {who['name']}; they are back with you now.\n"
+                        f"Last there, the user said: \"{u[:200]}\" and {who['name']} said: \"{a[:200]}\"").strip()
+                who, NOW["with"] = None, "donna"; event("call.transfer", to="donna")
+                opener = '[note] The user is back with you. Say exactly: "Hey, it\'s Donna again."'
+            else: return reason
+    finally: NOW.update(call=None, ringing=False, **{"with": None})
+
 async def main():
-    if not args.ring: await call(context_seed()); return
+    if not args.ring: await phone(context_seed()); return
     loop = asyncio.get_running_loop()
     def stdin_thread():
         try:
@@ -518,7 +596,7 @@ async def main():
                 if k != "ask": event("task.spoken", id=sid)   # the opener delivers it (asks are put by says() once the session is up)
             if about: seed = f"{CALLING_ABOUT} {about}\n{seed}".strip()
         event("call.answered"); set_state("on_call"); reason = "interrupted"
-        try: reason = await call(seed)
+        try: reason = await phone(seed)
         except Exception as e: log("call failed:", repr(e)); reason = "error"
         finally: event("call.ended", reason=reason); set_state("idle")
 

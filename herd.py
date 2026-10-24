@@ -136,12 +136,14 @@ def wake(text):  # #38: an idle brain gets a turn at once: the line is typed int
         pass
 
 
-def send(name, task, context=None, frm="user", tid=None, reply_to=None, transcript=None, replaces=None):  # tid: the caller's id (bridge.py passes the Higgs call_id)
+def send(name, task, context=None, frm="user", tid=None, reply_to=None, transcript=None, replaces=None, with_=None):  # tid: the caller's id (bridge.py passes the Higgs call_id)
     d = agent_dir(name)
     tid = tid or os.urandom(4).hex()
     line = {"id": tid, "task": task, "context": context, "from": frm, "ts": time.time()}
     if transcript is not None:  # [[role, text], ...] role "user"|"assistant": the call so far, printed by the hook instead of `context`
         line["transcript"] = transcript
+    if with_:  # #28: the person is on the line with this worker: the brain forwards the words to them and says their answer
+        line["with"] = with_
     if replaces:  # the user corrected task `replaces` on the call: the voice drops its result; the brain fails it and does this one
         line["replaces"] = replaces
     s = load(d)
@@ -156,7 +158,7 @@ def send(name, task, context=None, frm="user", tid=None, reply_to=None, transcri
         s.update(unread=s["unread"] + 1, task_id=tid, task=task)
     settle(d, name, s, "task.sent", id=tid, task=task, **{"from": frm}, **({"in_reply_to": reply_to} if reply_to else {}))
     if name == "donna":
-        wake(f"Answer to task {reply_to}: {task}" if reply_to else f"Phone task {tid}: {task}")
+        wake(f"Answer to task {reply_to}: {task}" if reply_to else f"Phone task {tid}" + (f" (on the line with {with_})" if with_ else "") + f": {task}")
     return tid
 
 
@@ -175,10 +177,10 @@ def state(name, st):
     event("agent.state", name, state=st)
 
 
-EV = {"take": "task.taken", "ask": "task.needs_you", "say": "task.done", "fail": "task.failed"}
+EV = {"take": "task.taken", "ask": "task.needs_you", "say": "task.done", "fail": "task.failed", "transfer": "task.transfer"}
 
 
-def reply(name, tid, kind, text):  # take|note|ask|say|fail; an illegal transition dies before writing anything
+def reply(name, tid, kind, text):  # take|note|ask|say|fail|transfer (text: the worker's name, #28); an illegal transition dies before writing anything
     d = agent_dir(name)
     s = load(d)
     t = s["tasks"].get(tid)
@@ -192,11 +194,11 @@ def reply(name, tid, kind, text):  # take|note|ask|say|fail; an illegal transiti
         s["last_note"] = text
     else:
         t = s["tasks"][tid] = {**(t or {"task": None}), "ts": time.time(),
-                               "state": {"take": "in_progress", "ask": "needs_you", "say": "done", "fail": "failed"}[kind]}
+                               "state": {"take": "in_progress", "ask": "needs_you", "say": "done", "fail": "failed", "transfer": "done"}[kind]}
         t.pop("asked", None)
         if kind == "ask":
             t["asked"] = text
-        if kind in ("say", "fail"):
+        if kind in ("say", "fail", "transfer"):
             s["unread"] = max(0, s["unread"] - 1)
             old = [k for k, v in s["tasks"].items() if v["state"] in ("done", "failed")]
             for k in old[:max(0, len(s["tasks"]) - 50)]:
@@ -210,6 +212,7 @@ def reply(name, tid, kind, text):  # take|note|ask|say|fail; an illegal transiti
 
 TAIL = 1 << 20  # ponytail: office() reads only the last 1 MB of each events file (~3000 hook events). $HIGGS_HOME/events.jsonl is shared by EVERY Claude Code session with the hook installed, so a busy fleet can push a running agent's SubagentStart out of the window and its row vanishes. Upgrade: filter at log time by the registered session, or one file per session
 KEYS = ["char-male-b", "char-female-d", "char-male-a", "char-female-e", "char-male-d"]  # worker looks, by order of first appearance
+VOICES = {"female": ["chloe", "eleanor", "nora"], "male": ["jake", "marcus", "oliver"]}  # #28: by the look's gender, round-robin; nora last: Donna is nora
 
 
 def iso(t):
@@ -301,6 +304,8 @@ def inject(ev, d):  # (c) a busy Donna (mid-task) gets new inbox lines as hook c
         ctx = "\n".join(f"{role}: {text}" for role, text in m["transcript"][-12:]) if m.get("transcript") else f"Context: {m.get('context') or '(none)'}"
         if m.get("replaces"):  # the user corrected an earlier task on the call
             ctx += f"\nThis corrects task {m['replaces']}: stop that one and close it with: uv run -q {os.path.abspath(__file__)} reply donna {m['replaces']} fail \"Replaced by the corrected request.\""
+        if m.get("with"):  # #28: a transfer turn
+            ctx += f"\nThe person is on the line with {m['with']}: forward their words to {m['with']} (SendMessage) and say {m['with']}'s answer, in first person."
         msgs.append(f"Phone task {m['id']}: {m['task']}\n{ctx}\nFirst: {r} take \"\"; progress: {r} note \"…\"; "
                     f"a decision you need from the person: {r} ask \"…\" (the answer arrives as an inbox line with in_reply_to); "
                     f"when done: {r} say \"…\" (≤3 plain sentences) or {r} fail \"…\".")
@@ -387,10 +392,12 @@ def office(now=None):
     workers = [{"id": lid, "projectId": pid, "name": "Donna", "role": "Brain", "responsibility": "", "characterKey": "char-female-b",
                 "status": "waiting" if needs else "working" if lead["t"] > lead["stop"] else "done", "assignmentId": "", "currentAction": action(lead["act"]), "lead": True}]
     asg = []
+    seen = {"female": 0, "male": 0}
     for n, r in enumerate(rows.values()):
-        name = r["name"] or r["desc"] or r["type"] or "Agent"
-        workers.append({"id": r["id"], "projectId": pid, "name": name, "role": r["desc"] or "", "responsibility": "", "characterKey": KEYS[n % len(KEYS)],
-                        "status": stt(r), "assignmentId": r["id"], "currentAction": action(r["act"])})
+        name, key = r["name"] or r["desc"] or r["type"] or "Agent", KEYS[n % len(KEYS)]
+        g = "female" if "female" in key else "male"; seen[g] += 1
+        workers.append({"id": r["id"], "projectId": pid, "name": name, "role": r["desc"] or "", "responsibility": "", "characterKey": key,
+                        "voice": VOICES[g][(seen[g] - 1) % 3], "status": stt(r), "assignmentId": r["id"], "currentAction": action(r["act"])})
         asg.append({"id": r["id"], "projectId": pid, "workerId": r["id"], "title": r["desc"] or name, "brief": r["prompt"], "acceptance": "", "status": stt(r),
                     "cwd": r["cwd"], **({"summary": r["summary"]} if r["summary"] else {}), "startedAt": iso(r["t0"]), **({"completedAt": iso(r["t1"])} if r["t1"] else {}),
                     "artifacts": [], "dependsOn": [], "revision": 0})
@@ -408,10 +415,13 @@ def office(now=None):
            for e in [e for e in hev if (e.get("ts") or 0) >= since][-20:]]
     try:  # a crashed bridge must not leave the office "speaking": the state file counts for 3 s
         p = h / "state.json"
-        call = json.loads(p.read_text())["state"] if now - p.stat().st_mtime <= 3 else "off"
-    except (OSError, ValueError, KeyError, TypeError): call = "off"
+        sj = json.loads(p.read_text()) if now - p.stat().st_mtime <= 3 else {}
+        call = sj.get("state") or "off"
+    except (OSError, ValueError, AttributeError): call, sj = "off", {}
+    on = (sj.get("with") or "").lower()  # #28: who the person is talking to, by name (bridge.py); the office gets that worker's id, else "donna"
+    with_ = next((w["id"] for w in workers[1:] if w["name"].lower() == on), "donna") if call != "off" and on else None
     prev = rj(h / "office.json").get("revision")
-    return {"revision": prev + 1 if isinstance(prev, int) else 0, "call": {"state": call},
+    return {"revision": prev + 1 if isinstance(prev, int) else 0, "call": {"state": call, **({"with": with_} if with_ else {})},
             "secretary": {"id": "mara", "name": "Donna", "role": "Secretary", "voice": "nora", "characterKey": "char-female-b"},
             "projects": [{"id": pid, "name": os.path.basename(proj.rstrip("/")), "goal": next((m.get("task") or "" for m in inbox if not m.get("in_reply_to")), ""),
                           "memory": {"outcome": "", "checkpoint": "", "latest": says[-1].get("text") or "" if says else "", "nextStep": "",
@@ -454,7 +464,7 @@ def selfcheck_office():  # the brain-side hook and office.json, replayed from a 
              tool_response={"isAsync": True, "status": "async_launched", "agentId": B})
         fire("PostToolUse", agent_id=B, agent_type="general-purpose", tool_name="Bash", tool_input={"command": "ls", "description": "List files"}, tool_response={"stdout": "a.txt"})
         assert (w := W(O(), B)) | {"characterKey": 0} == {"id": B, "projectId": pid, "name": "Bob", "role": "Count files", "responsibility": "", "characterKey": 0,
-                                                          "status": "working", "assignmentId": B, "currentAction": "Bash ls"}, w
+                                                          "voice": "jake", "status": "working", "assignmentId": B, "currentAction": "Bash ls"}, w
         assert w["characterKey"] == KEYS[0]
         fire("SubagentStart", sess="other", agent_id="zzz", agent_type="x"); fire("PostToolUse", sess="other", tool_name="Read", tool_input={"file_path": "/a/b.py"})
         fire("Stop", sess="other")  # another session fires the hook from the same dir: its events count for nothing
@@ -496,6 +506,11 @@ def selfcheck_office():  # the brain-side hook and office.json, replayed from a 
 
         sp = H / "state.json"; sp.write_text('{"state": "speaking"}')  # bridge.py's state file: fresh counts, stale (crashed bridge) is "off"
         assert office()["call"] == {"state": "speaking"}
+        assert [w["voice"] for w in office()["workers"][1:]] == ["jake", "chloe"]  # #28: Bob (male look), the Fg job (female look)
+        sp.write_text('{"state": "speaking", "with": "BOB"}'); assert office()["call"] == {"state": "speaking", "with": B}  # put through to Bob: his id
+        sp.write_text('{"state": "listening", "with": "Donna"}'); assert office()["call"] == {"state": "listening", "with": "donna"}
+        sp.write_text('{"state": "off", "with": "Bob"}'); assert office()["call"] == {"state": "off"}
+        sp.write_text('{"state": "speaking"}')
         os.utime(sp, (time.time() - 10,) * 2)
         assert office()["call"] == {"state": "off"}
         sp.write_text("{")
@@ -522,6 +537,8 @@ def selfcheck_office():  # the brain-side hook and office.json, replayed from a 
         assert fire("PostToolUse", tool_name="Read", tool_input={"file_path": "/a/b.py"}) == ""  # once
         send("donna", "make it green", tid="g2", transcript=[["user", "actually, make it green"]], replaces="b1")  # a correction names the task it replaces
         assert lines(ib)[-1]["replaces"] == "b1" and 'reply donna b1 fail' in json.loads(fire("PostToolUse", tool_name="Read", tool_input={"file_path": "/a/b.py"}))["hookSpecificOutput"]["additionalContext"]
+        send("donna", "how did you do the timer", tid="w1", with_="Maya")  # #28: a turn while the person talks to Maya
+        assert lines(ib)[-1]["with"] == "Maya" and "forward their words to Maya (SendMessage)" in json.loads(fire("PostToolUse", tool_name="Read", tool_input={"file_path": "/a/b.py"}))["hookSpecificOutput"]["additionalContext"]
         send("donna", "blue", reply_to=t2)
         assert "Answer to task " + t2 + ": blue" in json.loads(fire("PostToolUse", tool_name="Bash", tool_input={"command": "ls"}))["hookSpecificOutput"]["additionalContext"]
         m = rj(mp); m.pop("session"); write_json(mp, m)  # no session yet: the project dir decides (today's rule)
@@ -626,6 +643,7 @@ def selfcheck():
         reply("donna", "u3", "note", "hm"); reply("donna", "now", "say", "calling")  # unknown note / say allowed
         assert T("now")["state"] == "done"
         reply("donna", "u4", "fail", "nope"); assert T("u4")["state"] == "failed"
+        reply("donna", "u5", "transfer", "Maya"); assert T("u5")["state"] == "done" and "task.transfer" in [e["ev"] for e in lines(root() / "events.jsonl")[-2:]]  # #28
         for i in range(60): reply("donna", f"p{i}", "say", "x")
         assert len(capture("donna")["tasks"]) <= 51  # pruned (unfinished records stay)
         assert send("donna", "x", tid="call_1") == "call_1"  # bridge.py keeps the Higgs call_id
@@ -652,7 +670,7 @@ def main(argv):
     a = sub.add_parser("capture"); a.add_argument("name"); a.add_argument("--json", action="store_true")
     a = sub.add_parser("close"); a.add_argument("name")
     a = sub.add_parser("state"); a.add_argument("name"); a.add_argument("state", choices=["working", "idle", "needs_you", "speaking", "on_call"])
-    a = sub.add_parser("reply"); a.add_argument("name"); a.add_argument("id"); a.add_argument("kind", choices=["take", "note", "ask", "say", "fail"]); a.add_argument("text")
+    a = sub.add_parser("reply"); a.add_argument("name"); a.add_argument("id"); a.add_argument("kind", choices=["take", "note", "ask", "say", "fail", "transfer"]); a.add_argument("text")
     x = p.parse_args(argv)
     if x.cmd == "new":
         new(x.name, x.kind, x.project)

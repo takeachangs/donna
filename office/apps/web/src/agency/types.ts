@@ -13,6 +13,7 @@ export type Worker = {
   assignmentId?: string;
   currentAction?: string;
   lead?: boolean;
+  voice?: string;
 };
 export type Assignment = {
   id: string;
@@ -60,7 +61,8 @@ export type Briefing = {
 export type CallState = 'off' | 'ringing' | 'listening' | 'thinking' | 'speaking';
 export type Workspace = {
   revision: number;
-  call: { state: CallState };
+  /** with: while a call is on, 'donna' or the id of the worker it is put through to. */
+  call: { state: CallState; with?: string };
   secretary: Colleague;
   projects: (Project & { goal: string; memory: ProjectMemory })[];
   workers: Worker[];

@@ -48,6 +48,7 @@ export default {
   'agency.call_listening': 'Listening',
   'agency.call_thinking': 'Thinking',
   'agency.call_speaking': 'Speaking',
+  'agency.call_with': 'On the line: {name}',
   'agency.activity': 'Activity',
   'agency.checkpoint': 'Current stage',
   'agency.next_step': 'Next step',

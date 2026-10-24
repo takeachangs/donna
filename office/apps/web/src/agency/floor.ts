@@ -51,6 +51,20 @@ export function loungeRoute(room: Footprint, home: Point, s: Point): Point[] {
 export function afterReport(s: Point): Point[] {
   return [{ x: 1.5, z: 13 }, { x: 0, z: 13 }, { x: 0, z: 11 }, ...loungeLeg(s)];
 }
+/** The phone in Donna's suite, by the entrance: where Scene.ring walks Donna (the same numbers are there), and a worker the call is put through to. */
+export const phoneSpot: Point = { x: -1.05, z: 13.05 };
+export const phoneFace: Point = { x: -1.75, z: 12.4 };
+/** Desk (or lounge spot `s`) to the phone. Scene walks it back by reversing it, as for a delivery. */
+export function phoneRoute(room: Footprint, home: Point, s?: Point): Point[] {
+  return [...(s ? afterReport(s).reverse().slice(1, -1) : deliveryRoute(room, home).slice(0, 5)), phoneSpot];
+}
+/** The worker a call is put through to: the call is on and `with` names a worker with a desk (not Donna, not the lead). */
+export function onTheLine(
+  call: { state: string; with?: string } | undefined,
+  workers: { id: string; lead?: boolean }[],
+) {
+  return call && call.state !== 'off' ? workers.find((w) => !w.lead && w.id === call.with)?.id : undefined;
+}
 type Who = { id: string; projectId: string; status: string; lead?: boolean };
 /** On a break: not a lead, and finished ('done' or 'failed'). Per worker: the rest of the project may still be working. A worker with a new report walks desk → Donna first (Scene keeps it out of seat() until the walk ends), then rests. */
 export function resting(w: Who): boolean {
