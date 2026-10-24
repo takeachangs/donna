@@ -97,6 +97,7 @@ OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|fi
                    r"shall i (set|get|start) (that|it|this)|i can (connect|put you through|transfer|have)|(have|get|bring) (him|her|them|\w+) (join|on|in)\b|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
                    r"(i'?ll|i (can|could)|let me)\s+(whip|draft|put (\w+ )?together|set (\w+ )?up|sketch)|"
                    r"(could|can) you (please )?(provide|share|tell me more)|what \W?(this|that|it)\W? refers to|you'?re referring to|need (a bit |some )?more detail)")   # asking permission instead of calling; offering to draft (Oct 24 calls); interviewing about "this" (#43 probe: 7/20)
+HOLD = re.compile(r"let me check my notes|one sec(ond)?")   # #81: a worker's holding line is no offer
 PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c.txt: no paths in speech
 PENDING_LINE = "Still on it; I'll call you when it's done."   # what a reply that reports a result nobody sent is replaced by (#32)
 PENDING_LINES = (PENDING_LINE, "Still working on it.", "Nothing yet, I'll call you.")   # #73: once each per call, then the last; the model copied the first into 2 later replies
@@ -530,7 +531,7 @@ class Conn:
         return self._st.get("result_at", 0) > self._st.get("heard_at", 0)   # ponytail: a tie or no task words falls back to timing
 
     def _fake_claim(self) -> bool:
-        v = self._st["last_voice"].lower(); self._st["last_voice"] = ""
+        v = HOLD.sub("", self._st["last_voice"].lower()); self._st["last_voice"] = ""
         u = self._st["last_user"].lower()   # a worker's voice answers a question only from delegate_task (#28: "Let me pull that up", "The timer is 30 seconds")
         if self._relay and u.rstrip().endswith("?") and not re.search(r"\b(donna|bye)\b", u): return True
         return bool(CLAIM.search(v)) or ((self._relay or bool(ASKED.search(self._st["last_user"].lower()))) and bool(OFFER.search(v)))
@@ -560,6 +561,7 @@ if __name__ == "__main__":   # self-check: no network
     assert _ev({"delegation": {"id": "x"}}).delegation.id == "x"
     assert CLAIM.search("i've sent that off") and not CLAIM.search("sure, what else?")
     assert all(CLAIM.search(x) for x in ("i've handed that task off", "i've handed off the task", "i'm handing off the request", "got it. i'll have the agent take a look"))
+    assert not OFFER.search(HOLD.sub("", "let me check my notes. one sec.")) and OFFER.search("let me check the file")
     assert ASKED.search("make me a page") and OFFER.search("i'll create it for you")
     assert all(OFFER.search(x) for x in ("sure. could you please provide more details about what the diagram should show?", "i'm not sure what \"this\" refers to. could you clarify?", "i can help with that, but i need a bit more detail.", "could you clarify what you're referring to?"))   # #43
     assert ASKED.search("can you put this into a slide?") and not any(OFFER.search(x) for x in ("sorry, could you say that again?", "sorry, could you clarify that?", "should the page be blue or green?"))
