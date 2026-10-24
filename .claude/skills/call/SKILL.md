@@ -92,7 +92,8 @@ Shell variables do not carry over between commands, so each command sets its own
        your best reading and say which in the result.
      - "Just do it" in the transcript skips the asks; "let's plan this" asks even when the request is clear.
      - **The person's words ask for anyone** ("get an agent", "have someone", "dispatch", "the team", "hire"): spawn,
-       even when the work exists already. The worker checks or improves the existing result, and your note names them.
+       even when the work exists already (a thin request still gets its one `ask` first). The worker checks or improves
+       the existing result, and your note names them.
      - **A request that repeats finished work** (the page was built earlier, the branch is there; look with
        `git branch` and `herd.py capture donna` before you spawn): never "already done" alone. Say it exists AND give the next step through a worker: `R <id> say "The site is already on its own branch.
        Ava built it; she can polish it or open the pull request. Which?"`. When their words ask for anyone, that worker

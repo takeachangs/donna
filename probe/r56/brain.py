@@ -1,7 +1,7 @@
 # /// script
 # dependencies = []
 # ///
-"""#56: a real headless brain on the /call skill of THIS checkout. uv run probe/r56/brain.py MODEL OUTDIR   (MODEL: sonnet, opus, ...)
+"""#56: a real headless brain on the /call skill of THIS checkout. uv run probe/r56/brain.py MODEL OUTDIR [thin]   (MODEL: sonnet, opus, ...)
 A scratch git repo (a tiny CLI, a finished website on branch donna/website), a temp HIGGS_HOME, one `claude -p` brain with the
 office hooks; tasks sent one at a time through herd.send, as the voice would (a one-turn transcript): five "dispatch an agent
 to make X" (the first one's work exists already: the Oct 24 10:38 case), then three that repeat finished work without asking for
@@ -19,6 +19,9 @@ TASKS = [("Dispatch an agent to come up with a really nice website to describe t
          ("Make a website that describes the project.", "Make a website that describes the project."),
          ("Add a version flag to the CLI.", "Add a version flag to the CLI."),
          ("Fix the README typo.", "Fix the typo in the README.")]
+THIN = [("Get an agent to make something fun for the kids.", "Can you get an agent to make something fun for the kids?"),
+        ("Improve it.", "Hmm. Can you improve it?")]   # thin: one ask with a proposal first, then (after "Your call, go ahead.") a named worker
+if sys.argv[3:4] == ["thin"]: TASKS = THIN
 OVER = "REHEARSAL OVER"
 PROMPT = (f"Read {HERE}/.claude/skills/call/SKILL.md and follow it: you are Donna's brain. Rehearsal rules, overriding the skill where they "
           "differ: there is no voice and no phone, so never run step 4 or step 5 and never start or stop bridge.py. When an inbox line's "
@@ -48,11 +51,11 @@ def jl(p):
 
 
 def main():
-    os.makedirs(OUT, exist_ok=True); root = tempfile.mkdtemp(prefix=f"run-{MODEL}-", dir=OUT)   # kept: the scratch repo, its worktrees and the herd files
+    os.makedirs(OUT, exist_ok=True); root = tempfile.mkdtemp(prefix=f"run-{MODEL}-{len(TASKS)}-", dir=OUT)   # kept: the scratch repo, its worktrees and the herd files
     h = os.path.join(root, "home"); os.makedirs(h)
     os.environ["HIGGS_HOME"] = h; sys.path.insert(0, HERE); import herd   # herd reads HIGGS_HOME per call; send's tmux wake targets donna-<dir>, never `donna`
     r = repo(root); env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}   # the claude.ai login, not the low-credit key
-    log = open(os.path.join(OUT, f"stream-{MODEL}.jsonl"), "w")
+    tag = MODEL + "-thin" * (TASKS is THIN); log = open(os.path.join(OUT, f"stream-{tag}.jsonl"), "w")
     brain = subprocess.Popen(["claude", "-p", PROMPT, "--model", MODEL, "--settings", os.path.join(HERE, "hooks", "office.json"), "--add-dir", HERE,
                               "--permission-mode", "auto", "--output-format", "stream-json", "--verbose"], cwd=r, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     meta, t0 = os.path.join(h, "herd", "donna", "meta.json"), time.time()
@@ -81,7 +84,7 @@ def main():
     bash = [e["input"].get("command", "") for e in mine if e.get("ev") == "PostToolUse" and not e.get("agent") and e.get("tool") == "Bash"]
     starts = [e for e in mine if e.get("ev") == "SubagentStart"]
     wts = subprocess.run(["git", "-C", r, "worktree", "list"], capture_output=True, text=True).stdout
-    res = [x for x in jl(os.path.join(OUT, f"stream-{MODEL}.jsonl")) if x.get("type") == "result"]   # one per turn (a background task's notification starts one)
+    res = [x for x in jl(os.path.join(OUT, f"stream-{tag}.jsonl")) if x.get("type") == "result"]   # one per turn (a background task's notification starts one)
     res = {"total_cost_usd": max((x.get("total_cost_usd") or 0 for x in res), default=None), "duration_ms": sum(x.get("duration_ms") or 0 for x in res), "num_turns": sum(x.get("num_turns") or 0 for x in res)}
     rows = []
     for i, (tid, (task, _)) in enumerate(zip(ids, TASKS)):
@@ -98,7 +101,7 @@ def main():
                      "notes": [e.get("text") for e in hev if e.get("id") == tid and e.get("ev") == "task.note"]})
     out = {"model": MODEL, "rows": rows, "self_writes": [(e["tool"], (e.get("input") or {}).get("file_path")) for e in selfw], "subagent_starts": len(starts),
            "brain_bash": bash, "worktrees": wts, "cost_usd": res.get("total_cost_usd"), "duration_s": round((res.get("duration_ms") or 0) / 1000), "turns": res.get("num_turns")}
-    json.dump(out, open(os.path.join(OUT, f"brain-{MODEL}.json"), "w"), indent=1)
+    json.dump(out, open(os.path.join(OUT, f"brain-{tag}.json"), "w"), indent=1)
     for x in rows: print(json.dumps(x)[:600])
     print(f"[{MODEL}] self-writes {out['self_writes']}, SubagentStart {len(starts)}, cost ${out['cost_usd']}, {out['duration_s']} s\n{wts}")
 
