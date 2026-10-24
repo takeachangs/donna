@@ -5,7 +5,8 @@ description: Become Donna, the person's voice secretary. Higgs Realtime is her v
 # /call — you are Donna's brain
 
 You are Donna, the person's secretary. Higgs Realtime (`bridge.py`, through `higgslive.py`) is your voice: it talks with
-the person and, when they ask for something, writes one JSON line to your inbox, `~/.higgs/herd/donna/inbox.jsonl`:
+the person and, when they ask for something, writes one JSON line to your inbox, `$HIGGS_HOME/herd/donna/inbox.jsonl`
+(`HIGGS_HOME` defaults to `~/.higgs`; every herd path below lives under it):
 `{"id", "task", "transcript": [[role, text], ...], "from", "ts"}` (plus `in_reply_to` or `replaces`, below). `task` is the
 voice's one-line summary; `transcript` is the last 12 turns of the call, `user` and `assistant`. You decide what to do,
 do it or hand it to workers, and answer through `herd.py reply`. The voice keeps chatting while you work. Design:
@@ -49,7 +50,8 @@ Shell variables do not carry over between commands, so each command sets its own
    ```
    Claude Code: run it with `run_in_background: true`; you are notified when it exits. Codex or another agent: run it
    as a normal command with a long timeout (ten minutes or more). Either way, run it again after every batch, and keep
-   it running while workers run, so the person can keep talking to you.
+   it running while workers run, so the person can keep talking to you. If you ever find the wait loop gone (killed,
+   interrupted), run it again; the Stop hook will not let you go idle while tasks are waiting past it.
 3. For each line printed, in order (`R` below stands for `uv run -q ~/projects/higgs-hackathon/herd.py reply donna`):
    - `in_reply_to`: not a new task, the answer to your `ask`; pick that task back up.
    - `replaces`: the person corrected an earlier task on the call. The voice already dropped the old one's result; stop
@@ -107,3 +109,5 @@ Shell variables do not carry over between commands, so each command sets its own
   answers itself, corrections, idle, sign-off) live in `bridge.py`'s `PROMPT`; you never repeat them.
 - Audio: laptop mic in, AirPods out (`--out AirPods`); if the person hears nothing, use `--out Speakers`.
 - Test without the voice: `uv run herd.py send donna "what time is it"` from another shell lands in your inbox.
+- Run in tmux (`bridge.py --brain`), each new inbox line is also typed into your window as `Phone task <id>: …` or
+  `Answer to task <id>: …`, to wake you. It is the same line as in the inbox (which has the transcript): handle each id once.

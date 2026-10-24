@@ -12,6 +12,8 @@
                                           # Enter calls her; hangs up on "bye", 60 s of silence or Higgs idle timeout
                                           # every call starts with ~/.higgs/herd/donna/context.txt; tasks go through herd.py send
   uv run bridge.py --ring --silent        # headless Donna phone: each stdin line is Enter (no call open) or a typed turn (on a call)
+  uv run bridge.py --ring --backend session --brain ~/projects/app   # also start the brain: Claude Code on /call in tmux `donna`
+                                          # (tmux attach -t donna to watch or type); each new task is typed into it, waking it
   uv run bridge.py selftest               # offline checks (idle policy, sign-off, prompt size), no API call
 
 Session backend: delegations land in ~/.higgs/herd/donna/inbox.jsonl through herd.send, one JSON line each: {"id", "task",
@@ -38,6 +40,20 @@ def idle_action(now: float, active_at: float, spk_at: float, pending: bool, done
     if action is None or action in done: return None
     done[action] = now
     return action
+
+ECHO_TAIL = 0.3   # s: the voice's audio counts as audible this long after its estimated end (output latency, room echo)
+
+def find_device(devices, name: str, kind: str) -> int | None:
+    """Index of the first `kind` ("input"/"output") device whose name contains `name`, any case; None if none does (#34)."""
+    return next((i for i, d in enumerate(devices) if name.lower() in d["name"].lower() and d[f"max_{kind}_channels"] > 0), None)
+
+def echo_of(heard: str, said: str) -> bool:
+    """`heard` (a user transcript) is the mic picking up `said` (the voice's last line): two or more words, at least four in five
+    of them found in order in `said`. Oct 24 08:30 call: "You asked me." after "You asked me to call." (#34)."""
+    import difflib
+    w = lambda s: re.findall(r"[a-z0-9']+", s.lower().replace("’", "'"))
+    h, s = w(heard), w(said)
+    return len(h) >= 2 and sum(b.size for b in difflib.SequenceMatcher(None, h, s, autojunk=False).get_matching_blocks()) >= 0.8 * len(h)
 
 import higgslive
 
@@ -90,6 +106,14 @@ if sys.argv[1:2] == ["selftest"]:   # offline: no session, no audio
     nudges = [idle_action(t, 100, spk, False, done) for t, spk in ((130, 0), (132, 131), (133, 132), (140, 133), (149, 133), (150, 133), (159, 133), (160, 133))]
     assert nudges == ["nudge", None, None, None, None, "warn", None, "hangup"], nudges
     assert idle_action(1000, 0, 0, True, {}) is None   # never while a task is pending
+    devs = [{"name": "MacBook Pro Microphone", "max_input_channels": 1, "max_output_channels": 0},
+            {"name": "MacBook Pro Speakers", "max_input_channels": 0, "max_output_channels": 2}, {"name": "EarPods", "max_input_channels": 0, "max_output_channels": 2}]
+    assert (find_device(devs, "macbook", "input"), find_device(devs, "MacBook", "output"), find_device(devs, "earpods", "output")) == (0, 1, 2)
+    assert find_device(devs, "AirPods", "output") is None and find_device(devs, "EarPods", "input") is None   # no match, or no channels of that kind
+    assert all(echo_of(h, s) for h, s in (("You asked me.", "You asked me to call."), ("You asked me to.", "You asked me to call."), ("Still running.", "It's still running."),
+                                          ("No need to check.", "Got it, no need to check on that. I'm just waiting for the task to finish up.")))   # the 08:30 call
+    assert not any(echo_of(h, s) for h, s in (("On that now. No, you don't have to check on that. Um.", "I'm checking on that now."),   # echo + the user's own words
+                                              ("Blue.", "Should the page be blue or green?"), ("Blue, please.", "Should the page be blue or green?"), ("They'll run it.", "It's still running.")))
     print("ok"); sys.exit(0)
 
 ap = argparse.ArgumentParser()
@@ -106,12 +130,15 @@ ap.add_argument("--out", help="substring of the output device name, e.g. AirPods
 ap.add_argument("--project", help="directory the claude backend works in (default: ./sandbox)")
 ap.add_argument("--ring", action="store_true", help="no session until Donna's outbox gets a `say` (or you press Enter); one call at a time, then wait again")
 ap.add_argument("--silence-ms", type=int, help="server VAD silence (ms) that ends a user turn; default 800 on a live mic, server default (500) otherwise")
+ap.add_argument("--brain", metavar="REPO", help="start Donna's brain first (Claude Code on the /call skill, working in REPO) in tmux session `donna`, unless it runs already")
 args = ap.parse_args()
 if args.ring and args.text: ap.error("--ring cannot be combined with --text")
 CONTEXT = os.path.join(DONNA if args.ring or args.backend == "session" else HIGGS_DIR, "context.txt")   # Donna's seed (the skill writes it)
 MIC = not (args.wav or args.text or args.ring and args.silent)   # a live mic: real speech pauses longer than TTS
 HERE = os.path.dirname(os.path.abspath(__file__))
 SANDBOX = os.path.abspath(os.path.expanduser(args.project)) if args.project else os.path.join(HERE, "sandbox")
+DEAF_AFTER = 20   # seconds with no take before the voice tells the user the brain is not answering (#38)
+DEAF = "[note] Nobody on the computer has picked up the task you sent. Tell the user in one sentence that the brain is not answering and that typing anything in its window wakes it."
 
 T0 = time.monotonic()
 LOGF = open(os.path.join(HERE, "bridge.log"), "a")
@@ -122,6 +149,18 @@ def log(*a):
 class _H(logging.Handler):
     def emit(self, r): log(r.getMessage())
 logging.getLogger("higgslive").addHandler(_H()); logging.getLogger("higgslive").setLevel(logging.INFO)
+
+DEV: dict = {}   # "input"/"output" → the --mic/--out device, resolved once at start (#34); absent = the system default
+ECHO = False     # speakers + built-in mic: the mic hears the voice
+if MIC or not args.silent:
+    import sounddevice as sd
+    for kind, name in (("output", None if args.silent else args.out), ("input", args.mic if MIC else None)):
+        if not name: continue
+        DEV[kind] = find_device(sd.query_devices(), name, kind)
+        if DEV[kind] is None:   # used to fall back to the default silently: --out AirPods with no AirPods played on the speakers (#34)
+            print(sd.query_devices(), file=sys.stderr); ap.error(f"--{'out' if kind == 'output' else 'mic'} {name!r} matches no {kind} device (list above)")   # exit 2; --ring never arms
+    if ECHO := MIC and not args.silent and all("macbook" in sd.query_devices(DEV.get(k), k)["name"].lower() for k in ("input", "output")):   # ponytail: MacBook names only; add other built-in pairs if they echo
+        log("echo guard: MacBook speakers + MacBook mic, so the mic hears Donna; it is muted while she talks, so you cannot talk over her. Headphones lift this.")
 
 SESSION: dict = {}             # the backend Claude Code session id, kept for the length of the call
 BACKEND_LOCK = asyncio.Lock()  # one agent: tasks run one at a time, in order
@@ -289,10 +328,8 @@ async def call(seed: str) -> str:
 
     def spk_thread():
         try:
-            odev = None
-            if args.out:
-                odev = next((i for i, d in enumerate(sd.query_devices()) if args.out.lower() in d["name"].lower() and d["max_output_channels"] > 0), None)
-                loop.call_soon_threadsafe(log, f"speaker: {sd.query_devices(odev)['name'] if odev is not None else 'no match for ' + args.out + ', using default'}")
+            odev = DEV.get("output")
+            if args.out: loop.call_soon_threadsafe(log, f"speaker: {sd.query_devices(odev)['name']}")
             with sd.RawOutputStream(samplerate=RATE, channels=1, dtype="int16", device=odev) as out:
                 import math, array
                 out.write(array.array("h", (int(6000 * math.sin(2 * math.pi * 880 * i / RATE)) for i in range(RATE // 5))).tobytes())
@@ -324,9 +361,16 @@ async def call(seed: str) -> str:
                 if not sess and BACKEND_LOCK.locked(): await conn.session.thinking.append(content="queued behind the current task", delegation_id=did)
                 async with contextlib.nullcontext() if sess else BACKEND_LOCK:
                     t = time.monotonic(); log(f"backend started for {did}: {task[:90]}")
-                    async def progress(text): await conn.session.thinking.append(content=text, delegation_id=did)
-                    async def ask(text): await conn.session.commentary.append(content=text, delegation_id=did, kind="ask"); ASK["did"] = did
-                    text, kind = await backend(did, task, [list(x) for x in transcript[-12:]], progress, ask, replaces)
+                    heard = asyncio.Event()   # the brain answered: take, note, ask or the result
+                    async def progress(text): heard.set(); await conn.session.thinking.append(content=text, delegation_id=did)
+                    async def ask(text): heard.set(); await conn.session.commentary.append(content=text, delegation_id=did, kind="ask"); ASK["did"] = did
+                    async def deaf():   # #38: its wait loop died and nothing woke it (no tmux), or it is busy with something else
+                        await asyncio.sleep(DEAF_AFTER)
+                        if heard.is_set(): return
+                        log(f"brain: no take for {did} in {DEAF_AFTER} s; it is not answering. Type anything in its window (tmux attach -t {herd.tmux_name()} if it runs there)")
+                        await conn.session.commentary.append(content=DEAF)
+                    if sess: tasks.append(asyncio.create_task(deaf()))
+                    text, kind = await backend(did, task, [list(x) for x in transcript[-12:]], progress, ask, replaces); heard.set()
                     log(f"backend done for {did} in {time.monotonic()-t:.1f}s")
                     await conn.session.commentary.append(content=text, delegation_id=did, kind=kind)
             finally: st["pending"] -= 1
@@ -361,15 +405,14 @@ async def call(seed: str) -> str:
             meter = {"n": 0, "peak": 0}
             def on_mic(indata, frames, t, status):
                 buf = bytes(indata); a = array.array("h", buf)
+                if ECHO and time.monotonic() < st["play_until"] + ECHO_TAIL: buf = bytes(len(buf))   # zeros while she is audible: her echo (0.4-0.6) is louder than the user (≤0.15) on this mic, so no level bar or VAD threshold tells them apart (#34)
                 asyncio.run_coroutine_threadsafe(conn.input_audio.append(buf), loop)
                 meter["peak"] = max(meter["peak"], max(abs(x) for x in a) if a else 0); meter["n"] += 1
                 if meter["n"] % 20 == 0:
                     lvl = meter["peak"] / 32768; meter["peak"] = 0
                     loop.call_soon_threadsafe(log, f"mic level {lvl:.3f}" + ("   <-- ZERO: terminal has no microphone permission" if lvl < 0.001 else ""))
-            dev = None
-            if args.mic:
-                dev = next((i for i, d in enumerate(sd.query_devices()) if args.mic.lower() in d["name"].lower() and d["max_input_channels"] > 0), None)
-                log(f"mic: {sd.query_devices(dev)['name'] if dev is not None else 'no match for ' + args.mic + ', using default'}")
+            dev = DEV.get("input")
+            if args.mic: log(f"mic: {sd.query_devices(dev)['name']}")
             stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=RATE // 10, callback=on_mic, device=dev); stream.start()
         if args.max_seconds:
             async def deadline(): await asyncio.sleep(args.max_seconds); end("max-seconds"); log("max-seconds reached")
@@ -400,11 +443,14 @@ async def call(seed: str) -> str:
                 elif t == "error": log("ERROR", ev.error)
                 elif t == "session.closed": log("session closed:", ev.reason); end(ev.reason)
                 elif t == "session.input_speech_started":   # VAD alone (noise can trigger it) does not restart the idle clock: words do
+                    st["over"] = time.monotonic() < st["play_until"] + ECHO_TAIL   # began while the voice was audible: its transcript may be her echo (#34)
                     clear_spk(); st["play_until"] = 0.0; log("… user speaking (barge-in: playback cleared)")
                     if args.ring and not st["vu"]: st["vu"] = True; event("voice.user")
                 elif t == "session.input_speech_stopped": st["vu"] = False
                 elif t == "session.output_audio.discard": clear_spk(); st["play_until"] = 0.0; st.pop("audio_bytes", None)   # a reply that reported a result nobody sent (higgslive, #32)
                 elif t == "session.input_transcript.done":
+                    if st.get("over") and echo_of(ev.transcript, next((x for r, x in reversed(transcript) if r == "assistant"), "")):   # never the transcript, an answer or the idle clock (#34)
+                        log("USER (her own words through the mic, dropped):", ev.transcript); continue
                     log("USER:", ev.transcript); transcript.append(["user", ev.transcript]); forward_answer(ev.transcript, [list(x) for x in transcript[-12:]])
                     st["vu"] = False
                     if ev.transcript.strip(): st["act"] = time.monotonic()
@@ -481,6 +527,25 @@ async def run():
     try: await main()
     finally: states.cancel()
 
+def start_brain(repo):   # #38: the brain in tmux, so herd.send can wake it (herd.wake) and the user can attach and watch
+    import subprocess
+    name = herd.tmux_name(); t = f"={name}:"
+    tm = lambda *a: subprocess.run(["tmux", *a], capture_output=True, text=True)
+    if tm("has-session", "-t", t).returncode == 0: log(f"brain: tmux session {name} is running already"); return
+    tm("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", repo, "-e", f"HIGGS_HOME={HIGGS_DIR}",
+       "env", "-u", "ANTHROPIC_API_KEY", "claude", "--settings", os.path.join(HERE, "hooks", "office.json"))   # the claude.ai login, not the low-credit key
+    told = False
+    for _ in range(90):   # wait for the prompt; a folder Claude Code has not seen asks for trust first, and that answer is the user's
+        pane = tm("capture-pane", "-p", "-t", t).stdout
+        if "trust" in pane.lower():
+            if not told: log(f"brain: Claude Code asks whether to trust {repo}; answer it in: tmux attach -t {name}"); told = True
+        elif "❯" in pane: break
+        time.sleep(1)
+    else: log(f"brain: no prompt in 90 s; see: tmux attach -t {name}"); return
+    herd.wake(f"Read {HERE}/.claude/skills/call/SKILL.md and follow it: you are Donna's brain.")
+    log(f"brain: started in tmux session {name} ({repo}); watch it with: tmux attach -t {name}")
+
+if args.brain: start_brain(os.path.abspath(os.path.expanduser(args.brain)))
 try: asyncio.run(run())
 except KeyboardInterrupt: log("hung up (Ctrl-C)")
 finally:   # `off` last (Mike's contract), and the office sees it at once
