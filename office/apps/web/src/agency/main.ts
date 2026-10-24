@@ -291,8 +291,10 @@ function render() {
   paintCall();
   renderDrawer();
 }
-/** office.json has no briefing.workerId; Scene walks that worker to Donna, so it is the first contributor's worker. */
+/** Scene walks briefing.workerId to Donna, so it must be a worker with a desk. The producer may send the lead's id
+ * (the brain row has no desk) or none: then it is the first contributor's worker. */
 function adapt(w: Workspace): Workspace {
+  const desk = (id?: string) => w.workers.find((k) => !k.lead && k.id === id)?.id;
   return {
     ...w,
     briefings: w.briefings.map((b) => {
@@ -300,7 +302,11 @@ function adapt(w: Workspace): Workspace {
       return {
         ...b,
         contributors,
-        workerId: b.workerId || w.workers.find((k) => !k.lead && k.name === contributors[0]?.name)?.id || '',
+        workerId:
+          desk(b.workerId) ||
+          w.workers.find((k) => !k.lead && k.name === contributors[0]?.name)?.id ||
+          b.workerId ||
+          '',
       };
     }),
   };
