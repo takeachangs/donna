@@ -9,7 +9,7 @@ The office is a display. It reads one JSON file, streams it to a browser and dra
 - Static files from `dist/web` (`static.ts`; only the built frontend is served, never the repository).
 - `GET /agency-api/health` returns `{ok, version, state, updated}`; `state` is `file` or `missing`, `updated` is the file's mtime.
 - `GET /agency-api/workspace` returns the current workspace.
-- `GET /agency-api/results/<id>/<file>` opens a registered reviewed snapshot. It cannot read arbitrary paths; generated HTML runs in a sandboxed opaque origin with no network access.
+- `GET /agency-api/results/<id>/<file>` opens a registered reviewed snapshot. It cannot read arbitrary paths; generated HTML runs in a sandboxed opaque origin with restricted resource and API requests.
 - `/agency-ws` sends `{type: 'workspace', workspace}` on connect and again on every change. Clients send nothing; incoming messages are capped at 1 KiB.
 
 ## Data (`state.ts`)

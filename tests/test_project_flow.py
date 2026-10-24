@@ -118,6 +118,14 @@ class ProjectFlow(unittest.TestCase):
         herd.write_json(meta, {**herd.rj(meta), 'project':str(self.base/'other-project')})
         self.assertEqual(notifications.pending(), [])
 
+    def test_reregistering_same_project_does_not_drop_pending_result(self):
+        tid = self.finish()
+        herd.new('donna', project=str(self.project))
+        self.assertEqual([m['id'] for m in notifications.pending()], [tid])
+        notifications.acknowledge(notifications.pending()[0])
+        herd.new('donna', project=str(self.project))
+        self.assertEqual(notifications.pending(), [])
+
     def test_same_artifact_and_report_are_announced_once_for_refinement(self):
         first, second = self.finish(), self.finish()
         page=self.project/'index.html'; page.write_text('<p>One reviewed deliverable</p>')

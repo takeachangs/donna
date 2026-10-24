@@ -14,7 +14,7 @@ projects, deliverables and native session IDs were preserved. No real Claude inf
 | Interrupted/failed audio | PASS | Offline checks leave notifications pending and prevent acknowledgement after interruption or output failure. |
 | Resolved/superseded requests and project changes | PASS | Offline checks exclude stale questions, replaced requests and another project's notifications. |
 | Result storage and HTTP boundary | PASS | Outside-project files, unknown tasks, unregistered files, traversal, mutation and remote origins rejected; reviewed snapshots survive edits to the source. |
-| Regression suite | PASS | 11 project/delivery checks, 4 fake-CLI Codex checks, four Python self-checks, 24-step office timeline; 59 office tests plus type-check/build/source-boundary check. |
+| Regression suite | PASS | 12 project/delivery checks, 4 fake-CLI Codex checks, four Python self-checks, 24-step and 46-step office timelines; 60 office tests plus type-check/build/source-boundary check. |
 
 The voice check was **headless real Higgs**, with typed sign-off, not a live microphone or
 physical speaker latency measurement. The final generated report contained 29.2 seconds of

@@ -33,7 +33,9 @@ def pending():
     for m in herd.tail(d/'outbox.jsonl'):
         kind, tid = m.get('kind'), m.get('id')
         if kind not in ('say','fail','ask') or not m.get('text') or tid in replaced: continue
-        if m.get('ts', 0) < meta.get('since', 0): continue
+        # Re-registering the same brain starts a new duty period, not a delivery receipt.
+        # Legacy mail has no project identity, so only that mail uses the duty cutoff.
+        if not projects.get(tid) and m.get('ts', 0) < meta.get('since', 0): continue
         if projects.get(tid) and os.path.normcase(projects[tid]) != os.path.normcase(meta.get('project', '')): continue
         task = status.get('tasks', {}).get(tid, {})
         if kind == 'ask' and (task.get('state') != 'needs_you' or task.get('asked') != m['text']): continue
