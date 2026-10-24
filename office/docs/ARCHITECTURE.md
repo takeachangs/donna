@@ -30,7 +30,7 @@ The page connects to `/agency-ws`, replaces its workspace on each message and re
 
 Three.js, unchanged by the cut. `floor.ts` lays out the floor: a doorway per project onto the shared hall, Donna's suite at the entrance, rooms growing outward as teams grow.
 
-- Lounge rule (`resting` in `floor.ts`): a non-lead worker whose status is `review` or `done` sits in the lounge only when no assignment in the same project is `queued`, `working` or `waiting`. Otherwise they stay at their desk.
+- Lounge rule (`resting` in `floor.ts`): a non-lead worker whose status is `done` or `failed` sits in the lounge on their own, whatever the rest of the project is doing. A worker with a new report walks to Donna first, then rests.
 - Handoff walk: when a `queued` briefing appears that the scene has not seen, its worker (not currently `working`) walks desk to Donna, and on to the lounge if resting. Briefings present at load do not walk, and reduced motion skips the animation.
 - Donna's tool-call errands (`Scene.toolTrip`, with the planner `errand`, `turnBack` and `nextCall` in `floor.ts`) were driven by voice tool events. Those events no longer exist and nothing calls `toolTrip`; the planner is still unit-tested.
 - NPC animation changes go through `transitionTo(...)`.

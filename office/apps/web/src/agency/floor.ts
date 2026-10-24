@@ -52,22 +52,15 @@ export function afterReport(s: Point): Point[] {
   return [{ x: 1.5, z: 13 }, { x: 0, z: 13 }, { x: 0, z: 11 }, ...loungeLeg(s)];
 }
 type Who = { id: string; projectId: string; status: string; lead?: boolean };
-type Work = { projectId: string; status: string };
-/** On a break: not a lead, own work delivered (status 'review' or 'done'), and no assignment in the same project is still open ('queued'|'working'|'waiting'). Project-wide on purpose: the team rests once the lead's review is done, so the reporter walks desk → Donna → lounge. */
-export function resting(w: Who, assignments: Work[]): boolean {
-  return (
-    !w.lead &&
-    (w.status === 'review' || w.status === 'done') &&
-    !assignments.some(
-      (a) => a.projectId === w.projectId && (a.status === 'queued' || a.status === 'working' || a.status === 'waiting'),
-    )
-  );
+/** On a break: not a lead, and finished ('done' or 'failed'). Per worker: the rest of the project may still be working. A worker with a new report walks desk → Donna first (Scene keeps it out of seat() until the walk ends), then rests. */
+export function resting(w: Who): boolean {
+  return !w.lead && (w.status === 'done' || w.status === 'failed');
 }
 /** Next lounge seating (worker id → index into loungeSpots). Entries for ids NOT in `workers` are kept untouched (they are walking or about to report). Listed workers that are no longer resting lose their entry. Listed resting workers without an entry take the lowest free index; if all 6 are taken they get none (they stay at their desk). Returns a new Map; never mutates `current`. */
-export function seat(workers: Who[], assignments: Work[], current: Map<string, number>): Map<string, number> {
+export function seat(workers: Who[], current: Map<string, number>): Map<string, number> {
   const out = new Map(current);
   for (const w of workers) {
-    if (!resting(w, assignments)) {
+    if (!resting(w)) {
       out.delete(w.id);
       continue;
     }

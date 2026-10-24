@@ -12,51 +12,41 @@ import {
   type Footprint,
 } from '../apps/web/src/agency/floor';
 
-const w = (id: string, status = 'review', projectId = 'p1', lead = false) => ({ id, projectId, status, lead });
-const a = (status: string, projectId = 'p1') => ({ projectId, status });
+const w = (id: string, status = 'done', projectId = 'p1', lead = false) => ({ id, projectId, status, lead });
 const hit = (p: Footprint, q: Footprint) =>
   p.x < q.x + q.width && q.x < p.x + p.width && p.z < q.z + q.depth && q.z < p.z + p.depth;
 
 describe('resting', () => {
-  it('review/done worker with no open work rests', () => {
-    expect(resting(w('a', 'review'), [a('done')])).toBe(true);
-    expect(resting(w('a', 'done'), [])).toBe(true);
+  it('a done or failed worker rests', () => {
+    expect(resting(w('a', 'done'))).toBe(true);
+    expect(resting(w('a', 'failed'))).toBe(true);
   });
-  it('any open assignment in the same project blocks it, other projects do not', () => {
-    for (const s of ['queued', 'working', 'waiting']) expect(resting(w('a'), [a(s)])).toBe(false);
-    expect(resting(w('a'), [a('working', 'p2')])).toBe(true);
+  it('on their own: the rest of the project does not matter', () => {
+    const team = [w('a', 'done'), w('b', 'working'), w('c', 'waiting')];
+    expect(team.map(resting)).toEqual([true, false, false]);
+    expect([...seat(team, new Map()).keys()]).toEqual(['a']);
   });
   it('leads and unfinished workers never rest', () => {
-    expect(resting(w('a', 'review', 'p1', true), [])).toBe(false);
-    for (const s of ['failed', 'paused', 'queued', 'working']) expect(resting(w('a', s), [])).toBe(false);
+    expect(resting(w('a', 'done', 'p1', true))).toBe(false);
+    for (const s of ['review', 'paused', 'queued', 'working', 'waiting']) expect(resting(w('a', s))).toBe(false);
   });
 });
 
 describe('seat', () => {
   it('gives 0 and 1 to new resters, keeps them across calls', () => {
     const ws = [w('a'), w('b')],
-      m = seat(ws, [], new Map());
+      m = seat(ws, new Map());
     expect([m.get('a'), m.get('b')]).toEqual([0, 1]);
-    expect(seat([...ws, w('c')], [], m).get('a')).toBe(0);
-    expect(seat(ws, [], m).get('b')).toBe(1);
+    expect(seat([...ws, w('c')], m).get('a')).toBe(0);
+    expect(seat(ws, m).get('b')).toBe(1);
   });
-  it('drops the seat when new work arrives and reuses the freed lowest index', () => {
-    const m = seat([w('a'), w('b'), w('c', 'review', 'p2')], [], new Map());
-    const m2 = seat([w('a'), w('b'), w('c', 'review', 'p2')], [a('queued')], m);
+  it('drops the seat when the worker gets new work and reuses the freed lowest index', () => {
+    const m = seat([w('a'), w('b'), w('c', 'done', 'p2')], new Map());
+    const m2 = seat([w('a', 'working'), w('b', 'queued'), w('c', 'done', 'p2')], m);
     expect(m2.has('a') || m2.has('b')).toBe(false);
     expect(m2.get('c')).toBe(2);
-    const m3 = seat(
-      [w('a'), w('d', 'review', 'p3')],
-      [a('queued', 'p2')],
-      new Map([
-        ['a', 0],
-        ['b', 1],
-      ]),
-    );
-    expect(m3.get('d')).toBe(2);
     const m4 = seat(
       [w('a', 'working'), w('d')],
-      [],
       new Map([
         ['a', 0],
         ['b', 1],
@@ -65,14 +55,13 @@ describe('seat', () => {
     expect(m4.has('a')).toBe(false);
     expect(m4.get('d')).toBe(0);
   });
-  it('keeps entries for ids not listed', () => {
-    expect(seat([w('a')], [], new Map([['x', 0]])).get('x')).toBe(0);
-    expect(seat([w('a')], [], new Map([['x', 0]])).get('a')).toBe(1);
+  it('keeps entries for ids not listed (walking or about to report)', () => {
+    expect(seat([w('a')], new Map([['x', 0]])).get('x')).toBe(0);
+    expect(seat([w('a')], new Map([['x', 0]])).get('a')).toBe(1);
   });
   it('seats at most 6; the 7th stays at the desk', () => {
     const m = seat(
       ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((i) => w(i)),
-      [],
       new Map(),
     );
     expect(m.size).toBe(6);
@@ -80,7 +69,7 @@ describe('seat', () => {
   });
   it('does not mutate the input', () => {
     const cur = new Map([['x', 3]]);
-    seat([w('a')], [], cur);
+    seat([w('a')], cur);
     expect([...cur]).toEqual([['x', 3]]);
   });
 });

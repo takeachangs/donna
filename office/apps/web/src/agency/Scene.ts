@@ -389,7 +389,6 @@ export class AgencyScene implements GameScene {
       for (const k of [...this.seats.keys()]) if (!activeWorkers.some((w) => w.id === k)) this.seats.delete(k);
       this.seats = seat(
         activeWorkers.filter((w) => !this.handoffs.some((b) => b.workerId === w.id)),
-        workspace.assignments,
         this.seats,
       );
       for (const r of this.rooms.values()) if (r.id !== 'secretary') this.clearOwned(r.stations);
@@ -806,7 +805,7 @@ export class AgencyScene implements GameScene {
           trip.wait = trip.hold ? Infinity : 0.8;
           const ws = this.lastWorkspace,
             w = id === 'mara' || trip.call ? undefined : ws?.workers.find((w) => w.id === id),
-            next = w ? seat([w], ws!.assignments, this.seats) : this.seats,
+            next = w ? seat([w], this.seats) : this.seats,
             si = next.get(id);
           this.seats = next;
           trip.points =
@@ -862,7 +861,6 @@ export class AgencyScene implements GameScene {
         ws.workers.filter(
           (w) => this.homes.has(w.id) && !this.trips.has(w.id) && !this.handoffs.some((b) => b.workerId === w.id),
         ),
-        ws.assignments,
         prev,
       );
       for (const [id, i] of prev) if (!this.seats.has(id)) this.stroll(id, i, false);

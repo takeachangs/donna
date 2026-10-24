@@ -35,7 +35,7 @@ Edit the file while the page is open and it redraws within about a second. A mis
 - The floor: Donna's suite at the entrance, one room per project, one desk per worker. Click a room or a person to open it.
 - A status line at the top: Off the line, Donna is calling you, Listening, Thinking, Speaking. While it rings Donna walks to the entrance phone.
 - A drawer on the right: open questions ("needs you"), reports (unread first), recent activity, and per room the latest memory and its work with a details dialog. Everything in it is read-only.
-- When a new unread report arrives, its first contributor walks from their desk to Donna, then to the lounge if their project has no queued, working or waiting work left.
+- When a new unread report arrives, its first contributor walks from their desk to Donna, then to the lounge. A finished worker (done or failed) rests in the lounge on their own, whatever the rest of the project is doing.
 
 ## Verify
 
