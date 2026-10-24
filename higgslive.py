@@ -95,7 +95,7 @@ OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|fi
 PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c.txt: no paths in speech
 PENDING_LINE = "Still on it; I'll call you when it's done."   # what a reply that reports a result nobody sent is replaced by (#32)
 DONE = re.compile(r"\b(has|have|'s|is|was|are|were)\s+(been\s+)?(now\s+|all\s+)?(ready|live|in place)\b|(?<!you're )(?<!you are )\ball set\b|(?<!we're )(?<!you're )(?<!i'm )\bdone\b|"
-                  r"\b(finished|completed|added|created|written|wrote|built|fixed|updated|saved|backed up|deployed|pushed|merged|committed|published|installed|deleted|renamed)\b")   # "we're done here" is the call
+                  r"\b(finished|completed|added|created|written|wrote|built|fixed|updated|saved|backed up|deployed|pushed|merged|committed|published|installed|deleted|renamed|zipped|archived|compressed|bundled|packaged|exported|converted|moved|copied)\b")   # "we're done here" is the call
 LATER = re.compile(r"\b(when|once|until|till|soon|if|will|not|yet|still|being|going to|about to|who|what|which|whether|check|checking|find out|look|looking)\b|'ll|n't|\?\W*$")   # "I'll call you when it's done" is a promise, not a claim
 FIX = "(system) No result has come in yet; the task is still running. Your last reply was wrong and was not played. Say exactly this and nothing else: \"{}\""
 REPEAT = ("(system) Not played: you already said \"{}\" Never say it again. Answer the user's last words in different words; "   # Oct 24 call: six user turns in 50 s, one answer
@@ -189,7 +189,7 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
     return PATH.sub(r"\1", " ".join(out)) or "No agents are running and nothing has finished since the call started."
 
 
-ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|"
+ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|zip(s|ped|ping)?|archiv(e|es|ed|ing)|compress(es|ed|ing)?|bundl(e|es|ed|ing)|packag(e|es|ed|ing)|export(s|ed|ing)?|mov(e|es|ed|ing)|cop(y|ies|ied|ying)|"
                    r"add|change|design|plan|style|improve|update (the|it|that|this|my)|(put|turn) (it|this|that)|tell (them|it|someone)|have (them|someone)|"
                    r"who('?s| is| was)? (built|made|wrote|did|working on|worked on|on|in charge of)|on the line|put me through|connect me|talk to|speak (to|with))\b")   # not bare "update"/"have it": "any update?", "do you have it?" ask about a running task; "who built the quiz?" and "get me on the line" go to the brain (#28)
 
@@ -524,6 +524,8 @@ if __name__ == "__main__":   # self-check: no network
                                          "i'll whip up a hero section with a clean layout", "let me put that together",
                                          "sure. i'll add a hero section to the page with a big heading")) and CLAIM.search("i'm putting together the hero section")
     assert all(ASKED.search(x) for x in ("can you tell them to plan a nice hero section", "add a sleek hero section to it", "update the colors"))
+    assert all(ASKED.search(x) for x in ("zip the music folder", "can you archive these", "compress it, moving the copy")) and not ASKED.search("what a lovely day")   # #58
+    assert all(DONE.search(x) for x in ("the music folder is zipped", "i archived it", "it's compressed and exported")) and not DONE.search("what a lovely day")   # #58
     assert not any(ASKED.search(x) for x in ("are you done? like.", "any update on that?", "do you have it yet?", "hello", "who are you?"))
     assert fabricated("I've sent that off to check who built the quiz.") is None   # the question's own words, not a claim (#28 run)
     assert OFFER.search("i'll connect you with maya right now.") and ASKED.search("get me on the line with her.")   # #28 run: no call, no nudge before
