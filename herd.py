@@ -555,14 +555,12 @@ def office(now=None):
     on = (sj.get("with") or "").lower()  # #28: who the person is talking to, by name (bridge.py); the office gets that worker's id, else "donna"
     with_ = next((w["id"] for w in workers[1:] if w["name"].lower() == on and w["status"] != "queued"), "donna") if call != "off" and on else None  # a briefed name has no desk yet (#65)
     prev = rj(h / "office.json").get("revision")
+    mem = lambda i: {"outcome": "", "checkpoint": "", "nextStep": "", **next(({"latest": b["summary"], "updatedAt": b["createdAt"]} for b in reversed(briefings) if b["projectId"] == i),
+                                                                             {"latest": "", "updatedAt": ""})}  # a room's last result (#83: the team's own)
     return {"revision": prev + 1 if isinstance(prev, int) else 0, "call": {"state": call, **({"with": with_} if with_ else {})},
             "secretary": {"id": "mara", "name": "Donna", "role": "Secretary", "voice": "nora", "characterKey": "char-female-b"},
-            "projects": [{"id": pid, "name": os.path.basename(proj.rstrip("/")), "goal": next((m.get("task") or "" for m in inbox if not m.get("in_reply_to")), ""),
-                          "memory": {"outcome": "", "checkpoint": "", "latest": says[-1].get("text") or "" if says else "", "nextStep": "",
-                                     "updatedAt": iso(says[-1]["ts"]) if says else ""}}] + [  # #83: a team's room
-                {"id": i, "name": n, "goal": "", "parentId": pid, "memory": {"outcome": "", "checkpoint": "", "nextStep": "",
-                 **next(({"latest": b["summary"], "updatedAt": b["createdAt"]} for b in reversed(briefings) if b["projectId"] == i), {"latest": "", "updatedAt": ""})}}
-                for i, n in rooms.values()] if proj else [],
+            "projects": [{"id": pid, "name": os.path.basename(proj.rstrip("/")), "goal": next((m.get("task") or "" for m in inbox if not m.get("in_reply_to")), ""), "memory": mem(pid)}]
+                        + [{"id": i, "name": n, "goal": "", "parentId": pid, "memory": mem(i)} for i, n in rooms.values()] if proj else [],  # #83: a team's room after the main one
             "workers": workers, "assignments": asg, "decisions": decisions, "briefings": briefings, "activity": act}
 
 

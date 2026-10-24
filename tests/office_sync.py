@@ -126,7 +126,7 @@ def check_rooms(tl):  # #83: a Marketing team hired while the app is built gets 
     b = {x["id"]: x for x in o["briefings"]}
     assert (b[tids[0]]["projectId"], sorted(c["name"] for c in b[tids[0]]["contributors"])) == (main["id"], ["Ava", "Ben"]), b[tids[0]]
     assert (b[tids[1]]["projectId"], sorted(c["name"] for c in b[tids[1]]["contributors"])) == (mkt, ["Nova", "Sam"]), b[tids[1]]
-    assert o["projects"][1]["memory"]["latest"] == b[tids[1]]["summary"] and all(w["status"] == "done" for w in o["workers"][1:]), o
+    assert [x["memory"]["latest"] for x in o["projects"]] == [b[tids[0]]["summary"], b[tids[1]]["summary"]] and all(w["status"] == "done" for w in o["workers"][1:]), o
 
 
 if __name__ == "__main__":
