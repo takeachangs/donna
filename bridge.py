@@ -46,6 +46,13 @@ def idle_action(now: float, active_at: float, spk_at: float, pending: bool, done
     done[action] = now
     return action
 
+def deaf_once(st: dict) -> bool:
+    """#48: the deaf-brain note at most once per call: True the first time a task goes unheard; any word from the brain
+    (take, note, ask, result) clears st["deaf"], so a brain that comes back and goes quiet again gets one more."""
+    if st.get("deaf"): return False
+    st["deaf"] = True
+    return True
+
 ECHO_TAIL = 0.3   # s: the voice's audio counts as audible this long after its estimated end (output latency, room echo)
 
 def find_device(devices, name: str, kind: str) -> int | None:
@@ -131,6 +138,8 @@ if sys.argv[1:2] == ["selftest"]:   # offline: no session, no audio
     nudges = [idle_action(t, 100, spk, False, done) for t, spk in ((130, 0), (132, 131), (133, 132), (140, 133), (149, 133), (150, 133), (159, 133), (160, 133))]
     assert nudges == ["nudge", None, None, None, None, "warn", None, "hangup"], nudges
     assert idle_action(1000, 0, 0, True, {}) is None   # never while a task is pending
+    cs: dict = {}   # #48: three tasks to a deaf brain: one note; the brain answers (st["deaf"] cleared), goes quiet again: one more
+    assert [deaf_once(cs) for _ in range(3)] == [True, False, False]; cs["deaf"] = False; assert [deaf_once(cs), deaf_once(cs)] == [True, False]
     devs = [{"name": "MacBook Pro Microphone", "max_input_channels": 1, "max_output_channels": 0},
             {"name": "MacBook Pro Speakers", "max_input_channels": 0, "max_output_channels": 2}, {"name": "EarPods", "max_input_channels": 0, "max_output_channels": 2}]
     assert (find_device(devs, "macbook", "input"), find_device(devs, "MacBook", "output"), find_device(devs, "earpods", "output")) == (0, 1, 2)
@@ -397,15 +406,16 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                 async with contextlib.nullcontext() if sess else BACKEND_LOCK:
                     t = time.monotonic(); log(f"backend started for {did}: {task[:90]}")
                     heard = asyncio.Event()   # the brain answered: take, note, ask or the result
-                    async def progress(text): heard.set(); await conn.session.thinking.append(content=text, delegation_id=did)
-                    async def ask(text): heard.set(); await conn.session.commentary.append(content=text, delegation_id=did, kind="ask"); ASK["did"] = did
+                    def back(): heard.set(); st["deaf"] = False   # #48: the brain is back: a later silence may say the note again
+                    async def progress(text): back(); await conn.session.thinking.append(content=text, delegation_id=did)
+                    async def ask(text): back(); await conn.session.commentary.append(content=text, delegation_id=did, kind="ask"); ASK["did"] = did
                     async def deaf():   # #38: its wait loop died and nothing woke it (no tmux), or it is busy with something else
                         await asyncio.sleep(DEAF_AFTER)
                         if heard.is_set(): return
                         log(f"brain: no take for {did} in {DEAF_AFTER} s; it is not answering. Type anything in its window (tmux attach -t {herd.tmux_name()} if it runs there)")
-                        await conn.session.commentary.append(content=DEAF)
+                        if deaf_once(st): await conn.session.commentary.append(content=DEAF)   # once per call (#48): three tasks to a deaf brain, one sentence
                     if sess: tasks.append(asyncio.create_task(deaf()))
-                    text, kind = await backend(did, task, [list(x) for x in transcript[-12:]], progress, ask, replaces); heard.set()
+                    text, kind = await backend(did, task, [list(x) for x in transcript[-12:]], progress, ask, replaces); back()
                     log(f"backend done for {did} in {time.monotonic()-t:.1f}s")
                     if kind == "transfer": await put_through(text.strip(), did)
                     else: await conn.session.commentary.append(content=text, delegation_id=did, kind=kind)
