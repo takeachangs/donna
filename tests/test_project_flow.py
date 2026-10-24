@@ -141,5 +141,10 @@ class ProjectFlow(unittest.TestCase):
         asyncio.run(confirm([message],time.monotonic()+.02,1))
         self.assertEqual(notifications.pending(),[])
 
+    def test_callback_greeting_is_not_a_delivered_result(self):
+        message={'text':'Ava fixed the counter and I reviewed the file. Use Open result in the report.'}
+        self.assertFalse(notifications.conveys(message,"Hi, it's Donna. I'm calling to check on the counter."))
+        self.assertTrue(notifications.conveys(message,"Hi, it's Donna. Ava fixed the counter and I reviewed the file. Use Open result in the report."))
+
 
 if __name__ == '__main__': unittest.main()

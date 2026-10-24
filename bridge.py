@@ -395,7 +395,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
     st = {"done": False, "pending": 0, "spoke_result": False, "act": time.monotonic(), "play_until": 0.0, "bye": None, "vs": False, "vu": False}   # act: last user word or result; play_until: estimated end of the voice's audio
     import notifications
     receipts = {m['id']: m for m in NOW.pop('opening', [])}
-    receipt_epoch, response_spoke = 0, False
+    receipt_epoch, response_text = 0, ''
     def end(reason):
         if not st["done"]: st.update(done=True, reason=reason)
     turns = TURNS   # transcript: [role, text], role "user"|"assistant" (Mike's shape), kept across segments; the last 12 go with every inbox line
@@ -530,7 +530,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
         if not args.text: tasks.append(asyncio.create_task(guard_idle()))
 
         async def events():
-            nonlocal receipt_epoch, response_spoke
+            nonlocal receipt_epoch, response_text
             async def confirm_spoken(messages, until, epoch):
                 while time.monotonic() < until: await asyncio.sleep(0.1)
                 if epoch == receipt_epoch and not st.get('audio_failed'):
@@ -542,13 +542,17 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     log(f"session ready (backend: {args.backend}, voice: {ev.voice})"); NOW["ringing"] = False
                     if opener: await conn.session.commentary.append(content=opener)   # a transfer: "Hey, it's Maya." / "Hey, it's Donna again."
                     elif (first := seed.split("\n", 1)[0]).startswith(CALLING_ABOUT):   # the agent placed the call: the voice speaks first
-                        await conn.session.commentary.append(content=f"You placed this call. Open by saying in a few words why you are calling: {first[len(CALLING_ABOUT):].strip()}.")
+                        about = first[len(CALLING_ABOUT):].strip()
+                        instruction = ('These are verified completed results, not a new request. Read this report exactly once, '
+                            'including its outcomes, limitations and next step; do not just announce why you are calling or ask for status: '
+                            + json.dumps("Hi, it's Donna. " + about)) if receipts else f"You placed this call. Open by saying in a few words why you are calling: {about}."
+                        await conn.session.commentary.append(content=instruction)
                     elif turns: await typed_turn(turns.pop(0))
                     elif not args.wav: log("mic live — talk. Ctrl-C to hang up.")
                 elif t == "error": log("ERROR", ev.error)
                 elif t == "session.closed": log("session closed:", ev.reason); end(ev.reason)
                 elif t == "session.input_speech_started":   # VAD alone (noise can trigger it) does not restart the idle clock: words do
-                    receipt_epoch += 1; receipts.clear(); response_spoke = False
+                    receipt_epoch += 1; receipts.clear(); response_text = ''
                     st["over"] = time.monotonic() < st["play_until"] + ECHO_TAIL   # began while the voice was audible: its transcript may be her echo (#34)
                     clear_spk(); st["play_until"] = 0.0; log("… user speaking (barge-in: playback cleared)")
                     if args.ring and not st["vu"]: st["vu"] = True; event("voice.user")
@@ -567,7 +571,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     if args.ring and not st["vs"]: st["vs"] = True; event("voice.speaking")
                     if not args.silent: spk.put(base64.b64decode(ev.delta))
                 elif t == "session.output_transcript.done":
-                    response_spoke = bool(ev.transcript.strip())
+                    response_text = ev.transcript.strip()
                     secs = st.pop("audio_bytes", 0) / (RATE * 2); words = len(ev.transcript.split())
                     log(f"VOICE ({secs:.1f}s, {words / secs * 60:.0f} wpm):" if secs > 0.5 else "VOICE:", ev.transcript); transcript.append(["assistant", ev.transcript])
                     if SIGN_OFF[:-1].lower() in ev.transcript.lower(): st["bye"] = time.monotonic(); log("sign-off heard, closing after this reply")
@@ -584,10 +588,11 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     if ev.kind != "dropped": st["spoke_result"] = True; st["act"] = time.monotonic()   # a result restarts the idle clock
                     elif args.text and not turns and st["spoke_result"] and not st["pending"]: st["done"] = True   # the corrected result was already spoken
                 elif t == "response.done":
-                    if response_spoke and receipts:
-                        tasks.append(asyncio.create_task(confirm_spoken(list(receipts.values()), st['play_until'] if not args.silent else time.monotonic(), receipt_epoch)))
-                        receipts.clear()
-                    response_spoke = False
+                    delivered = [m for m in receipts.values() if notifications.conveys(m, response_text)]
+                    if delivered:
+                        tasks.append(asyncio.create_task(confirm_spoken(delivered, st['play_until'] if not args.silent else time.monotonic(), receipt_epoch)))
+                        for m in delivered: receipts.pop(m['id'], None)
+                    response_text = ''
                     st["vs"] = False
                     if st["bye"] and not ev.calls: end("goodbye")   # #12 rehearsal: "Open a pull request. Thanks, bye" closed on the call's response, before any goodbye was said
                     elif st.get("switch"): end(st["next"])

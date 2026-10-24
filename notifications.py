@@ -2,12 +2,20 @@
 import hashlib
 import json
 import os
+import re
 import herd
 
 
 def key(message):
     return hashlib.sha256(json.dumps([message['id'], message['kind'], message.get('text'), message.get('ts')],
                                     ensure_ascii=True).encode()).hexdigest()
+
+
+def conveys(message, transcript):
+    """Callbacks repeat reviewed text: a greeting/reason for calling is not delivery."""
+    words = lambda s: set(re.findall(r"\w+", s.casefold()))
+    expected, actual = words(message['text']), words(transcript)
+    return bool(expected) and len(expected & actual) / len(expected) >= .75
 
 
 def pending():
