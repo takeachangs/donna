@@ -302,14 +302,51 @@ def action(e):  # a PostToolUse event (or None) -> "Read dash.py", "Bash ls"
     return f"{tool} {arg[:50]}".strip()
 
 
+def both(ns):  # "Ava", "Ava and Ben", "Ava, Ben and Cy"
+    return ", ".join(ns[:-1]) + " and " + ns[-1] if len(ns) > 1 else "".join(ns)
+
+
+def phrase(e, hires=()):  # #65: what Donna is doing, in words, from her last tool use (the office shows "Donna: Hiring Ava and Ben"); hires: the trailing run of her Agent calls
+    tool, inp = e.get("tool"), e.get("input") or {}
+    c = str(inp.get("command") or "")
+    if tool == "Agent":
+        hs = hires or [inp]
+        ns = [h.get("name") or " ".join((h.get("description") or "").split()[:3]) or "a worker" for h in hs]
+        return f"Hiring {ns[0]} for: {hs[0]['description']}" if len(hs) == 1 and hs[0].get("description") else "Hiring " + both(ns)
+    if tool in ("Read", "Glob", "Grep", "LS"): return "Reading the repo"
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"): return "Editing files"
+    if tool == "SendMessage": return f"Talking to {inp['to']}" if inp.get("to") else "Messaging the team"
+    if tool in ("WebFetch", "WebSearch"): return "Looking it up"
+    if tool != "Bash": return "Working on it"
+    if m := re.search(r"herd\.py\S* reply donna \S+ (\w+)", c): return {"ask": "Asking you", "take": "Thinking", "transfer": "Putting you through"}.get(m[1], "Reporting")
+    if "git worktree" in c: return "Setting up a workspace"
+    if re.search(r"\b(tests?|pytest|vitest|selftest|typecheck|tsc|npm|lint)\b", c): return "Running checks"
+    return "Working on it"
+
+
+def parent_args():  # #65: the command line of the Claude Code process running this hook (~4 ms); the self-check swaps it
+    import subprocess
+    return subprocess.run(["ps", "-o", "args=", "-p", str(os.getppid())], capture_output=True, text=True).stdout
+
+
+def teammate(d):  # #65: with agent teams on (teammateMode tmux) a named background agent is its own Claude Code process: its hooks carry its own
+    # session_id and no agent_id; its command line names it (--agent-id Ava@session-<lead's first 8>, = the brain's Agent agentId) and the lead's session.
+    # Tagged as a subagent of the lead, it reads like an in-process one everywhere below (and brain() is False for it)
+    if d.get("agent_id"): return d
+    a = parent_args()
+    i, p = re.search(r"--agent-id (\S+)", a), re.search(r"--parent-session-id (\S+)", a)
+    return {**d, "agent_id": i[1], "agent_type": "teammate", "session_id": p[1]} if i and p else d
+
+
 def log_event(ev, d):  # (a)
     tool, inp, resp = d.get("tool_name"), d.get("tool_input"), d.get("tool_response")
-    inp, async_ = inp if isinstance(inp, dict) else {}, isinstance(resp, dict) and resp.get("status") == "async_launched"
+    inp, async_ = inp if isinstance(inp, dict) else {}, isinstance(resp, dict) and resp.get("status") in ("async_launched", "teammate_spawned")  # #65: a teammate's "" is no result
     r = {"ts": time.time(), "ev": ev, "session": d.get("session_id"), "agent": d.get("agent_id"), "type": d.get("agent_type"),
          "cwd": d.get("cwd"), "tool": tool, "input": trim(tool, inp) or None,
          "agentId": resp.get("agentId") if isinstance(resp, dict) else None,
          # a foreground Agent's PostToolUse arrives after it finished and carries its result ("" is still a result: it marks done)
-         "result": text_of(resp)[:1500] if ev == "PostToolUse" and tool == "Agent" and not async_ else None,
+         "result": text_of(resp)[:1500] if ev == "PostToolUse" and tool == "Agent" and not async_ else
+                   (d.get("last_assistant_message") or "")[:1500] or None if ev == "Stop" and d.get("agent_id") else None,  # a teammate's Stop: its report (#65)
          "prompt": (d.get("prompt") or "")[:300] or None if ev == "UserPromptSubmit" else None}
     append(home() / "events.jsonl", {k: v for k, v in r.items() if v is not None})
 
@@ -371,6 +408,8 @@ def stop_block(ev, d):  # (d) #38: the brain may not go idle while phone lines s
 def hook(event, data=None):  # never raises, prints only (c) and (d)
     try: d = data if data is not None else json.load(sys.stdin)
     except Exception: return
+    try: d = teammate(d)
+    except Exception: pass
     for step in (log_event, register, inject, stop_block, lambda ev, d: write_office()):  # one failing step must not skip the rest
         try:
             if isinstance(out := step(event, d), str): print(out)
@@ -393,7 +432,7 @@ def office(now=None):
     if not sess and proj:
         sess = next((e.get("session") for e in reversed(evs) if not e.get("agent") and e.get("cwd") and real(e["cwd"]) == real(proj)), None)
     evs = [e for e in evs if sess and e.get("session") == sess]  # other sessions fire the hook too
-    rows, lead = {}, {"t": 0, "stop": 0, "act": None}  # rows: agent id -> worker/assignment facts, in order of first appearance; act: its last PostToolUse event
+    rows, lead = {}, {"t": 0, "stop": 0, "ask": 0, "act": None, "hires": []}  # rows: agent id -> worker/assignment facts, in order of first appearance; act: its last PostToolUse event; ask: its last prompt; hires: its trailing Agent calls
 
     def row(i, e):
         return rows.setdefault(i, {"id": i, "type": None, "name": None, "desc": None, "prompt": "", "act": None, "t0": e.get("ts") or 0, "t1": None,
@@ -402,8 +441,8 @@ def office(now=None):
     for e in evs:
         ev, a, tool, inp, ts = e.get("ev"), e.get("agent"), e.get("tool"), e.get("input") or {}, e.get("ts") or 0
         if ev == "SubagentStart" and a: row(a, e)["type"] = e.get("type")
-        elif ev == "SubagentStop" and a in rows: r = rows[a]; r["t1"] = r["t1"] or ts  # its background_tasks say "running": ignored. Never a new row (#44): Claude Code's own helpers fire a bare one (agent_type "") after the brain's Stop
-        elif ev == "UserPromptSubmit" and not a: lead["t"] = ts
+        elif ev in ("SubagentStop", "Stop") and a in rows: r = rows[a]; r["t1"] = r["t1"] or ts; r["summary"] = r["summary"] or e.get("result")  # its background_tasks say "running": ignored. Never a new row (#44): Claude Code's own helpers fire a bare one (agent_type "") after the brain's Stop. A Stop with an agent: a teammate went idle (#65)
+        elif ev == "UserPromptSubmit" and not a: lead.update(t=ts, ask=ts, hires=[])
         elif ev == "Stop" and not a: lead["stop"] = ts
         elif ev == "PostToolUse":
             if a:
@@ -411,7 +450,7 @@ def office(now=None):
                 if tool == "SubagentHandback": r["summary"] = inp.get("message"); r["t1"] = r["t1"] or ts  # the report, not an action: Bob stays "Bash ls"
                 else: r["act"] = e
             else:
-                lead.update(t=ts, act=e)
+                lead.update(t=ts, act=e, hires=lead["hires"] + [inp] if tool == "Agent" else [])
             if tool == "Agent":  # names the row; the SubagentStart row came first, so merge by id
                 i = e.get("agentId")
                 if not i:  # a foreground Agent without an id: the newest row not yet named, preferring one that already stopped
@@ -419,6 +458,7 @@ def office(now=None):
                     i = next((r["id"] for r in reversed(un) if r["t1"]), None) or (un[-1]["id"] if un else f"agent-{len(rows)}")
                 r = row(i, e); r.update(matched=True, name=inp.get("name"), desc=inp.get("description"), prompt=inp.get("prompt") or "")
                 if "result" in e: r["t1"] = r["t1"] or ts; r["summary"] = e["result"] or r["summary"]  # foreground: done
+                else: r.update(t0=ts, t1=None, act=None, summary=None, fail=False)  # background: working from now, also for a name used before (a teammate's id is its name, #65)
     if not evs and proj and meta.get("kind") != "codex":  # hooks not installed: the workers from the brain's transcript, the way dash.py reads it
         try:
             import dash  # lazy: it imports curses
@@ -434,25 +474,31 @@ def office(now=None):
         ws, brief = rj(m.parent / "status.json"), next((l.get("task") or "" for l in tail(m.parent / "inbox.jsonl")), "")
         end = None if ws.get("state") == "working" else next((o for o in reversed(tail(m.parent / "outbox.jsonl")) if o.get("kind") in ("say", "fail")), None)
         rows[wm["name"]] = {"id": wm["name"], "type": "codex", "name": wm["name"], "desc": brief.split("\n")[0][:80], "prompt": brief, "act": None,
-                            "cur": ws.get("last_note") or "Hired: " + brief.split("\n")[0][:60], "t0": wm.get("created") or 0, "t1": end and end.get("ts"),
+                            "cur": ws.get("last_note"), "t0": wm.get("created") or 0, "t1": end and end.get("ts"),
                             "fail": bool(end) and end.get("kind") == "fail", "summary": end and end.get("text"), "cwd": wm.get("project") or "", "matched": True}
-    if meta.get("kind") == "codex":  # the lead: working while a phone task is in progress, its last note as the action
-        lead.update(t=1 if st.get("state") in ("working", "needs_you") else 0, act={"tool": st.get("last_note") or ""})
+    if meta.get("kind") == "codex":  # the lead: working while a phone task is in progress (its narrative: below)
+        lead.update(t=1 if st.get("state") in ("working", "needs_you") else 0)
     # ---- end #66 ----
     stt = lambda r: "failed" if r["fail"] else "done" if r["t1"] else "working"
     label = lambda r: r["name"] or r["type"] not in ("Explore", "Plan") and " ".join((r["desc"] or "").split()[:3]) or None  # #44: else the description's first 3 words; Explore/Plan helpers and agents with neither are not workers
     vis = [(r, label(r)) for r in rows.values() if r["t0"] >= since and label(r)]  # this duty period's workers only (#31, #44)
     needs = {k: t for k, t in (st.get("tasks") or {}).items() if t.get("state") == "needs_you" and (t.get("ts") or 0) >= since}
     lid = f"brain-{sess[:8]}" if sess else "brain"
+    ls_ = "waiting" if needs else "working" if lead["t"] > lead["stop"] else "done"
+    busy = [name for r, name in vis if stt(r) == "working"]
+    doing = ("Waiting for your answer" if ls_ == "waiting" else ("Thinking" if not lead["act"] or lead["ask"] > lead["act"].get("ts", 0) else phrase(lead["act"], lead["hires"]))
+             if ls_ == "working" else f"Waiting on {both(busy)}" if busy else "Ready")  # #65: Donna's narrative line
+    if meta.get("kind") == "codex" and ls_ == "working": doing = st.get("last_note") or "Thinking"  # #66: a Codex brain narrates with its own notes
     workers = [{"id": lid, "projectId": pid, "name": "Donna", "role": "Brain", "responsibility": "", "characterKey": "char-female-b",
-                "status": "waiting" if needs else "working" if lead["t"] > lead["stop"] else "done", "assignmentId": "", "currentAction": action(lead["act"]), "lead": True}]
+                "status": ls_, "assignmentId": "", "currentAction": doing, "lead": True}]
     asg = []
     seen = {"female": 0, "male": 0}
     for n, (r, name) in enumerate(vis):
         key = KEYS[n % len(KEYS)]
         g = "female" if "female" in key else "male"; seen[g] += 1
         workers.append({"id": r["id"], "projectId": pid, "name": name, "role": r["desc"] or "", "responsibility": "", "characterKey": key,
-                        "voice": VOICES[g][(seen[g] - 1) % 3], "status": stt(r), "assignmentId": r["id"], "currentAction": r.get("cur") or action(r["act"])})
+                        "voice": VOICES[g][(seen[g] - 1) % 3], "status": stt(r), "assignmentId": r["id"],
+                        "currentAction": r.get("cur") or action(r["act"]) or (f"Hired: {r['desc'] or name}" if stt(r) == "working" else "")})  # #65; cur: a codex worker's last note (#66)
         asg.append({"id": r["id"], "projectId": pid, "workerId": r["id"], "title": r["desc"] or name, "brief": r["prompt"], "acceptance": "", "status": stt(r),
                     "cwd": r["cwd"], **({"summary": r["summary"]} if r["summary"] else {}), "startedAt": iso(r["t0"]), **({"completedAt": iso(r["t1"])} if r["t1"] else {}),
                     "artifacts": [], "dependsOn": [], "revision": 0})
@@ -490,6 +536,16 @@ def write_office():  # atomic: the office server reads this file while we write 
 
 
 def selfcheck_office():  # the brain-side hook and office.json, replayed from a script modelled on real Claude Code 2.1.309 hook inputs
+    import contextlib, io, tempfile
+    global parent_args
+    real_args, parent_args = parent_args, lambda: "claude --settings hooks/office.json"  # the hook's Claude Code process: the brain's, unless a step swaps it
+    m = re.search(r"--agent-id (\S+)", real_args()); assert m is None or "@" in m[1]  # the real ps call runs
+    try: _selfcheck_office()
+    finally: parent_args = real_args
+
+
+def _selfcheck_office():
+    global parent_args
     import contextlib, io, tempfile
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["HIGGS_HOME"] = tmp
@@ -530,7 +586,7 @@ def selfcheck_office():  # the brain-side hook and office.json, replayed from a 
         o = O()
         assert [w["id"] for w in o["workers"]] == [lid, B] and o["workers"][0] == {
             "id": lid, "projectId": pid, "name": "Donna", "role": "Brain", "responsibility": "", "characterKey": "char-female-b", "status": "done",
-            "assignmentId": "", "currentAction": "Agent Count files", "lead": True}, o["workers"][0]
+            "assignmentId": "", "currentAction": "Ready", "lead": True}, o["workers"][0]  # #65: idle, nobody working
         assert len(o["assignments"]) == 1 and (a := o["assignments"][0]) | {"startedAt": 0, "completedAt": 0} == {
             "id": B, "projectId": pid, "workerId": B, "title": "Count files", "brief": "Run ls", "acceptance": "", "status": "done", "cwd": proj,
             "summary": "Ran ls: 1 file. The answer is 1.", "startedAt": 0, "completedAt": 0, "artifacts": [], "dependsOn": [], "revision": 0}, a
@@ -646,6 +702,51 @@ def selfcheck_office():  # the brain-side hook and office.json, replayed from a 
         for i in range(12): reply("donna", f"s{i}", "say", f"result {i}")
         write_office(); assert len(O()["briefings"]) == 10 and O()["briefings"][-1]["summary"] == "result 11"
 
+        # #65: the Oct 24 11:48 call, as Claude Code 2.1.309 fired it with agent teams on (teammateMode tmux): a named background Agent is a
+        # teammate, its own Claude Code process: no SubagentStart, the brain's Agent call returns status "teammate_spawned" (no result) and
+        # agentId "<name>@session-<brain's first 8>"; the teammate's hooks carry its own session_id and no agent_id (its --agent-id names it)
+        new("donna", project=proj); write_json(mp, {**rj(mp), "session": S}); team = "session-" + S[:8]
+        D = lambda: O()["workers"][0]["currentAction"]
+        fire("UserPromptSubmit", prompt="Phone task t9: create a team to work on making the landing page"); assert D() == "Thinking", D()
+        fire("PostToolUse", tool_name="Bash", tool_input={"command": "cd ~/p; git branch --list 'donna/*'; ls docs"}); assert D() == "Working on it"
+        fire("PostToolUse", tool_name="Bash", tool_input={"command": "uv run -q herd.py reply donna t9 take \"\"; git log --oneline main..donna/landing"}); assert D() == "Thinking"
+        fire("PostToolUse", tool_name="Bash", tool_input={"command": "git worktree add ../p-donna-landing -b donna/landing main"}); assert D() == "Setting up a workspace"
+        fire("PostToolUse", tool_name="Agent", tool_input={"name": "Ava", "description": "Builds the landing page", "prompt": "p", "model": "sonnet", "run_in_background": True},
+             tool_response={"status": "teammate_spawned", "prompt": "p", "agentId": f"Ava@{team}"})
+        assert D() == "Hiring Ava for: Builds the landing page", D()
+        fire("PostToolUse", tool_name="Agent", tool_input={"name": "Ben", "description": "Draws the architecture diagram", "prompt": "p", "model": "sonnet", "run_in_background": True},
+             tool_response={"status": "teammate_spawned", "prompt": "p", "agentId": f"Ben@{team}"})
+        assert "result" not in evs()[-1] and D() == "Hiring Ava and Ben", D()
+        WS = lambda: [(w["name"], w["status"], w["currentAction"]) for w in O()["workers"][1:]]
+        assert WS() == [("Ava", "working", "Hired: Builds the landing page"), ("Ben", "working", "Hired: Draws the architecture diagram")], WS()
+        assert [a["status"] for a in O()["assignments"]] == ["working", "working"]
+        fire("PostToolUse", tool_name="Bash", tool_input={"command": "uv run -q herd.py reply donna t9 note \"Ava is building the page and Ben is drawing\""}); assert D() == "Reporting"
+        fire("Stop", last_assistant_message="I've started the landing page team.", background_tasks=[{"id": "x1", "type": "teammate", "status": "running"}])
+        fire("SubagentStop", agent_id="a9b30125acf0f7387", agent_type="")  # Claude Code's own helper, ~2 s after the brain's Stop: nobody is done
+        assert D() == "Waiting on Ava and Ben" and [x[1] for x in WS()] == ["working", "working"], (D(), WS())
+        mate = lambda n: f"/opt/homebrew/Caskroom/claude-code@latest/2.1.309/claude --agent-id {n}@{team} --agent-name {n} --team-name {team} --agent-color green --parent-session-id {S} --permission-mode auto --settings hooks/office.json --model sonnet"
+        parent_args = lambda: mate("Ben")  # Ben's own hooks: his session, no agent_id
+        assert fire("PostToolUse", sess="7d74b2e5-ben", tool_name="Write", tool_input={"file_path": "/w/landing/architecture.svg", "content": "<svg/>"}) == ""  # a teammate never consumes the inbox
+        assert evs()[-1]["agent"] == f"Ben@{team}" and evs()[-1]["session"] == S
+        assert WS()[1] == ("Ben", "working", "Write architecture.svg"), WS()
+        fire("Stop", sess="7d74b2e5-ben", last_assistant_message="I wrote landing/architecture.svg.")  # idle: done
+        assert WS()[1][:2] == ("Ben", "done") and WS()[0][1] == "working" and D() == "Waiting on Ava", (WS(), D())
+        assert O()["assignments"][1]["summary"] == "I wrote landing/architecture.svg." and "completedAt" in O()["assignments"][1]
+        parent_args = lambda: mate("Ava")
+        fire("PostToolUse", sess="825c942f-ava", tool_name="Bash", tool_input={"command": "git commit -qm 'landing: page'"})
+        assert WS()[0] == ("Ava", "working", "Bash git commit -qm 'landing: page'"), WS()
+        fire("Stop", sess="825c942f-ava")
+        parent_args = lambda: "claude --settings hooks/office.json"
+        fire("UserPromptSubmit", prompt="x"); assert D() == "Thinking" and [x[1] for x in WS()] == ["done", "done"]
+        fire("PostToolUse", tool_name="Bash", tool_input={"command": "cd ../p-donna-landing; npm test"}); assert D() == "Running checks"
+        fire("PostToolUse", tool_name="Bash", tool_input={"command": "uv run -q herd.py reply donna t9 say \"Done.\""}); assert D() == "Reporting"
+        fire("Stop"); assert D() == "Ready" and O()["workers"][0]["status"] == "done"
+        fire("UserPromptSubmit", prompt="Phone task t10: polish it")
+        fire("PostToolUse", tool_name="Agent", tool_input={"name": "Ava", "description": "Polishes the page", "prompt": "p", "run_in_background": True},
+             tool_response={"status": "teammate_spawned", "agentId": f"Ava@{team}"})  # a reused name is the same id: hired again, working again
+        assert D() == "Hiring Ava for: Polishes the page", D()  # a new turn: the last turn's hires are not named again
+        assert WS()[0] == ("Ava", "working", "Hired: Polishes the page") and "completedAt" not in O()["assignments"][0], WS()
+
         if (Path(__file__).parent / "dash.py").exists():  # fallback: no hook events for the brain, workers from its transcript
             (H / "events.jsonl").unlink(); write_json(mp, m)
             tdir = H / ".claude" / "projects" / pid  # HOME is swapped below so dash.find_orch reads this temp dir
@@ -682,7 +783,7 @@ def selfcheck_codex():  # #66: a Codex brain registers without a hook; a codex w
             del os.environ["CODEX_THREAD_ID"]
             t = send("donna", "make a page"); reply("donna", t, "take", ""); reply("donna", t, "note", "Hiring Ava")
             o = office(); assert o["workers"][0]["status"] == "working" and o["workers"][0]["currentAction"] == "Hiring Ava" and o["workers"][0]["id"] == "brain-cx-brain"
-            assert [(w["name"], w["status"], w["currentAction"]) for w in o["workers"][1:]] == [("Ava", "working", "Hired: ")], o["workers"]
+            assert [(w["name"], w["status"], w["currentAction"]) for w in o["workers"][1:]] == [("Ava", "working", "Hired: Ava")], o["workers"]
             w1 = send("Ava", "Writes the page\nBuild index.html")
             until = lambda f: next((True for _ in range(100) if f() or time.sleep(0.1)), False)
             assert until(lambda: capture("Ava")["tasks"][w1]["state"] == "done"), capture("Ava")

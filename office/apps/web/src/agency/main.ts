@@ -1,7 +1,7 @@
 import { initLocale, setLocale, t } from '../i18n';
 import { Engine } from '../render/Engine';
 import { AgencyScene } from './Scene';
-import { onTheLine } from './floor';
+import { donnaLine, onTheLine } from './floor';
 import type { Workspace, View, Assignment, Decision, Briefing } from './types';
 import './style.css';
 import './board.css';
@@ -14,6 +14,7 @@ root.innerHTML = `<main class="app">
  <header class="callbar">
   <span class="brand" aria-hidden="true"><svg class="brand-plan" viewBox="0 0 32 36" aria-hidden="true"><path d="M12 3H3v11h9M20 3h9v11h-9M12 19H3v11h9M20 19h9v11h-9M16 7v25" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="square"/><circle cx="16" cy="33" r="2.5" fill="currentColor"/></svg><span class="brand-wordmark">${t('agency.title')}</span></span>
   <span id="pill" class="pill" data-state="reconnecting" role="status">${t('agency.loading')}</span>
+  <span id="donna-line" class="donna-line" hidden></span>
  </header>
  <section class="office" aria-label="${t('agency.scene')}">
   <div id="agency-scene"><div id="handoff-status" class="handoff-status" role="status" hidden></div></div>
@@ -83,6 +84,11 @@ function paintCall() {
       ? t('agency.call_with', { name: name(line) })
       : label[state] || label.off
     : t('agency.reconnecting');
+  const doing = online && workspace ? donnaLine(workspace.workers) : '';
+  el('donna-line').hidden = !doing;
+  el('donna-line').textContent = doing
+    ? t('agency.donna_line', { name: workspace?.secretary.name || 'Donna', action: doing })
+    : '';
   if (!scene || state === call) return;
   // Donna walks to the entrance phone while she rings you, and talks or thinks with the voice.
   if ((state === 'ringing') !== (call === 'ringing')) scene.ring(state === 'ringing');

@@ -153,6 +153,17 @@ details p {
   line-height: 1.5;
   white-space: nowrap;
 }
+/* No display here: [hidden] must keep winning. Ellipsis keeps a long action on one line at phone width. */
+.donna-line {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
 .pill[data-state='ringing'] {
   background: #f6e6d0;
   border-color: var(--app-brand-primary);

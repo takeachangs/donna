@@ -1,5 +1,8 @@
 import { expect, it } from 'vitest';
 import {
+  deskCaption,
+  donnaLine,
+  entranceRoute,
   projectRoom,
   secretaryRoom,
   deliveryRoute,
@@ -47,4 +50,27 @@ it('puts the call through to a worker with a desk only, and walks them to the ph
   }
   expect(phoneRoute(room, home)[0].z).toBe(home.z);
   expect(phoneRoute(room, home, loungeSpots[0])[0]).toEqual({ x: loungeSpots[0].x, z: loungeSpots[0].z - 1 });
+});
+it('walks a fresh hire in from the entrance phone to its desk', () => {
+  const room = projectRoom(0),
+    home = { x: room.x + 4, z: room.z + 3.75 },
+    route = entranceRoute(room, home);
+  expect(route[0]).toEqual(phoneSpot);
+  expect(route[1]).toEqual({ x: 0, z: 13 });
+  expect(route.at(-1)).toEqual(home);
+  expect(route).toEqual([...phoneRoute(room, home)].reverse().concat(home));
+});
+it('reads Donna’s line off the lead row, blank without one', () => {
+  expect(donnaLine([{ currentAction: 'Write a.py' }, { lead: true, currentAction: ' Hiring Ava and Ben ' }])).toBe(
+    'Hiring Ava and Ben',
+  );
+  for (const ws of [[], [{ lead: true }], [{ lead: true, currentAction: '  ' }], [{ currentAction: 'Write a.py' }]])
+    expect(donnaLine(ws)).toBe('');
+});
+it('captions a desk with the action while the worker works, else its role', () => {
+  const w = { role: 'Builder', status: 'working', currentAction: 'Write index.html' };
+  expect(deskCaption(w)).toBe('Write index.html');
+  expect(deskCaption({ ...w, status: 'done' })).toBe('Builder');
+  expect(deskCaption({ ...w, currentAction: undefined })).toBe('Builder');
+  expect(deskCaption({ ...w, currentAction: ' ' })).toBe('Builder');
 });

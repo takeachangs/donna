@@ -29,13 +29,19 @@ Shape = the office's existing `Workspace` type (`office/apps/web/src/agency/type
 }
 ```
 Status words (`WorkStatus`): queued | working | waiting | review | done | paused | failed. A worker is `working` from its
-`SubagentStart` (or its Agent `PostToolUse`) until its `SubagentHandback` report or `SubagentStop`; `done` after.
+`SubagentStart` (or its Agent `PostToolUse`) until its `SubagentHandback` report or `SubagentStop` (a teammate: its own `Stop`); `done` after.
+A background Agent call starts the row over (`working`, no summary), also for a name used before (#65). A worker's `currentAction` is
+"Hired: <description>" until its first tool, then that tool ("Write index.html").
 Who is drawn (#44): agents started in this duty period (`since`, below) whose Agent call gave a `name` (the row's name) or a
 `description` (its first 3 words), minus unnamed `Explore`/`Plan` helpers. A `SubagentStop` for an agent with no
 `SubagentStart` and no Agent call makes no row: Claude Code's own helpers fire one (`agent_type` "") after the brain's turns. Hooks
 carry no failure signal, so `failed` comes only from the transcript fallback. The brain row is `lead: true`: `waiting`
 while a herd `ask` is open, `working` while its turn runs (last `UserPromptSubmit`/`PostToolUse` after the last `Stop`),
-else `done`. `char-female-a` does not exist in the office's assets: Donna is `char-female-b` (the office's own default),
+else `done`. Its `currentAction` is Donna's narrative (#65; the office shows it as "Donna: …" under the call pill and on her desk):
+"Thinking" (a prompt and no tool since), from her last tool "Reading the repo" (Read/Glob/Grep), "Setting up a workspace" (git worktree),
+"Hiring Ava for: <description>" / "Hiring Ava and Ben" (her trailing Agent calls), "Running checks", "Reporting" (herd note/say/fail),
+"Asking you" (ask), "Talking to <to>" (SendMessage), else "Working on it"; when her turn is over "Waiting on Ava and Ben" (workers still
+working), "Waiting for your answer" (open ask) or "Ready". `char-female-a` does not exist in the office's assets: Donna is `char-female-b` (the office's own default),
 workers rotate over the other five keys. Beyond the shape above the producer also fills the arrays the display maps over:
 `Worker.assignmentId`, `Assignment.{artifacts,dependsOn,revision}`, `Briefing.{assignmentId,workerId,deliveryKey,
 artifacts,verification}`; `contributors` are the workers that started between the task and its `say` (exact `name`s), and the first of them is
@@ -57,6 +63,16 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
   `SubagentHandback` call (`tool_input.message` = the report → `summary`), `SubagentStop` (no result; its
   `background_tasks` still say "running"), `Stop` (`last_assistant_message`, `background_tasks`). The report reaches the
   brain as a `UserPromptSubmit` starting `<agent-message from="<name>">`. `Notification` is logged and ignored.
+  That is headless (`claude -p`). **Interactive, with agent teams on** (this machine: `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`,
+  `teammateMode: "tmux"`; probed Oct 24, #65), a *named* background Agent is a **teammate**: its own `claude` process in a tmux pane
+  (`--agent-id Ava@session-<brain's first 8> --agent-name Ava --team-name session-<8> --parent-session-id <brain session>`, and the
+  brain's `--settings`, so our hooks fire in it). No `SubagentStart`; the brain's `PostToolUse(Agent)` has `tool_response.status:
+  "teammate_spawned"` (no result) and `agentId: "Ava@session-<8>"`; the teammate's `PostToolUse`/`Stop` (+ `TeammateIdle` with
+  `teammate_name`/`team_name`) carry ITS session_id and no `agent_id`; its transcript is a top-level `<its session>.jsonl` (lines carry
+  `agentName`/`teamName`), no `subagents/` dir. Its report reaches the brain as a `<teammate-message>` without any hook. The bare
+  `SubagentStop`s (`agent_type` "") ~2 s after each brain `Stop` are Claude Code's own helpers. So `herd.py hook` reads its parent
+  process's args (`ps`, ~4 ms) and tags a teammate's event `agent=<--agent-id>`, `type: "teammate"`, `session=<--parent-session-id>`:
+  from there it is an ordinary subagent of the brain; its `Stop` = done, with `last_assistant_message` as the summary.
 - Which session is the brain: `/call` step 1 runs `herd.py new donna`, which forgets the old `session`; the hook that
   fires on that Bash call writes the new `session_id` into `~/.higgs/herd/donna/meta.json`. No session recorded = no
   hooks (step 1 checks this). Without one, the newest brain event from the project dir decides.
@@ -91,3 +107,9 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
 - A briefing carries `workerId`; the scene uses it for the desk → Donna walk. Contributor names must equal `workers[].name`.
 - A finished worker (`done`/`failed`) rests in the lounge on their own, regardless of the rest of the project.
 - A file that exists but is not a JSON object is "missing" for the office: Donna alone, health `state: 'missing'`.
+
+## Decided during #65 (Oct 24 12:00)
+- A worker id the scene has never seen spawns at the phone by the entrance (`phoneSpot`) and walks to its desk (`entranceRoute`);
+  known ids keep their desk or lounge seat; on page load everyone present counts as seen. Desk screens show the worker's
+  `currentAction` while `working` (else the role), Donna's screen her narrative; both repaint in place (no NPC rebuild).
+- The skill gives every new task new first names (a teammate's id is its name, so a reused name is the same row).
