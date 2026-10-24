@@ -56,7 +56,9 @@ def work(herd, line):
         return
     said = (task + " " + " ".join(t for _, t in line.get("transcript") or [])).lower()
     if line.get("with") == "Maya":  # put through: the brain forwards to Maya (SendMessage) and says her answer
-        say(herd, tid, "take", ""); time.sleep(1.0); say(herd, tid, "say", MAYA if "timer" in said or "question" in said else "That's not mine; Donna will know."); return
+        say(herd, tid, "take", ""); time.sleep(1.0)
+        if "why" in task.lower(): say(herd, tid, "say", "I picked thirty seconds so nobody waits long on one question."); return  # #82
+        say(herd, tid, "say", MAYA if "timer" in said or "question" in said else "That's not mine; Donna will know."); return
     if "maya" in said and any(w in task.lower() for w in ("line", "through", "talk", "connect", "speak", "transfer", "put", "join", "bring", "phone")):  # before who-built: "connect me with Maya, who built it"
         say(herd, tid, "transfer", "Maya"); return
     if any(w in task.lower() for w in ("who", "author", "creator")):  # "who built the quiz?", "identify the author of the quiz"
@@ -145,7 +147,11 @@ def transfer_flow(herd, wait_log, type_):  # #28: each segment is a fresh sessio
     assert herd.lines(herd.root() / "donna" / "inbox.jsonl")[-1].get("with") == "Maya"  # the brain forwards it to her
     wait_log("→ commentary", 40); v = wait_log("VOICE", 20).lower(); assert "thirty" in v or "30" in v, v  # her own transcript's answer
     time.sleep(2)
-    type_("Great, thanks. Put Donna back on.")
+    type_("Why did you pick that interval length?")  # #82: a question stays a question (the 13:29 call made it "change the interval length")
+    t = wait_log("DELEGATION", 20).lower(); assert "why" in t and "interval" in t and "change" not in t, t
+    wait_log("→ commentary", 40); wait_log("VOICE", 20)
+    time.sleep(2)
+    type_("Great, thanks. Get me back to Donna.")  # #82: not only "put Donna back on"
     wait_log("back phrase heard", 40)
     assert "voice: nora" in wait_log("session ready", 30)
     assert herd.office()["call"].get("with") == "donna", herd.office()["call"]

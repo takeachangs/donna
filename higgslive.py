@@ -45,6 +45,9 @@ TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an 
             "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "the user's own words; no name they did not say ('this project' stays 'this project')"},   # #62: "a landing page for this project" became "the London Tech Project"   # replaces: set on 7/7 corrections, 0/6 second tasks (Oct 24 text probe)
                            "replaces": {"type": "boolean", "description": "true when this request corrects or changes the one you sent just before; the earlier one is dropped"}},
                            "required": ["task"]}}
+RELAY_DEF = {**TOOL_DEF, "description": "Passes what the user said to the real worker, who answers it. A question stays a question: "   # #82: "I was talking about the interval length" went out as "change the interval length"
+             "the task is the user's own words ('why did you pick that interval length?'), never rephrased as an action ('change the interval length'). Nothing is changed unless the user asked for a change.",
+             "parameters": {**TOOL_DEF["parameters"], "properties": {**TOOL_DEF["parameters"]["properties"], "task": {"type": "string", "description": "the user's words as they said them; a question stays a question"}}}}
 STALE = "Dropped: the user changed this request and the new call replaces it. Say nothing about it."   # closes the replaced call; no response.create
 REPLACING = re.compile(r"\b(replacing|instead of) the (previous|earlier|last) (request|task)\b", re.I)   # 2/2 misses of the flag said this in the task text
 STATUS = "task_status"   # answered at once by this layer from the herd files; never left open
@@ -202,12 +205,13 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
     return (f"You're in the {proj} project. " if proj else "") + (PATH.sub(r"\1", " ".join(out)) or "No agents are running and nothing has finished since the call started.")
 
 
-ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|zip(s|ped|ping)?|archiv(e|es|ed|ing)|compress(es|ed|ing)?|bundl(e|es|ed|ing)|packag(e|es|ed|ing)|export(s|ed|ing)?|mov(e|es|ed|ing)|cop(y|ies|ied|ying)|"
+ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|come up with|draft|prepare|put together|think up|write up|work out|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|zip(s|ped|ping)?|archiv(e|es|ed|ing)|compress(es|ed|ing)?|bundl(e|es|ed|ing)|packag(e|es|ed|ing)|export(s|ed|ing)?|mov(e|es|ed|ing)|cop(y|ies|ied|ying)|"
                    r"add|change|design|plan|style|improve|update (the|it|that|this|my)|(put|turn) (it|this|that)|tell (them|it|someone)|have (them|someone)|"
                    r"who('?s| is| was)? (built|made|wrote|did|working on|worked on|on|in charge of)|on the line|put me through|connect me|talk to|speak (to|with))\b")   # not bare "update"/"have it": "any update?", "do you have it?" ask about a running task; "who built the quiz?" and "get me on the line" go to the brain (#28)
 
 THROUGH = re.compile(r"\b(on the (line|phone)|put (me|us) through|through to|connect (me|us)|transfer\b|(talk|speak) (to|with) (?!you\b)\w|"   # #61: the brain answers these with `transfer`; "who built it?" may stay with task_status
                      r"(put|get) (?!it\b|this\b|that\b)\w+ (on|in)\b|bring \w+ (in|on)\b|join (us|in|the call)\b)")   # #73: "can you put Leo on?", "let him join us" got "I can't put Leo on" with no call
+BACK_WORDS = re.compile(r"\b(put do[nm]+a back|(get|take|switch|put) me back|back to do[nm]+a|do[nm]+a again|i'?m done with \w+|transfer me back)\b")   # #82: "get me back to Doma" (STT) was not one; in a worker's voice these go back, never to delegate_task
 REQUEST = re.compile(r"\b(can|could|would|put|get|bring|let|have|ask|tell|want|need)\b")   # #73: with a worker's name, a turn for the brain ("can Leo explain it?")
 
 
@@ -277,7 +281,7 @@ class Conn:
         if seed: self._instructions += "\n\n## Context for this call\n" + seed.strip()[:4000]   # ponytail: no developer role on Higgs, so the seed rides in the prompt
         fmt = {"type": "audio/pcm", "rate": self._rate}
         await self._send({"type": "session.update", "session": {"type": "realtime", "model": self._model,
-            "instructions": self._instructions, "tools": ([TOOL_DEF, STATUS_DEF] if self.delegation else []) + session.get("tools", []), "tool_choice": "auto",   # e.g. {"type": "web_search"}   # required/named break the server
+            "instructions": self._instructions, "tools": ([RELAY_DEF if self._relay else TOOL_DEF, STATUS_DEF] if self.delegation else []) + session.get("tools", []), "tool_choice": "auto",   # e.g. {"type": "web_search"}   # required/named break the server
             "audio": {"input": {"format": fmt, "noise_reduction": {"type": "near_field"}, "transcription": {"model": "higgs-stt-3.1"},
                                 "turn_detection": session.get("turn_detection", {"type": "server_vad"})},   # server defaults (threshold 0.85 as of Oct 23) = the baseline; tune from there
                       "output": {"format": fmt, "voice": session.get("voice", "default")}},
@@ -444,12 +448,12 @@ class Conn:
         if t == "response.output_audio_transcript.done":
             if not self._relay and self._pending and not st["guarded"] and st.get("status_at") != st["user_at"] and HOWS.search(st["last_user"].lower()):   # a status question answered from memory: dropped unplayed, retried at response.done
                 log.info("GUARD: %r answered without %s — dropped, nudging", ev["transcript"][:60], STATUS)
-                st.update(guarded=True, status_fix=True, spk_until=0.0); self._emit("session.output_audio.discard"); return
+                st.update(guarded=True, status_fix=True, spk_until=0.0, dropped=True); self._emit("session.output_audio.discard"); return
             # a task runs whose result has not come in, none went in this turn, and the claim is not backed by one that came in (#55: _told)
             if not self._relay and self.delegation and self._pending - self._arrived and not st["fresh"] and (fixed := fabricated(ev["transcript"], self._told, PENDING_LINES[min(self._swaps, 2)])):   # a result nobody sent (#32)
                 log.info("fabricated: %r → %r", ev["transcript"], fixed); self._swaps += 1
                 if not st["guarded"]:   # dropped unplayed; the voice says the fixed line at response.done (one retry per user turn, like GUARD)
-                    st.update(guarded=True, fix=fixed, spk_until=0.0); self._emit("session.output_audio.discard"); return
+                    st.update(guarded=True, fix=fixed, spk_until=0.0, dropped=True); self._emit("session.output_audio.discard"); return
                 ev["transcript"] = fixed   # a second one in the same turn: the transcript (and the sign-off it keeps) is right at least
             rep, whole = self._repeats(ev["transcript"], st.pop("fixed", ""))
             guard = next((l for l in PENDING_LINES if sentences(l)[0] in rep), None)   # #73: the guard's own line said again, even inside a new reply ("Fair point. Still on it; …")
@@ -460,7 +464,7 @@ class Conn:
                 retry = st["fresh"] or not answered or not whole   # #73: a guard line inside new words is retried once per turn, never just dropped (a hiring note's reply would be lost)
                 log.info("repeat: %s%s", rep, "" if not drop else " → dropped, retrying" if retry else " → dropped")
                 if drop:
-                    st.update(repeat=retry and (ev["transcript"] if whole else guard), guarded=True, spk_until=0.0, last_voice=ev["transcript"]); self._emit("session.output_audio.discard"); return   # answered: just dropped
+                    st.update(repeat=retry and (ev["transcript"] if whole else guard), guarded=True, spk_until=0.0, last_voice=ev["transcript"], dropped=True); self._emit("session.output_audio.discard"); return   # answered: just dropped
             st["heard_at"] = time.monotonic()
             st["last_voice"], st["question"] = ev["transcript"], st["asked"] or open_question(ev["transcript"]); self._emit("session.output_transcript.done", transcript=ev["transcript"])
         if t == "response.done":
@@ -471,13 +475,14 @@ class Conn:
             calls = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == TOOL and o.get("executor") != "server"][:1]   # server-side tools (web_search, Oct 23) need no output from us. [:1]: 1.0 fires 2-3 near-duplicate calls for one request (9/12, probe/r15/A-tools.md); extras left open cause no error
             status = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == STATUS and o.get("executor") != "server"][:1]
             if status: st["status_at"] = st["user_at"]
+            dropped = st.pop("dropped", False)   # #82: this response's words were not played; with a call, the call goes on and the voice acks it afresh
             if st.pop("status_fix", False) and not calls and not status:
                 st["in_flight"] = True; await self._item(STATUS_NUDGE); await self._send({"type": "response.create"}); return
             if st["fix"] and not calls and not status:
                 st["in_flight"] = True; await self._item(FIX.format(st["fix"])); st["fixed"], st["fix"] = st["fix"], None   # fixed: its reply may say the guard line again
                 await self._send({"type": "response.create"}); return   # no response.done for the consumer: the fixed reply's is the one
             st["fix"] = None
-            if (said := st.pop("repeat", False)) and not calls and not status:   # ponytail: a repeat that came with a call has lost its audio; the call goes on, unacknowledged
+            if (said := st.pop("repeat", False)) and not calls and not status:
                 nudge = AGAIN.format(said) if st["fresh"] else NUDGE if self._fake_claim() and ASKED.search(st["last_user"].lower()) else REPEAT.format(said)   # "I'm on it." again to a new request: GUARD's nudge gets the call made
                 st.update(in_flight=True, retried=st["user_at"]); await self._item(nudge); await self._send({"type": "response.create"}); return   # one retry per user turn (a status answer is guarded too)
             self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})   # before the status answer: a status call in
@@ -496,7 +501,7 @@ class Conn:
                 st["guarded"] = True   # ponytail: one forced retry per user turn, no loop
                 log.info("GUARD: reply claimed or offered a task without calling %s — nudging", TOOL)
                 await self._item(NUDGE); await self._send({"type": "response.create"}); return
-            spoke = any(o.get("type") == "message" and any(p.get("text") or p.get("transcript") for p in o.get("content", [])) for o in ev["response"].get("output", []))
+            spoke = not dropped and any(o.get("type") == "message" and any(p.get("text") or p.get("transcript") for p in o.get("content", [])) for o in ev["response"].get("output", []))
             for c in calls:
                 a = json.loads(c["arguments"]); did, task = c["call_id"], a.get("task", "")
                 old = next((d for d in reversed(self._sent) if d in self._pending), None) if a.get("replaces") or REPLACING.search(task) else None
@@ -533,6 +538,7 @@ class Conn:
     def _fake_claim(self) -> bool:
         v = HOLD.sub("", self._st["last_voice"].lower()); self._st["last_voice"] = ""
         u = self._st["last_user"].lower()   # a worker's voice answers a question only from delegate_task (#28: "Let me pull that up", "The timer is 30 seconds")
+        if self._relay and BACK_WORDS.search(u): return False   # #82: back to Donna is the bridge's, not a task
         if self._relay and u.rstrip().endswith("?") and not re.search(r"\b(donna|bye)\b", u): return True
         return bool(CLAIM.search(v)) or ((self._relay or bool(ASKED.search(self._st["last_user"].lower()))) and bool(OFFER.search(v)))
 
@@ -589,6 +595,10 @@ if __name__ == "__main__":   # self-check: no network
                                            "Fair point, I'll be clearer about who's handling what.", "You got it.", "Alright, we're all set, the office has it."))
     assert CLAIM.search("got it, five-minute breaks. i'm updating that now.")   # #12 rehearsal: the follow-up was claimed, never sent
     assert all(HOWS.search(x) for x in ("how's it going?", "how is it coming along", "any update?")) and not any(HOWS.search(x) for x in ("how do i run it?", "what's going on with you?"))   # #12
+    assert ASKED.search("while they're doing that, can you come up with a script to present the uh web app?")   # #82: GUARD's gate while a task runs
+    assert all(BACK_WORDS.search(x) for x in ("whatever. okay. stop. uh, get me back to doma. don't not please.", "put donna back on", "take me back to donna", "back to donna, please", "can i have donna again?", "i'm done with leo", "transfer me back"))   # #82
+    assert not any(BACK_WORDS.search(x) for x in ("how long is the timer?", "get back to me on that", "why did you pick that interval length?", "put it back the way it was"))
+    assert RELAY_DEF["name"] == TOOL and "question stays a question" in RELAY_DEF["description"] and "question stays a question" in RELAY_DEF["parameters"]["properties"]["task"]["description"]   # #82
     assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
@@ -755,6 +765,7 @@ if __name__ == "__main__":   # self-check: no network
         c._st["guarded"], c._relay = False, True   # a worker's voice (#28): no result guard; a question answered without delegate_task is nudged
         c._st.update(last_user="how long is the timer?", last_voice="let me pull that up."); assert c._fake_claim()
         c._st.update(last_user="can you put donna back?", last_voice="sure."); assert not c._fake_claim()
+        c._st.update(last_user="whatever. okay. stop. uh, get me back to doma. don't not please.", last_voice="i'll get you back to donna right away."); assert not c._fake_claim()   # #82, the 13:29 call
         await c._handle({"type": "response.output_audio_transcript.done", "transcript": "I built it."}); assert [e.transcript for e in outs() if e.type == "session.output_transcript.done"] == ["I built it."]
         c._relay = False
         c._done("d2", "say"); c._st["guarded"] = False   # a result went in this turn (d1 still runs): "all done" may be true
@@ -793,6 +804,19 @@ if __name__ == "__main__":   # self-check: no network
         assert await reply(line, True) == ["session.output_audio.discard"] and sent[-2]["item"]["content"][0]["text"] == REPEAT.format(line)   # the next turn's answer: nothing runs, still caught
         c._done("d3", "say"); outs(); sent.clear()   # a result with new words is told
         assert await reply("The quiz page is done too. " + line, False) == ["session.output_transcript.done", "response.done"] and sent == []
+    async def callrep():   # #82, the 13:29 call: a dropped repeat ("On it." again) that carried the call: the call goes on and the voice acks it afresh
+        c, sent, now = mk(); c.delegation, c._pending = True, {"d1"}
+        outs = lambda: [e.type for e in (c._out.get_nowait() for _ in range(c._out.qsize())) if e.type != "raw"]
+        await c._handle({"type": "response.output_audio_transcript.done", "transcript": "On it."}); await c._handle({"type": "response.done", "response": {"output": []}}); outs()
+        c._st.update(user_at=time.monotonic(), guarded=False, fresh=False, last_user="can you come up with a script to present it?"); sent.clear()
+        await c._handle({"type": "response.output_audio_transcript.done", "transcript": "On it."})
+        await c._handle({"type": "response.done", "response": {"output": [{"type": "message", "content": [{"transcript": "On it."}]},
+                                                                           {"type": "function_call", "name": TOOL, "call_id": "d2", "arguments": '{"task": "come up with a script"}'}]}})
+        assert outs() == ["session.output_audio.discard", "session.delegation.created", "response.done"] and kinds(sent) == ["response.create"], sent
+        await c._handle({"type": "response.output_audio_transcript.done", "transcript": "On it."}); assert outs() == ["session.output_transcript.done"]   # the fresh ack is played, even word for word
+        c._st.update(user_at=time.monotonic(), guarded=False, turn_delegated=False, last_user="can you come up with a script to present it?"); sent.clear()   # the 13:29 case: "On it." again and no call
+        await c._handle({"type": "response.output_audio_transcript.done", "transcript": "On it."}); await c._handle({"type": "response.done", "response": {"output": []}})
+        assert sent[-2]["item"]["content"][0]["text"] == NUDGE, sent   # GUARD's nudge, not REPEAT's: the call gets made
     async def told():   # #55: the result for "music" went in, then the user's "Thanks, bye": the goodbye may report it, not the running "notes"
         c, sent, now = mk(); c.delegation, c._open, c._pending = True, {"d1", "d2"}, {"d1", "d2"}
         c._sent = {"d1": ("Also zip the music folder.", time.time()), "d2": ("And make a backup of the notes folder.", time.time())}
@@ -817,7 +841,7 @@ if __name__ == "__main__":   # self-check: no network
         t = asyncio.create_task(c._speak_loop()); await asyncio.sleep(0.3); t.cancel()
         assert kinds(sent) == ["message", "response.create"] and sent[0]["item"]["content"][0]["text"] == HIRED_NOTE.format("Hiring Mia to build the quiz page"), sent
         assert c._open == {"d1"} and not c._st["fresh"]
-    async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer(), stale(), fab(), rep(), told(), hire()); await cap()   # cap flips globals: not alongside the others
+    async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer(), stale(), fab(), rep(), callrep(), told(), hire()); await cap()   # cap flips globals: not alongside the others
     STILL_WORKING_AT = 25   # stale() opens a delegation: no "still working" note inside the test
     t0 = time.monotonic(); asyncio.run(policy()); assert time.monotonic() - t0 < 3
     print("ok")
