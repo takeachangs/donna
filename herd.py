@@ -472,9 +472,10 @@ def office(now=None):
     for m in sorted(root().glob("*/meta.json"), key=lambda p: rj(p).get("created") or 0):
         if (wm := rj(m)).get("kind") != "codex" or wm.get("name") == "donna": continue
         ws, brief = rj(m.parent / "status.json"), next((l.get("task") or "" for l in tail(m.parent / "inbox.jsonl")), "")
-        end = None if ws.get("state") == "working" else next((o for o in reversed(tail(m.parent / "outbox.jsonl")) if o.get("kind") in ("say", "fail")), None)
+        t0 = wm.get("since") or wm.get("created") or 0  # a re-hired name (new again) counts from its new hire, not its first
+        end = None if ws.get("state") == "working" else next((o for o in reversed(tail(m.parent / "outbox.jsonl")) if o.get("kind") in ("say", "fail") and (o.get("ts") or 0) >= t0), None)
         rows[wm["name"]] = {"id": wm["name"], "type": "codex", "name": wm["name"], "desc": brief.split("\n")[0][:80], "prompt": brief, "act": None,
-                            "cur": ws.get("last_note"), "t0": wm.get("created") or 0, "t1": end and end.get("ts"),
+                            "cur": ws.get("last_note"), "t0": t0, "t1": end and end.get("ts"),
                             "fail": bool(end) and end.get("kind") == "fail", "summary": end and end.get("text"), "cwd": wm.get("project") or "", "matched": True}
     if meta.get("kind") == "codex":  # the lead: working while a phone task is in progress (its narrative: below)
         lead.update(t=1 if st.get("state") in ("working", "needs_you") else 0)
@@ -797,6 +798,8 @@ def selfcheck_codex():  # #66: a Codex brain registers without a hook; a codex w
             args = [json.loads(l) for l in Path(tmp, "codex-args").read_text().splitlines()]
             assert args[0][-1].startswith("Writes the page") and "resume" not in args[0] and args[1][-3:] == ["resume", "th-1", "On the phone with the person: which colour?"], args
             reply("donna", t, "say", "Ava built it."); assert office()["workers"][0]["status"] == "done"
+            time.sleep(0.01); new("donna", kind="codex", project=tmp); new("Ava", kind="codex", project=tmp)  # a new duty period re-hires Ava: drawn again, not done yet
+            assert [(w["name"], w["status"]) for w in office()["workers"][1:]] == [("Ava", "working")], office()["workers"]
         finally:
             os.environ["PATH"] = path
 
