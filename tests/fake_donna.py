@@ -130,7 +130,8 @@ def transfer_flow(herd, wait_log, type_):  # #28: each segment is a fresh sessio
     assert "voice: nora" in wait_log("session ready", 30)
     time.sleep(1)
     type_("Who built the quiz?")
-    wait_log("→ commentary", 40); assert "Maya" in wait_log("VOICE", 20)
+    end = time.time() + 40  # #61: from task_status's office rows or from the brain's say, either is fine
+    while "Maya" not in wait_log("VOICE", max(1, end - time.time())): pass
     time.sleep(2)
     type_("Get me on the line with her.")
     wait_log("transfer: putting the user through to Maya", 40)
@@ -140,7 +141,7 @@ def transfer_flow(herd, wait_log, type_):  # #28: each segment is a fresh sessio
     assert "Maya" in wait_log("VOICE", 20)  # "Hey, it's Maya."
     time.sleep(2)
     type_("How long is the timer on each question?")
-    wait_log("DELEGATION", 20)
+    wait_log("DELEGATION", 20); wait_log("→ inbox", 10)  # #61: the inbox line is written just after the DELEGATION log line
     assert herd.lines(herd.root() / "donna" / "inbox.jsonl")[-1].get("with") == "Maya"  # the brain forwards it to her
     wait_log("→ commentary", 40); v = wait_log("VOICE", 20).lower(); assert "thirty" in v or "30" in v, v  # her own transcript's answer
     time.sleep(2)

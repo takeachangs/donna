@@ -40,7 +40,8 @@ TOOL = "delegate_task"   # NOT "delegate": the server reserves that name for its
 TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an agent on the user's computer that can "
             "create or edit files, open pages or files in the browser, run commands, read code, check git, look things up, calculate. "
             "Use it for ANY request to make, add, change, design, open, run, check, find or compute something, including what is in a "
-            "file, folder or directory. The task is a plain-English request, not a command.",
+            "file, folder or directory, and ANY request to talk to someone or be put through to them ('put me through to Maya', "
+            "'get her on the line', 'can I talk to Maya', 'transfer me'). The task is a plain-English request, not a command.",
             "parameters": {"type": "object", "properties": {"task": {"type": "string"},   # replaces: set on 7/7 corrections, 0/6 second tasks (Oct 24 text probe)
                            "replaces": {"type": "boolean", "description": "true when this request corrects or changes the one you sent just before; the earlier one is dropped"}},
                            "required": ["task"]}}
@@ -49,7 +50,7 @@ REPLACING = re.compile(r"\b(replacing|instead of) the (previous|earlier|last) (r
 STATUS = "task_status"   # answered at once by this layer from the herd files; never left open
 STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the work you sent with {TOOL} is going: the agents (workers) "
               "and what each is doing or has finished, running and queued tasks, questions waiting for the user, results not told yet. "
-              "Only for the work and the team.", "parameters": {"type": "object", "properties": {}}}   # naming files/folders here pulled "what's in my directory" to this tool (2/6 runs)
+              "Only for the work and the team. It only reports; it does nothing.", "parameters": {"type": "object", "properties": {}}}   # naming files/folders here pulled "what's in my directory" to this tool (2/6 runs)
 MECHANICS = f"""## Delegation mechanics
 Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
 same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
@@ -89,7 +90,7 @@ STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", 
 CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching|reaching|connecting|transferring|getting)|should be running|backend result|i'?ll\s+have\s+(the|an|my)\s+agent)")   # the last: "I'll have the agent take a look" (Oct 24 probe)
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat|connect|put|transfer)|let me\s+(creat|mak|check|look|run|open|see)|"
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
-                   r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
+                   r"shall i (set|get|start) (that|it|this)|i can (connect|put you through|transfer)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
                    r"(i'?ll|i (can|could)|let me)\s+(whip|draft|put (\w+ )?together|set (\w+ )?up|sketch)|"
                    r"(could|can) you (please )?(provide|share|tell me more)|what \W?(this|that|it)\W? refers to|you'?re referring to|need (a bit |some )?more detail)")   # asking permission instead of calling; offering to draft (Oct 24 calls); interviewing about "this" (#43 probe: 7/20)
 PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c.txt: no paths in speech
@@ -193,6 +194,8 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
 ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|zip(s|ped|ping)?|archiv(e|es|ed|ing)|compress(es|ed|ing)?|bundl(e|es|ed|ing)|packag(e|es|ed|ing)|export(s|ed|ing)?|mov(e|es|ed|ing)|cop(y|ies|ied|ying)|"
                    r"add|change|design|plan|style|improve|update (the|it|that|this|my)|(put|turn) (it|this|that)|tell (them|it|someone)|have (them|someone)|"
                    r"who('?s| is| was)? (built|made|wrote|did|working on|worked on|on|in charge of)|on the line|put me through|connect me|talk to|speak (to|with))\b")   # not bare "update"/"have it": "any update?", "do you have it?" ask about a running task; "who built the quiz?" and "get me on the line" go to the brain (#28)
+
+THROUGH = re.compile(r"\b(on the (line|phone)|put (me|us) through|through to|connect me|transfer me|(talk|speak) (to|with) (?!you\b)\w)")   # #61: the brain answers these with `transfer`; "who built it?" may stay with task_status
 
 
 def _ev(d):
@@ -444,11 +447,13 @@ class Conn:
                 text = status_summary(self._t0 - time.monotonic() + time.time(), [(t, ts, d not in self._open, self._notes.get(d)) for d, (t, ts) in self._sent.items()])
                 await self._send({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": c["call_id"], "output": text}})
                 log.info("%s → %s", STATUS, text)
+            through = not self._relay and not st["turn_delegated"] and not st["guarded"] and THROUGH.search(st["last_user"].lower())   # #61: never answered from task_status
             if status and not calls:
+                if through: log.info("GUARD: put-through answered with %s — nudging to %s", STATUS, TOOL); await self._item(NUDGE)
                 st["guarded"] = True; await self._send({"type": "response.create"})   # same socket, so the output is added before the reply is made
                 self._emit("response.done", calls=1, pending=len(self._pending)); return
-            if self.delegation and not calls and self._fake_claim() and not st["asked"] and not st["guarded"] and not st["turn_delegated"] \
-                    and (not self._pending or self._relay or ASKED.search(st["last_user"].lower())):   # a task is running: "on it" to "are you done?" is no fake claim (Oct 24 call)
+            if self.delegation and not calls and (self._fake_claim() and not st["asked"] and not st["guarded"] and not st["turn_delegated"] \
+                    and (not self._pending or self._relay or ASKED.search(st["last_user"].lower())) or through):   # a task is running: "on it" to "are you done?" is no fake claim (Oct 24 call)
                 st["guarded"] = True   # ponytail: one forced retry per user turn, no loop
                 log.info("GUARD: reply claimed or offered a task without calling %s — nudging", TOOL)
                 await self._item(NUDGE); await self._send({"type": "response.create"}); return
@@ -534,6 +539,8 @@ if __name__ == "__main__":   # self-check: no network
     assert OFFER.search("i'll connect you with maya right now.") and ASKED.search("get me on the line with her.")   # #28 run: no call, no nudge before
     assert all(CLAIM.search(x) for x in ("i'm reaching out to maya now to get you connected.", "i'm connecting you with maya now."))   # #28: no call made
     assert all(ASKED.search(x) for x in ("who built the quiz?", "who's working on the login page?", "get me on the line with her.", "can i talk to maya?"))   # #28
+    assert all(THROUGH.search(x) for x in ("get her on the line", "can i talk to maya?", "transfer me", "put me through to maya")) and OFFER.search("i can connect you to her directly.")   # #61
+    assert not any(THROUGH.search(x) for x in ("who built the quiz?", "let me talk to you about it", "talk to you later", "how's it going?"))
     assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
@@ -563,6 +570,9 @@ if __name__ == "__main__":   # self-check: no network
         asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "function_call", "name": STATUS, "call_id": "s2"},
                                                                                  {"type": "function_call", "name": TOOL, "call_id": "d2", "arguments": '{"task": "open it"}'}]}}))
         assert "open it, has been running" in sent[0]["item"]["output"], sent
+        sent.clear(); c._st.update(last_user="Get me on the line with her.", turn_delegated=False, guarded=False)   # #61, a new user turn: a put-through answered with task_status gets GUARD's nudge
+        asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "function_call", "name": STATUS, "call_id": "s3"}]}}))
+        assert [e.get("item", {}).get("type") or e["type"] for e in sent] == ["function_call_output", "message", "response.create"] and sent[1]["item"]["content"][0]["text"] == NUDGE, sent
     c, sent = Conn(None, 24000), []   # GUARD while a task runs: only a new request without a call gets the nudge
     c._send, c.delegation, c._pending = rec, True, {"d1"}
     for user, voice, nudged, asked in (("are you done? like.", "on it, just a sec while that updates.", False, False),
