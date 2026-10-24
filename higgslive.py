@@ -242,7 +242,8 @@ class Conn:
             if status and not calls:
                 st["guarded"] = True; await self._send({"type": "response.create"})   # same socket, so the output is added before the reply is made
                 self._emit("response.done", calls=1, pending=len(self._pending)); return
-            if self.delegation and not calls and self._fake_claim() and not st["guarded"] and not st["turn_delegated"]:
+            if self.delegation and not calls and self._fake_claim() and not st["guarded"] and not st["turn_delegated"] \
+                    and (not self._pending or ASKED.search(st["last_user"].lower())):   # a task is running: "on it" to "are you done?" is no fake claim (Oct 24 call)
                 st["guarded"] = True   # ponytail: one forced retry per user turn, no loop
                 log.info("GUARD: reply claimed or offered a task without calling %s — nudging", TOOL)
                 await self._item(NUDGE); await self._send({"type": "response.create"}); return
@@ -321,4 +322,11 @@ if __name__ == "__main__":   # self-check: no network
         asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "function_call", "name": STATUS, "call_id": "s2"},
                                                                                  {"type": "function_call", "name": TOOL, "call_id": "d2", "arguments": '{"task": "open it"}'}]}}))
         assert "open it, has been running" in sent[0]["item"]["output"], sent
+    c, sent = Conn(None, 24000), []   # GUARD while a task runs: only a new request without a call gets the nudge
+    c._send, c.delegation, c._pending = rec, True, {"d1"}
+    for user, voice, nudged in (("are you done? like.", "on it, just a sec while that updates.", False),
+                                ("add a sleek hero section to it", "i'll whip up a hero section with a clean layout.", True)):
+        sent.clear(); c._st.update(last_user=user, last_voice=voice, guarded=False, turn_delegated=False)
+        asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "message", "content": [{"transcript": voice}]}]}}))
+        assert any(e.get("item", {}).get("content", [{}])[0].get("text") == NUDGE for e in sent) == nudged, (user, sent)
     print("ok")
