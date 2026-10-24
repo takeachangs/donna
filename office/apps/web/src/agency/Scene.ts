@@ -718,7 +718,7 @@ export class AgencyScene implements GameScene {
     const rooms = [...this.rooms.values()],
       minZ = Math.min(0, ...rooms.map((r) => r.z));
     this.box(this.hall, 8, 0.14, 12 - minZ, 0, -0.12, (12 + minZ) / 2, 0xd2c7b5);
-    this.plaque(this.hall, 'CHAMBER', 0, 10.5, 5.5);
+    this.plaque(this.hall, t('agency.title'), 0, 10.5, 5.5);
     for (let z = minZ + 1; z < 10; z += 3) this.box(this.hall, 0.045, 0.01, 1.2, 0, 0.01, z, 0xb7a78d);
     this.box(this.hall, 2.6, 0.14, 2, 5.3, -0.12, 11, 0xd2c7b5);
     const g = new THREE.Group();
