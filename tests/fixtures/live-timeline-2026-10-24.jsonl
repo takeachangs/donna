@@ -1,0 +1,18 @@
+{"t": 0.0, "rows": [["Donna", "done", "Ready"]]}
+{"t": 13.1, "rows": [["Donna", "working", "Working on it"]]}
+{"t": 15.1, "rows": [["Donna", "working", "Got it: Dispatch agents to make a landin"], ["A:Dispatch agents to make a land", "queued", ""]]}
+{"t": 21.2, "rows": [["Donna", "working", "Reading the repo"]]}
+{"t": 25.2, "rows": [["Donna", "waiting", "Waiting for your answer"]]}
+{"t": 34.3, "rows": [["Donna", "working", "Thinking"]]}
+{"t": 38.3, "rows": [["Donna", "working", "Reading the repo"]]}
+{"t": 43.3, "rows": [["Donna", "working", "Working on it"], ["Ava", "queued", "Being briefed"], ["Noah", "queued", "Being briefed"]]}
+{"t": 52.4, "rows": [["Donna", "working", "Hiring Ava and Noah"], ["Ava", "working", "Hired: Writes the landing page with sign"], ["Noah", "working", "Hired: Writes the pricing table page"], ["A:Writes the landing page with s", "working", ""], ["A:Writes the pricing table page", "working", ""]]}
+{"t": 54.4, "rows": [["Donna", "waiting", "Waiting on Ava and Noah"], ["Ava", "working", "Hired: Writes the landing page with sign"], ["Noah", "working", "Hired: Writes the pricing table page"], ["A:Writes the landing page with s", "working", ""], ["A:Writes the pricing table page", "working", ""]]}
+{"t": 60.5, "rows": [["Donna", "waiting", "Waiting on Ava and Noah"], ["Ava", "working", "Running a command"], ["Noah", "working", "Running a command"], ["A:Writes the landing page with s", "working", ""], ["A:Writes the pricing table page", "working", ""]]}
+{"t": 71.6, "rows": [["Donna", "waiting", "Waiting on Ava and Noah"], ["Ava", "working", "Writing index.html"], ["Noah", "working", "Running a command"], ["A:Writes the landing page with s", "working", ""], ["A:Writes the pricing table page", "working", ""]]}
+{"t": 77.6, "rows": [["Donna", "waiting", "Waiting on Ava and Noah"], ["Ava", "working", "Running a command"], ["Noah", "working", "Running a command"], ["A:Writes the landing page with s", "working", ""], ["A:Writes the pricing table page", "working", ""]]}
+{"t": 81.6, "rows": [["Donna", "waiting", "Waiting on Noah"], ["Ava", "done", "Running a command"], ["Noah", "working", "Running a command"], ["A:Writes the landing page with s", "done", ""], ["A:Writes the pricing table page", "working", ""]]}
+{"t": 83.6, "rows": [["Donna", "done", "Ready"], ["Ava", "done", "Running a command"], ["Noah", "done", "Running a command"], ["A:Writes the landing page with s", "done", ""], ["A:Writes the pricing table page", "done", ""]]}
+{"t": 86.7, "rows": [["Donna", "working", "Working on it"], ["Ava", "done", "Running a command"], ["Noah", "done", "Running a command"], ["A:Writes the landing page with s", "done", ""], ["A:Writes the pricing table page", "done", ""]]}
+{"t": 92.7, "rows": [["Donna", "working", "Reporting"], ["Ava", "done", "Running a command"], ["Noah", "done", "Running a command"], ["A:Writes the landing page with s", "done", ""], ["A:Writes the pricing table page", "done", ""]]}
+{"t": 95.8, "rows": [["Donna", "done", "Ready"], ["Ava", "done", "Running a command"], ["Noah", "done", "Running a command"], ["A:Writes the landing page with s", "done", ""], ["A:Writes the pricing table page", "done", ""]]}
