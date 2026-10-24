@@ -29,6 +29,7 @@ result lands. The first commentary append for a delegation waits until the voice
 drained, then returns the real `function_call_output` and requests one response. Instructions appends re-send session.update.
 """
 import asyncio, base64, itertools, json, logging, os, re, time
+from pathlib import Path
 from types import SimpleNamespace
 import websockets
 
@@ -39,6 +40,10 @@ TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an 
             "create or edit files, open pages or files in the browser, run commands, read code, check git, look things up, calculate. "
             "Use it for ANY request to make, open, run, check, find or compute something. The task is a plain-English request, not a command.",
             "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}
+STATUS = "agent_status"   # answered at once by this layer from the herd files; never left open
+STATUS_DEF = {"type": "function", "name": STATUS, "description": "Says what the agents on the user's computer are doing right now: "
+              "who is working on what and for how long, who is idle, what finished. Use it whenever the user asks how it's going, "
+              "what's happening, or whether something is done.", "parameters": {"type": "object", "properties": {}}}
 MECHANICS = f"""## Delegation mechanics
 You cannot create, open, read, run, or look up anything yourself; the {TOOL} tool hands the job to an agent that can.
 Call {TOOL} first, then speak. Never say you can't, never ask for confirmation first. Describe the task in plain English as
@@ -48,12 +53,45 @@ calling it, say in one short sentence that you've handed it off, then ask what e
 conversation going on whatever the user brings up. Never guess or report the result before the tool's output arrives; when it
 does, bring it up as a natural aside and give the outcome in your own words. Never report an action as done, running, or sent
 unless you called {TOOL}.
-Messages starting with "[progress" are notes about a running task: never read them out; use them only if the user asks how it's going."""
+Messages starting with "[progress" are notes about a running task: never read them out; use them only if the user asks how it's going.
+When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; never claim progress or results you did not get from a tool."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
 CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending)|should be running|backend result)")
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send)|let me\s+(creat|mak|check|look|run|open|see)|"
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html))")
+PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c.txt: no paths in speech
+
+
+def _for(secs: float) -> str:
+    m = round(secs / 60)
+    return "a few seconds" if secs < 45 else f"{m} minute{'s' * (m != 1)}" if m < 90 else f"{round(secs / 3600)} hours"
+
+
+def status_summary(since: float, sent=(), now: float | None = None) -> str:
+    """One spoken paragraph from $HIGGS_HOME/herd (status.json per agent + events.jsonl): who works on what and for how long,
+    who is idle, what finished since `since` (epoch). sent: (task, started_epoch, finished) for this call's own delegations."""
+    now, herd = now or time.time(), Path(os.environ.get("HIGGS_HOME") or Path.home() / ".higgs") / "herd"
+    evs = [json.loads(l) for l in (herd / "events.jsonl").read_text().splitlines() if l.strip()] if (herd / "events.jsonl").exists() else []
+    sent_at = {e.get("id"): e for e in evs if e.get("ev") == "task.sent"}
+    last = {e["agent"]: e for e in evs if e.get("ev") in ("task.note", "task.done")}
+    out, idle = [], []
+    for f in sorted(herd.glob("*/status.json")):
+        name, st = f.parent.name, json.loads(f.read_text())
+        if st.get("state") == "dead": continue
+        if st.get("state") != "working": idle.append(name); continue
+        s = f"{name} has been working on {st.get('task') or 'a task'} for {_for(now - sent_at.get(st.get('task_id'), {}).get('ts', st.get('started') or now))}"
+        e = last.get(name)
+        out.append(s + (f", latest note: {e['text']}" if e and e["ev"] == "task.note" and e.get("id") == st.get("task_id") else "") + ".")
+    if idle: out.append(f"{', '.join(idle)} {'is' if len(idle) == 1 else 'are'} idle.")
+    for e in evs:
+        if e.get("ev") == "task.done" and e.get("ts", 0) >= since:
+            out.append(f"{e['agent']} finished {sent_at.get(e.get('id'), {}).get('task') or 'a task'}: {e.get('text', '')}")
+    for task, t, done in sent:
+        out.append(f"The task sent on this call, {task}, " + ("is finished." if done else f"has been running for {_for(now - t)}."))
+    return PATH.sub(r"\1", " ".join(out)) or "No agents are running and nothing has finished since the call started."
+
+
 ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download)\b")
 
 
@@ -75,6 +113,7 @@ class Conn:
         self._pending: set[str] = set()                   # delegations with no commentary yet
         self._open: set[str] = set()                      # function calls whose output we have not returned yet
         self._notes: dict = {}                            # delegation id → ids of its progress items
+        self._sent: dict = {}                             # delegation id → (task, epoch) for agent_status
         self._seq = itertools.count()
         self._instructions = ""
         self._t0 = time.monotonic()
@@ -96,7 +135,7 @@ class Conn:
         if seed: self._instructions += "\n\n## Context for this call\n" + seed.strip()[:4000]   # ponytail: no developer role on Higgs, so the seed rides in the prompt
         fmt = {"type": "audio/pcm", "rate": self._rate}
         await self._send({"type": "session.update", "session": {"type": "realtime", "model": self._model,
-            "instructions": self._instructions, "tools": ([TOOL_DEF] if self.delegation else []) + session.get("tools", []), "tool_choice": "auto",   # e.g. {"type": "web_search"}   # required/named break the server
+            "instructions": self._instructions, "tools": ([TOOL_DEF, STATUS_DEF] if self.delegation else []) + session.get("tools", []), "tool_choice": "auto",   # e.g. {"type": "web_search"}   # required/named break the server
             "audio": {"input": {"format": fmt, "noise_reduction": {"type": "near_field"}, "transcription": {"model": "higgs-stt-3.1"},
                                 "turn_detection": session.get("turn_detection", {"type": "server_vad"})},   # server defaults (threshold 0.85 as of Oct 23) = the baseline; tune from there
                       "output": {"format": fmt, "voice": session.get("voice", "default")}},
@@ -187,6 +226,15 @@ class Conn:
         if t == "response.done":
             st["in_flight"] = False
             calls = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == TOOL and o.get("executor") != "server"][:1]   # server-side tools (web_search, Oct 23) need no output from us. [:1]: 1.0 fires 2-3 near-duplicate calls for one request (9/12, probe/r15/A-tools.md); extras left open cause no error
+            status = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == STATUS and o.get("executor") != "server"][:1]
+            for c in status:   # synchronous: answered now, never enters _pending/_open
+                text = status_summary(self._t0 - time.monotonic() + time.time(), [(t, ts, d not in self._open) for d, (t, ts) in self._sent.items()])
+                await self._send({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": c["call_id"], "output": text}})
+                log.info("%s → %s", STATUS, text)
+            if status and not calls:
+                st["guarded"] = True; await self._send({"type": "response.create"})   # same socket, so the output is added before the reply is made
+                self._emit("response.done", calls=1, pending=len(self._pending)); return
+            self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})
             if self.delegation and not calls and self._fake_claim() and not st["guarded"] and not st["turn_delegated"]:
                 st["guarded"] = True   # ponytail: one forced retry per user turn, no loop
                 log.info("GUARD: reply claimed or offered a task without calling %s — nudging", TOOL)
@@ -231,5 +279,22 @@ if __name__ == "__main__":   # self-check: no network
     assert CLAIM.search("i've sent that off") and not CLAIM.search("sure, what else?")
     assert all(CLAIM.search(x) for x in ("i've handed that task off", "i've handed off the task", "i'm handing off the request"))
     assert ASKED.search("make me a page") and OFFER.search("i'll create it for you")
-    assert TOOL in MECHANICS and "[progress" in MECHANICS
+    assert TOOL in MECHANICS and "[progress" in MECHANICS and STATUS in MECHANICS
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
+        os.environ["HIGGS_HOME"], h, now = tmp, Path(tmp) / "herd", time.time()
+        assert status_summary(now).startswith("No agents")
+        for name, st in (("reviewer", {"state": "working", "task_id": "a1", "task": "review src/parser.py", "started": now - 999}),
+                         ("donna", {"state": "idle", "task_id": "b2", "task": "make hello.txt"}), ("old", {"state": "dead"})):
+            (h / name).mkdir(parents=True); (h / name / "status.json").write_text(json.dumps(st))
+        (h / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in (
+            {"ts": now - 125, "ev": "task.sent", "agent": "reviewer", "id": "a1", "task": "review src/parser.py"},
+            {"ts": now - 60, "ev": "task.sent", "agent": "donna", "id": "b2", "task": "make hello.txt"},
+            {"ts": now - 50, "ev": "task.note", "agent": "reviewer", "id": "a1", "text": "reading 14 files"},
+            {"ts": now - 10, "ev": "task.done", "agent": "donna", "id": "b2", "text": "written to /Users/x/sandbox/hello.txt"})))
+        s = status_summary(now - 30, [("open the page", now - 5, False)], now)
+        assert "reviewer has been working on review parser.py for 2 minutes, latest note: reading 14 files." in s, s
+        assert "donna is idle." in s and "donna finished make hello.txt: written to hello.txt" in s and "old" not in s, s
+        assert "open the page, has been running for a few seconds" in s and "/" not in s and "{" not in s, s
+        assert "finished" not in status_summary(now, (), now)   # done before the call: not reported
     print("ok")
