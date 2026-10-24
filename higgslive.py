@@ -63,7 +63,7 @@ NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now fo
 RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences]"   # user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
 CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching)|should be running|backend result)")
-OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send)|let me\s+(creat|mak|check|look|run|open|see)|"
+OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat)|let me\s+(creat|mak|check|look|run|open|see)|"
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
                    r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
                    r"(i'?ll|i (can|could)|let me)\s+(whip|draft|put (\w+ )?together|set (\w+ )?up|sketch))")   # asking permission instead of calling; offering to draft (Oct 24 calls)
@@ -298,7 +298,8 @@ if __name__ == "__main__":   # self-check: no network
     assert all(OFFER.search(x) for x in ("i can't create files myself, but i can delegate that. shall i set that up?", "shall i set that up?",
                                          "want me to delegate that?", "would you like me to hand that off?")) and not OFFER.search("sure, what else?")
     assert all(OFFER.search(x) for x in ("sure, i can draft a hero section for a tech company. what vibe are we going for?",   # the Oct 24 call, verbatim
-                                         "i'll whip up a hero section with a clean layout", "let me put that together")) and CLAIM.search("i'm putting together the hero section")
+                                         "i'll whip up a hero section with a clean layout", "let me put that together",
+                                         "sure. i'll add a hero section to the page with a big heading")) and CLAIM.search("i'm putting together the hero section")
     assert all(ASKED.search(x) for x in ("can you tell them to plan a nice hero section", "add a sleek hero section to it", "update the colors"))
     assert not any(ASKED.search(x) for x in ("are you done? like.", "any update on that?", "do you have it yet?", "hello"))
     assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
