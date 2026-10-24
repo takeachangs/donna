@@ -375,9 +375,10 @@ class Conn:
                 ev["transcript"] = fixed   # a second one in the same turn: the transcript (and the sign-off it keeps) is right at least
             rep, whole = self._repeats(ev["transcript"])
             if rep and self.delegation and self._pending:   # the same line again while a task runs (#36)
-                log.info("repeat: %s", rep)
                 answered = st.get("heard_at", 0) > st["user_at"]   # the user already heard a reply this turn (a claim before GUARD's call, an earlier ack)
-                if whole and not st["fresh"] and (answered or not (st["guarded"] or st["turn_delegated"])):   # never a result, never a turn left silent
+                drop = whole and not st["fresh"] and (answered or st.get("retried") != st["user_at"] and not st["turn_delegated"])   # never a result, never a turn left silent
+                log.info("repeat: %s%s", rep, "" if not drop else " → dropped" if answered else " → dropped, retrying")
+                if drop:
                     st.update(repeat=not answered, guarded=True, spk_until=0.0, last_voice=ev["transcript"]); self._emit("session.output_audio.discard"); return   # answered: just dropped
             st["heard_at"] = time.monotonic()
             st["last_voice"], st["question"] = ev["transcript"], st["asked"] or open_question(ev["transcript"]); self._emit("session.output_transcript.done", transcript=ev["transcript"])
@@ -394,7 +395,7 @@ class Conn:
             st["fix"] = None
             if st.pop("repeat", False) and not calls and not status:   # ponytail: a repeat that came with a call has lost its audio; the call goes on, unacknowledged
                 nudge = NUDGE if self._fake_claim() and ASKED.search(st["last_user"].lower()) else REPEAT   # "I'm on it." again to a new request: GUARD's nudge gets the call made
-                st["in_flight"] = True; await self._item(nudge); await self._send({"type": "response.create"}); return   # one retry: guarded stays up for this turn
+                st.update(in_flight=True, retried=st["user_at"]); await self._item(nudge); await self._send({"type": "response.create"}); return   # one retry per user turn (a status answer is guarded too)
             self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})   # before the status answer: a status call in
             self._open.update(c["call_id"] for c in calls)   # the same response must see this task running, or it reads "idle" and says "done"
             for c in status:   # synchronous: answered now, never enters _pending/_open
@@ -525,6 +526,9 @@ if __name__ == "__main__":   # self-check: no network
     c = Conn(None, 24000); c._pending = {"d1", "d2"}
     async def two(): await asyncio.gather(c._still_working("d1"), c._still_working("d2"))
     asyncio.run(two()); assert c._spoken.qsize() == 1
+    c = Conn(None, 24000); c._pending = {"d3"}   # the user spoke while it waited: no note (they are not waiting in silence)
+    async def spoke(): t = asyncio.create_task(c._still_working("d3")); await asyncio.sleep(0.01); c._st["user_at"] = time.monotonic(); await t
+    asyncio.run(spoke()); assert c._spoken.empty()
     with tempfile.TemporaryDirectory() as tmp:   # per-task records: in progress, queued, needs_you, failed; ring mode's duplicate `sent` is skipped
         os.environ["HIGGS_HOME"], h = tmp, Path(tmp) / "herd"
         for name, st in (("ann", {"state": "working", "tasks": {"t1": {"state": "in_progress", "task": "build x", "ts": now - 125},
@@ -628,6 +632,8 @@ if __name__ == "__main__":   # self-check: no network
         sent.clear(); assert await reply("Still working on that website for you.", False) == ["session.output_audio.discard", "response.done"] and sent == []   # already answered this turn: dropped, no retry
         c._st.update(last_user="also compile a plan for the team"); await reply("I'm on it.", True)   # "I'm on it." again to a new request: GUARD's nudge, which gets the call made
         assert await reply("I'm on it.", True) == ["session.output_audio.discard"] and sent[-2]["item"]["content"][0]["text"] == NUDGE, sent
+        c._st.update(last_user=""); await reply("Still just me on this one.", True); c._st.update(user_at=time.monotonic(), guarded=True)   # next turn: a task_status answer runs guarded
+        assert await reply("Still just me on this one.", False) == ["session.output_audio.discard"] and sent[-2]["item"]["content"][0]["text"] == REPEAT, sent
         c._st.update(guarded=False, last_user=""); sent.clear()
         assert await reply(PENDING_LINE, True) == await reply(PENDING_LINE, True) == ["session.output_transcript.done", "response.done"] and sent == []   # the guard's own line
         await c._attach(("[note] still in progress; tell the user.", None, "d1", "say"), True); assert sent == [] and c._out.empty()   # a still-working note never rides on the user's turn
