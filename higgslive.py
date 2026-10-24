@@ -43,22 +43,22 @@ TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an 
             "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}
 STATUS = "task_status"   # answered at once by this layer from the herd files; never left open
 STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the tasks you sent with {TOOL} are going: which are running, "
-              "for how long, latest progress, which finished. Only for tasks; never for files, folders or the computer.", "parameters": {"type": "object", "properties": {}}}
+              "for how long, latest progress, which finished. Only for tasks.", "parameters": {"type": "object", "properties": {}}}   # naming files/folders here pulled "what's in my directory" to this tool (2/6 runs)
 MECHANICS = f"""## Delegation mechanics
 Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
 same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
 A request to add, change, design, plan, style or improve something on a page or file is work too: call {TOOL} with your best
 reading of it. If a detail is missing, pick a sensible default, say which, and let the user correct it; never interview the user
-before calling. After the call, one short sentence that it's underway.
+before calling. A question about what is in a file, folder or directory, or on the computer, is work too: call {TOOL}.
+After the call, one short sentence that it's underway.
 Reply to what the user just said. Mention a running task only if they ask or when its result arrives.
 {TOOL} hands the job to an agent on the user's computer. Describe the task in plain English as a complete request (what, where,
 what the result should be), never as a shell command or code. It runs in the background; its result arrives later as the tool's
 output, often several turns after the call. Never guess or report the result before it arrives; when it does, bring it up as a
 natural aside and give the outcome in your own words. Never report an action as done, running, or sent unless you called {TOOL}.
 When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; while a
-task is running, even a casual "how's it going" means the task. {STATUS} is only for how a task you sent is going: a question
-about files, folders, the directory, the computer or what anything contains is a {TOOL}. If {STATUS} can't answer what they
-asked, never say you're checking the status. Never claim progress or results you did not get from a tool."""
+task is running, even a casual "how's it going" means the task. {STATUS} is only for how a task you sent is going; if it can't
+answer what they asked, never say you're checking the status. Never claim progress or results you did not get from a tool."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
 RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences]"   # user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
