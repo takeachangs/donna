@@ -42,13 +42,13 @@ TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an 
             "Use it for ANY request to make, add, change, design, open, run, check, find or compute something, including what is in a "
             "file, folder or directory, and ANY request to talk to someone or be put through to them ('put me through to Maya', "
             "'get her on the line', 'can I talk to Maya', 'transfer me'). The task is a plain-English request, not a command.",
-            "parameters": {"type": "object", "properties": {"task": {"type": "string"},   # replaces: set on 7/7 corrections, 0/6 second tasks (Oct 24 text probe)
+            "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "the user's own words; no name they did not say ('this project' stays 'this project')"},   # #62: "a landing page for this project" became "the London Tech Project"   # replaces: set on 7/7 corrections, 0/6 second tasks (Oct 24 text probe)
                            "replaces": {"type": "boolean", "description": "true when this request corrects or changes the one you sent just before; the earlier one is dropped"}},
                            "required": ["task"]}}
 STALE = "Dropped: the user changed this request and the new call replaces it. Say nothing about it."   # closes the replaced call; no response.create
 REPLACING = re.compile(r"\b(replacing|instead of) the (previous|earlier|last) (request|task)\b", re.I)   # 2/2 misses of the flag said this in the task text
 STATUS = "task_status"   # answered at once by this layer from the herd files; never left open
-STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the work you sent with {TOOL} is going: the agents (workers) "
+STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the work you sent with {TOOL} is going: the project you're connected to, the agents (workers) "
               "and what each is doing or has finished, running and queued tasks, questions waiting for the user, results not told yet. "
               "Only for the work and the team. It only reports; it does nothing.", "parameters": {"type": "object", "properties": {}}}   # naming files/folders here pulled "what's in my directory" to this tool (2/6 runs)
 MECHANICS = f"""## Delegation mechanics
@@ -66,7 +66,7 @@ asks back through you if it must. Never ask the user what "this" is or for more 
 output, often several turns after the call. Never guess or report the result before it arrives; when it does, bring it up as a
 natural aside and give the outcome in your own words. Never report an action as done, running, or sent unless you called {TOOL}.
 When the user asks how it's going, what's happening, whether something is done, or about the agents, workers, team, office,
-lounge, updates or reports, call {STATUS} and answer from its output; while a task is running, even a casual "how's it going" means
+lounge, updates, reports, or what project you're in or connected to, call {STATUS} and answer from its output; while a task is running, even a casual "how's it going" means
 the task. {STATUS} is only for the work and who is doing it; if it can't answer what they asked, never say you're checking the status.
 What the user asked you earlier ("what did I tell you to start?") is in {STATUS} too. Never claim progress or results you did not get from a tool.
 When a task's result arrives while the user is talking or has just asked you something, answer what they said first, then mention the finished task as an aside in one sentence.
@@ -188,7 +188,9 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
         if task in known: continue
         out.append(f"The task sent on this call, {task}, " + ("is finished." if done else f"has been running for {_for(now - t)}"
                    + (f", latest note: {note[0]}" if note and note[0] else "") + "."))
-    return PATH.sub(r"\1", " ".join(out)) or "No agents are running and nothing has finished since the call started."
+    try: proj = Path(json.loads((herd / "donna" / "meta.json").read_text())["project"]).name   # #62: "what are you connected to?" got "no project"
+    except (OSError, ValueError, KeyError, TypeError): proj = ""
+    return (f"You're in the {proj} project. " if proj else "") + (PATH.sub(r"\1", " ".join(out)) or "No agents are running and nothing has finished since the call started.")
 
 
 ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|zip(s|ped|ping)?|archiv(e|es|ed|ing)|compress(es|ed|ing)?|bundl(e|es|ed|ing)|packag(e|es|ed|ing)|export(s|ed|ing)?|mov(e|es|ed|ing)|cop(y|ies|ied|ying)|"
@@ -546,6 +548,8 @@ if __name__ == "__main__":   # self-check: no network
     with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
         os.environ["HIGGS_HOME"], h, now = tmp, Path(tmp) / "herd", time.time()
         assert status_summary(now).startswith("No agents")
+        (h / "donna").mkdir(parents=True); (h / "donna" / "meta.json").write_text(json.dumps({"project": "/x/kids-site"}))   # #62
+        assert status_summary(now) == "You're in the kids-site project. No agents are running and nothing has finished since the call started."; (h / "donna" / "meta.json").unlink(); (h / "donna").rmdir()
         for name, st in (("reviewer", {"state": "working", "task_id": "a1", "task": "review src/parser.py", "started": now - 999}),
                          ("donna", {"state": "idle", "task_id": "b2", "task": "make hello.txt"}), ("old", {"state": "dead"})):
             (h / name).mkdir(parents=True); (h / name / "status.json").write_text(json.dumps(st))
