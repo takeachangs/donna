@@ -49,6 +49,7 @@ export default {
   'agency.call_thinking': '正在思考',
   'agency.call_speaking': '正在说话',
   'agency.call_with': '通话中：{name}',
+  'agency.donna_line': '{name}：{action}',
   'agency.activity': '动态',
   'agency.checkpoint': '当前阶段',
   'agency.next_step': '下一步',
