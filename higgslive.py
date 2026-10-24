@@ -47,8 +47,9 @@ TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an 
 STALE = "Dropped: the user changed this request and the new call replaces it. Say nothing about it."   # closes the replaced call; no response.create
 REPLACING = re.compile(r"\b(replacing|instead of) the (previous|earlier|last) (request|task)\b", re.I)   # 2/2 misses of the flag said this in the task text
 STATUS = "task_status"   # answered at once by this layer from the herd files; never left open
-STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the tasks you sent with {TOOL} are going: which are running, "
-              "for how long, latest progress, which finished. Only for tasks.", "parameters": {"type": "object", "properties": {}}}   # naming files/folders here pulled "what's in my directory" to this tool (2/6 runs)
+STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the work you sent with {TOOL} is going: the agents (workers) "
+              "and what each is doing or has finished, running and queued tasks, questions waiting for the user, results not told yet. "
+              "Only for the work and the team.", "parameters": {"type": "object", "properties": {}}}   # naming files/folders here pulled "what's in my directory" to this tool (2/6 runs)
 MECHANICS = f"""## Delegation mechanics
 Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
 same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
@@ -57,17 +58,20 @@ reading of it. If a detail is missing, pick a sensible default, say which, and l
 before calling. A question about what is in a file, folder or directory, or on the computer, is work too: call {TOOL}.
 After the call, one short sentence that it's underway.
 Reply to what the user just said. Mention a running task only if they ask or when its result arrives.
-{TOOL} hands the job to an agent on the user's computer. Describe the task in plain English as a complete request (what, where,
-what the result should be), never as a shell command or code. It runs in the background; its result arrives later as the tool's
+{TOOL} hands the job to an agent on the user's computer. The task is the user's request in their own words, lightly cleaned up,
+never a shell command or code. A "this", "that" or "it" the call has not explained stays as they said it, with "(unclear what)"
+after it; never fill it in with a guess. Such a request is still work: call {TOOL} at once; the agent finds out what they mean and
+asks back through you if it must. Never ask the user what "this" is or for more details yourself. It runs in the background; its result arrives later as the tool's
 output, often several turns after the call. Never guess or report the result before it arrives; when it does, bring it up as a
 natural aside and give the outcome in your own words. Never report an action as done, running, or sent unless you called {TOOL}.
-When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; while a
-task is running, even a casual "how's it going" means the task. {STATUS} is only for how a task you sent is going; if it can't
-answer what they asked, never say you're checking the status. Never claim progress or results you did not get from a tool.
+When the user asks how it's going, what's happening, whether something is done, or about the agents, workers, team, office,
+lounge, updates or reports, call {STATUS} and answer from its output; while a task is running, even a casual "how's it going" means
+the task. {STATUS} is only for the work and who is doing it; if it can't answer what they asked, never say you're checking the status.
+What the user asked you earlier ("what did I tell you to start?") is in {STATUS} too. Never claim progress or results you did not get from a tool.
 When a task's result arrives while the user is talking or has just asked you something, answer what they said first, then mention the finished task as an aside in one sentence.
 When the agent working on a task needs a decision, you will get its question as a note: ask the user plainly in your own words and wait. Their next answer is passed back to the agent automatically; do not call {TOOL} for it, do not repeat the question, just acknowledge.
 Never narrate state changes nobody asked about: a task starting, being queued or being picked up is not news; only results, questions and what the user asks."""
-NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
+NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now with what the user asked, in their words, then say you've sent it off."
 RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences]"   # user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
 QUIET = 2.5       # seconds of silence from everyone before a result is spoken: Oct 24 call, the voice asked the user a question and 6 s later dropped it to say "Done, your page is open"
 RECENT_USER = 3.0  # ...and the user must not have spoken within this long
@@ -86,7 +90,8 @@ CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,2
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat|connect|put|transfer)|let me\s+(creat|mak|check|look|run|open|see)|"
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
                    r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
-                   r"(i'?ll|i (can|could)|let me)\s+(whip|draft|put (\w+ )?together|set (\w+ )?up|sketch))")   # asking permission instead of calling; offering to draft (Oct 24 calls)
+                   r"(i'?ll|i (can|could)|let me)\s+(whip|draft|put (\w+ )?together|set (\w+ )?up|sketch)|"
+                   r"(could|can) you (please )?(provide|share|tell me more)|what \W?(this|that|it)\W? refers to|you'?re referring to|need (a bit |some )?more detail)")   # asking permission instead of calling; offering to draft (Oct 24 calls); interviewing about "this" (#43 probe: 7/20)
 PATH = re.compile(r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+([\w.-]+)")   # a/b/c.txt → c.txt: no paths in speech
 PENDING_LINE = "Still on it; I'll call you when it's done."   # what a reply that reports a result nobody sent is replaced by (#32)
 DONE = re.compile(r"\b(has|have|'s|is|was|are|were)\s+(been\s+)?(now\s+|all\s+)?(ready|live|in place)\b|(?<!you're )(?<!you are )\ball set\b|(?<!we're )(?<!you're )(?<!i'm )\bdone\b|"
@@ -119,14 +124,31 @@ def _for(secs: float) -> str:
     return "a few seconds" if secs < 45 else f"{m} minute{'s' * (m != 1)}" if m < 90 else f"{round(secs / 3600)} hours"
 
 
+def office_status(home: Path) -> tuple[list, set]:
+    """Sentences from office.json: the workers by status, then each result the user has not heard; and those results' task ids.
+    #43: "how many agents?", "any reports?" got "donna is idle" while the office had workers and three unspoken results."""
+    try: o = json.loads((home / "office.json").read_text())
+    except (OSError, ValueError): return [], set()
+    if not isinstance(o, dict): return [], set()
+    ws = [w for w in o.get("workers") or [] if isinstance(w, dict) and not w.get("lead") and w.get("name")]
+    run = [w["name"] + (f" ({w['role']})" if w.get("role") else "") for w in ws if w.get("status") == "working"]
+    rest = [w["name"] for w in ws if w.get("status") != "working"]
+    new = [b for b in o.get("briefings") or [] if isinstance(b, dict) and b.get("status") == "queued" and b.get("summary")]
+    return ([f"{len(ws)} worker{'s' * (len(ws) != 1)} this session: " + "; ".join(
+        ([f"working: {', '.join(run)}"] if run else []) + ([f"finished, resting in the lounge: {', '.join(rest)}"] if rest else [])) + "."] if ws else []) \
+        + [f"Not told to the user yet: {b['summary']}" for b in new], {b.get("id") for b in new}
+
+
 def status_summary(since: float, sent=(), now: float | None = None) -> str:
     """One spoken paragraph from $HIGGS_HOME/herd (status.json per agent + events.jsonl): who works on what and for how long,
-    who is idle, what finished since `since` (epoch). sent: (task, started_epoch, finished[, latest_note]) for this call's own delegations."""
-    now, herd = now or time.time(), Path(os.environ.get("HIGGS_HOME") or Path.home() / ".higgs") / "herd"
+    who is idle, what finished since `since` (epoch). sent: (task, started_epoch, finished[, latest_note]) for this call's own delegations.
+    First, from $HIGGS_HOME/office.json (herd.office, #43): the duty period's workers by status and the results the user has not heard."""
+    now, home = now or time.time(), Path(os.environ.get("HIGGS_HOME") or Path.home() / ".higgs")
+    herd = home / "herd"
     evs = [json.loads(l) for l in (herd / "events.jsonl").read_text().splitlines() if l.strip()] if (herd / "events.jsonl").exists() else []
     sent_at = {e.get("id"): e for e in evs if e.get("ev") == "task.sent"}
     last = {e["agent"]: e for e in evs if e.get("ev") in ("task.note", "task.done")}
-    out, idle, known = [], [], set()   # known: task texts in per-task records (ring mode: the same task also arrives in `sent`)
+    (out, told), idle, known = office_status(home), [], set()   # told: listed as not told yet, so not again as "finished"; known: task texts in per-task records (ring mode: the same task also arrives in `sent`)
     for f in sorted(herd.glob("*/status.json")):
         name, st = f.parent.name, json.loads(f.read_text())
         if st.get("state") == "dead": continue
@@ -135,17 +157,20 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
         known.update(r.get("task") for r in recs.values() if "tasks" in st)
         queued = []
         for tid, r in recs.items():
-            task = r.get("task") or "a task"
+            task = (r.get("task") or "a task").rstrip(".")   # the voice's task lines end in "." ("…harder..", "…site.: Blue or green?")
             if r.get("state") == "in_progress":
                 e = last.get(name)
                 out.append(f"{name} has been working on {task} for {_for(now - r.get('ts', now))}" + (f", latest note: {e['text']}" if e and e["ev"] == "task.note" and e.get("id") == tid else "") + ".")
             elif r.get("state") == "needs_you": out.append(f"{name} is waiting for your answer on {task}: {r.get('asked')}")
             elif r.get("state") == "queued": queued.append(task)
         if queued: out.append(f"{len(queued)} task{'s' * (len(queued) != 1)} waiting in {name}'s queue: {', '.join(queued)}.")
+        p = f.parent / "meta.json"; t0 = json.loads(p.read_text()).get("since") or 0 if p.exists() else 0   # this duty period (#31), before this call: "what did I ask you earlier?" (#43)
+        if earlier := [r["task"].rstrip(".") for r in recs.values() if r.get("state") == "done" and r.get("task") and t0 <= r.get("ts", 0) < since]:
+            out.append(f"Done for {name} earlier this session: {'; '.join(earlier)}.")
         if not (queued or any(r.get("state") in ("in_progress", "needs_you") for r in recs.values())): idle.append(name)
     if idle: out.append(f"{', '.join(idle)} {'is' if len(idle) == 1 else 'are'} idle.")
     for e in evs:
-        if e.get("ev") == "task.done" and e.get("ts", 0) >= since:
+        if e.get("ev") == "task.done" and e.get("ts", 0) >= since and e.get("id") not in told:
             out.append(f"{e['agent']} finished {sent_at.get(e.get('id'), {}).get('task') or 'a task'}: {e.get('text', '')}")
         if e.get("ev") == "task.failed" and e.get("ts", 0) >= since:
             out.append(f"{e['agent']} could not finish {sent_at.get(e.get('id'), {}).get('task') or 'a task'}: {e.get('text', '')}")
@@ -157,7 +182,7 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
 
 
 ASKED = re.compile(r"\b(make|create|build|write|open|run|check|find|count|look ?up|search|calculate|show me|how many|what'?s in|list|generate|set up|fix|install|delete|rename|convert|download|"
-                   r"add|change|design|plan|style|improve|update (the|it|that|this|my)|tell (them|it|someone)|have (them|someone)|"
+                   r"add|change|design|plan|style|improve|update (the|it|that|this|my)|(put|turn) (it|this|that)|tell (them|it|someone)|have (them|someone)|"
                    r"who('?s| is| was)? (built|made|wrote|did|working on|worked on|on|in charge of)|on the line|put me through|connect me|talk to|speak (to|with))\b")   # not bare "update"/"have it": "any update?", "do you have it?" ask about a running task; "who built the quiz?" and "get me on the line" go to the brain (#28)
 
 
@@ -410,7 +435,7 @@ class Conn:
             if status and not calls:
                 st["guarded"] = True; await self._send({"type": "response.create"})   # same socket, so the output is added before the reply is made
                 self._emit("response.done", calls=1, pending=len(self._pending)); return
-            if self.delegation and not calls and self._fake_claim() and not st["guarded"] and not st["turn_delegated"] \
+            if self.delegation and not calls and self._fake_claim() and not st["asked"] and not st["guarded"] and not st["turn_delegated"] \
                     and (not self._pending or self._relay or ASKED.search(st["last_user"].lower())):   # a task is running: "on it" to "are you done?" is no fake claim (Oct 24 call)
                 st["guarded"] = True   # ponytail: one forced retry per user turn, no loop
                 log.info("GUARD: reply claimed or offered a task without calling %s — nudging", TOOL)
@@ -472,6 +497,8 @@ if __name__ == "__main__":   # self-check: no network
     assert CLAIM.search("i've sent that off") and not CLAIM.search("sure, what else?")
     assert all(CLAIM.search(x) for x in ("i've handed that task off", "i've handed off the task", "i'm handing off the request", "got it. i'll have the agent take a look"))
     assert ASKED.search("make me a page") and OFFER.search("i'll create it for you")
+    assert all(OFFER.search(x) for x in ("sure. could you please provide more details about what the diagram should show?", "i'm not sure what \"this\" refers to. could you clarify?", "i can help with that, but i need a bit more detail.", "could you clarify what you're referring to?"))   # #43
+    assert ASKED.search("can you put this into a slide?") and not any(OFFER.search(x) for x in ("sorry, could you say that again?", "sorry, could you clarify that?", "should the page be blue or green?"))
     assert REPLACING.search("Write a poem about dogs, replacing the previous task") and not REPLACING.search("replace the previous header in index.html")
     assert all(OFFER.search(x) for x in ("i can't create files myself, but i can delegate that. shall i set that up?", "shall i set that up?",
                                          "want me to delegate that?", "would you like me to hand that off?")) and not OFFER.search("sure, what else?")
@@ -515,9 +542,10 @@ if __name__ == "__main__":   # self-check: no network
         assert "open it, has been running" in sent[0]["item"]["output"], sent
     c, sent = Conn(None, 24000), []   # GUARD while a task runs: only a new request without a call gets the nudge
     c._send, c.delegation, c._pending = rec, True, {"d1"}
-    for user, voice, nudged in (("are you done? like.", "on it, just a sec while that updates.", False),
-                                ("add a sleek hero section to it", "i'll whip up a hero section with a clean layout.", True)):
-        sent.clear(); c._st.update(last_user=user, last_voice=voice, guarded=False, turn_delegated=False)
+    for user, voice, nudged, asked in (("are you done? like.", "on it, just a sec while that updates.", False, False),
+                                       ("add a sleek hero section to it", "i'll whip up a hero section with a clean layout.", True, False),
+                                       ("make me a page", "could you tell me what colour you'd like, blue or green?", False, True)):   # relaying a worker's ask (#43: interview words are OFFER)
+        sent.clear(); c._st.update(last_user=user, last_voice=voice, guarded=False, turn_delegated=False, asked=asked)
         asyncio.run(c._handle({"type": "response.done", "response": {"output": [{"type": "message", "content": [{"transcript": voice}]}]}}))
         assert any(e.get("item", {}).get("content", [{}])[0].get("text") == NUDGE for e in sent) == nudged, (user, sent)
     STILL_WORKING_AT = 0   # a "still working" note queued before or after the result came in is dropped; the result gets the cue
@@ -553,6 +581,18 @@ if __name__ == "__main__":   # self-check: no network
         assert "ann has been working on build x for 2 minutes." in s and "2 tasks waiting in ann's queue: task two, task three." in s, s
         assert "bob is waiting for your answer on pick a theme: light or dark?" in s and "cy could not finish zip it: disk full" in s, s
         assert "cy is idle." in s and "old" not in s and s.count("build x") == 1 and "open the page, has been running" in s, s
+        (Path(tmp) / "office.json").write_text(json.dumps({"workers": [{"name": "Donna", "status": "done", "lead": True}, {"name": "Ava", "role": "Writes the page", "status": "working"},
+            {"name": "Bob", "status": "done"}, {"name": "Cy", "status": "failed"}], "briefings": [{"id": "t6", "summary": "Zipped.", "status": "queued"}, {"id": "t9", "summary": "Old news.", "status": "presented"}]}))
+        with open(h / "events.jsonl", "a") as f: f.write(json.dumps({"ts": now - 5, "ev": "task.done", "agent": "cy", "id": "t6", "text": "Zipped."}) + "\n")
+        s = status_summary(now - 30, (), now)   # #43: the office first (workers by status, results not heard), and a told result is not "finished" again
+        assert s.startswith("3 workers this session: working: Ava (Writes the page); finished, resting in the lounge: Bob, Cy. Not told to the user yet: Zipped.") and "Old news" not in s, s
+        assert "cy could not finish zip it" in s and "cy finished" not in s and s.count("Zipped") == 1 and "Donna" not in s, s
+        (h / "ann" / "status.json").write_text(json.dumps({"state": "needs_you", "tasks": {"t7": {"state": "needs_you", "task": "Pick a theme.", "asked": "Light or dark?", "ts": now}, "t8": {"state": "queued", "task": "Add a quiz.", "ts": now}}}))
+        assert "ann is waiting for your answer on Pick a theme: Light or dark?" in (s := status_summary(now, (), now)) and "ann's queue: Add a quiz." in s, s   # no ".:" or ".."
+        (h / "cy" / "meta.json").write_text(json.dumps({"since": now - 100}))   # #43: what was done earlier in this duty period, before this call
+        assert "Done for cy earlier this session: old." in (s := status_summary(now + 1, (), now + 1)) and "zip it" not in s.split("Done for cy")[1], s
+        assert "Done for cy" not in status_summary(now - 30, (), now)   # done during this call: reported as finished, not as earlier
+        (h / "cy" / "meta.json").write_text(json.dumps({"since": now + 0.5})); assert "Done for cy" not in status_summary(now + 1, (), now + 1)   # an earlier duty period
     # the speech policy: no network, `rec` plays the server's item.added ack
     def mk():
         c, sent = Conn(None, 24000), []

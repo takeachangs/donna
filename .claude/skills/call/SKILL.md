@@ -65,10 +65,14 @@ Shell variables do not carry over between commands, so each command sets its own
    - `"with": "Maya"`: the person is on the line with Maya. Forward their words to her with SendMessage (to: "Maya",
      "On the phone with the person: <their words>"; it resumes a finished agent), then `R <id> say` her answer close to her
      own words, first person. Do not answer for her. Their asking for Donna back is the voice's job, not yours.
+   - What the person asked earlier ("what did I tell you to start?"): the tasks you handled since you came on duty
+     (`herd.py capture donna` lists them); one `say`.
    - `R <id> take ""`, then read the `transcript`. The last user turns are the request; earlier turns carry corrections
-     and what "it" means. Judge the request:
+     and what "it" means. The `task` line is the voice's summary, not the spec: where it names something the person never
+     said, their words win. Judge the request:
      - **Clear** (names a file, a feature, a fix, a question about this project): go.
-     - **Thin** ("make me a game", "improve it", "build something for the kids"): do NOT spawn yet. Look at the repo for
+     - **Thin** ("make me a game", "improve it", "build something for the kids"), or a "this"/"it" the transcript does
+       not settle ("a page explaining this"): do NOT spawn yet. Look at the repo for
        a minute, then `ask` ONE question that carries a proposal: `R <id> ask "I'd add a browser game to the kids site,
        two players, simple art. Who is it for, and phone or desktop?"`. At most two asks per task; after that, go with
        your best reading and say which in the result.
@@ -76,7 +80,7 @@ Shell variables do not carry over between commands, so each command sets its own
    - Under a minute of work (a lookup, a one-file read, a small edit; "which project are we in?" from `meta.json`'s
      project or your cwd): do it yourself, then one `say`.
    - Longer: spawn workers. Claude Code: the Agent tool with `run_in_background: true`, `model: "sonnet"`, `name` = a
-     first name ("Ava"), `description` = the role ("Writes the game page"), and a complete brief (goal, files, what done
+     first name ("Ava"; never spawn an unnamed worker), `description` = the role ("Writes the game page"), and a complete brief (goal, files, what done
      looks like, which checks to run, what to report). In a git repo every brief names the task's worktree and says
      "Work only in <worktree>; never checkout or switch branches in <project dir>." Every brief also says: "If the person is
      put through to you (a message starting 'On the phone with the person:'), answer in first person, briefly, about your
@@ -100,7 +104,7 @@ Shell variables do not carry over between commands, so each command sets its own
    Optionally write `$D/context.txt` first: a few plain sentences on what this chat is working on, under 4000
    characters; every call starts with it. Then start the ring (it stays in the background, no call open):
    ```bash
-   pgrep -f "bridge.py --ring" >/dev/null || (cd ~/projects/higgs-hackathon && (nohup uv run -q bridge.py --ring --backend session --voice nora --out AirPods > /dev/null 2>&1 < /dev/null &)); sleep 3; tail -2 ~/projects/higgs-hackathon/bridge.log
+   pgrep -f "bridge.py --ring" >/dev/null || (cd ~/projects/higgs-hackathon && (nohup uv run -q bridge.py --ring --backend session --voice nora --out EarPods > /dev/null 2>&1 < /dev/null &)); sleep 3; tail -2 ~/projects/higgs-hackathon/bridge.log
    ```
    Expect `ring: waiting`. From now on every `say` rings the person and the voice opens with your result; tasks they
    give on the call land in your inbox. The call ends when the voice says its sign-off "Hanging up now." (after the
@@ -117,7 +121,7 @@ Shell variables do not carry over between commands, so each command sets its own
   `~/.higgs/state.json` the call state (`off|ringing|listening|thinking|speaking`, written by the bridge).
 - `bridge.log` in the hackathon folder is the voice's log (every turn, timestamps). The voice's own rules (what it
   answers itself, corrections, idle, sign-off) live in `bridge.py`'s `PROMPT`; you never repeat them.
-- Audio: laptop mic in, AirPods out (`--out AirPods`); if the person hears nothing, use `--out Speakers`.
+- Audio: laptop mic in, wired EarPods out (`--out EarPods`; AirPods' Bluetooth mic degrades STT, and the speakers echo into the mic); the bridge exits if the device name matches nothing.
 - Test without the voice: `uv run herd.py send donna "what time is it"` from another shell lands in your inbox.
 - Run in tmux (`bridge.py --brain`), each new inbox line is also typed into your window as `Phone task <id>: …` or
   `Answer to task <id>: …`, to wake you. It is the same line as in the inbox (which has the transcript): handle each id once.

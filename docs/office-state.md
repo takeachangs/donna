@@ -7,7 +7,8 @@ session running `/call`; workers are whatever the brain spawns with the Agent to
 
 ## The file: `~/.higgs/office.json` (`$HIGGS_HOME/office.json`)
 Written atomically (tmp + rename) by `herd.write_office()`: on every Claude Code hook event (`herd.py hook <Event>`,
-registered by `hooks/office.json`) and every second while `bridge.py` runs; read by the office server, which broadcasts `{"type":"workspace","workspace":<file>}` on every change (and a `call` field).
+registered by `hooks/office.json`) and every second while `bridge.py` runs; read by the office server, which broadcasts `{"type":"workspace","workspace":<file>}` on every change (and a `call` field),
+and by the voice's `task_status` (`higgslive.office_status`: the workers by status and the `queued` briefings, #43).
 Shape = the office's existing `Workspace` type (`office/apps/web/src/agency/types.ts`) plus `call`, so the scene is unchanged:
 
 ```jsonc

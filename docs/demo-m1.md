@@ -2,11 +2,11 @@
 
 Two processes: Donna's brain (a Claude Code session running `/call`) and the phone line (`bridge.py --ring`, which opens
 Donna's voice, a Higgs Realtime session, when there is something to say). They meet in
-`~/.higgs/herd/donna/` and log to `~/.higgs/herd/events.jsonl`. Design: `docs/herd.md` §3–§6.
+`~/.higgs/herd/donna/` and log to `~/.higgs/herd/events.jsonl`. Design: `docs/herd.md`.
 
 ## Once
 - `BOSON_API_KEY` exported (`~/.zshrc`).
-- Optional, so tasks reach Donna mid-work: add the PostToolUse hook from `docs/herd.md` §6 to `.claude/settings.json`
+- Optional, so tasks reach Donna mid-work: add the PostToolUse hook from `docs/herd.md` §5 to `.claude/settings.json`
   of the folder Donna runs in (or pass that JSON to `claude --settings`).
 
 ## Start, in order
@@ -49,7 +49,7 @@ Donna's voice, a Higgs Realtime session, when there is something to say). They m
    unless asked.
 7. A decision mid-task: the brain's `reply donna <id> ask "Blue or green?"` is spoken at once (`→ ask` in `bridge.log`),
    Donna's voice asks in its own words, and whatever the user says next goes back to the brain's inbox with `in_reply_to`
-   (`answer → donna` in the log). The brain's `say` then follows the speech policy (`docs/herd.md` §8): held while the voice has an unanswered
+   (`answer → donna` in the log). The brain's `say` then follows the speech policy (`docs/herd.md` §7): held while the voice has an unanswered
    question or the user is talking (`holding result …`), spoken after 2.5 s of quiet (`→ commentary … after 2.6 s quiet`),
    or attached to the user's next turn if they start talking first (`→ attached held result …`).
 
