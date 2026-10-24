@@ -90,9 +90,9 @@ def ls():
     return out
 
 
-def send(name, task, context=None, frm="user"):
+def send(name, task, context=None, frm="user", tid=None):  # tid: the caller's id (bridge.py passes the Higgs call_id)
     d = agent_dir(name)
-    tid = uuid.uuid4().hex[:8]
+    tid = tid or uuid.uuid4().hex[:8]
     append(d / "inbox.jsonl", {"id": tid, "task": task, "context": context, "from": frm, "ts": time.time()})
     update(d, unread=json.loads((d / "status.json").read_text())["unread"] + 1, task_id=tid, task=task)
     event("task.sent", name, id=tid, task=task, **{"from": frm})
@@ -137,10 +137,11 @@ def selfcheck():
         reply("donna", tid, "say", "done")
         assert (c := capture("donna"))["state"] == "idle" and c["unread"] == 0 and len(c["outbox"]) == 2
         json.dumps(c)
+        assert send("donna", "x", tid="call_1") == "call_1"  # bridge.py keeps the Higgs call_id
         state("donna", "working")
         close("donna")
         assert [e["ev"] for e in lines(root() / "events.jsonl")] == [
-            "agent.new", "task.sent", "task.note", "task.done", "agent.state", "agent.state", "agent.close"]
+            "agent.new", "task.sent", "task.note", "task.done", "agent.state", "task.sent", "agent.state", "agent.close"]
         assert [a["name"] for a in ls()] == ["donna"]
     print("ok")
 
