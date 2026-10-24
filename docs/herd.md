@@ -69,15 +69,20 @@ user ⇄ speaker+mic (later: Twilio) ⇄ Higgs voice "Donna" ⇄ bridge.py ⇄ D
     outbox.jsonl                 # {id, kind: note|say, text, ts}
     status.json                  # {state, task_id, task, last_note, started, unread}
 ```
-`state ∈ {starting, idle, working, done, dead}`; Donna additionally has `speaking` (set by the bridge while the voice
-reads her words) and `on_call`.
+`state ∈ {starting, idle, working, needs_you, done, dead}`; Donna additionally has `speaking` (set by the bridge while the
+voice reads her words) and `on_call`. `status.json` also carries `tasks: {id: {state, task, asked?, ts}}`, one record per
+task with `state ∈ {queued, in_progress, needs_you, done, failed}` (§8): readers take state from there, never infer it.
 
 `events.jsonl` lines (the scene needs nothing else):
 ```
 {"ts":…, "ev":"agent.new",      "agent":"reviewer", "kind":"claude", "parent":"donna"}
-{"ts":…, "ev":"task.sent",      "agent":"reviewer", "id":"c7…", "task":"review the diff on main", "from":"donna"}
+{"ts":…, "ev":"task.sent",      "agent":"reviewer", "id":"c7…", "task":"review the diff on main", "from":"donna"}   # queued
+{"ts":…, "ev":"task.taken",     "agent":"reviewer", "id":"c7…"}                                     # in progress (§8)
 {"ts":…, "ev":"task.note",      "agent":"reviewer", "id":"c7…", "text":"reading 14 files"}
+{"ts":…, "ev":"task.needs_you", "agent":"reviewer", "id":"c7…", "text":"keep the old parser too?"}  # waiting for the user (§8)
+{"ts":…, "ev":"task.sent",      "agent":"reviewer", "id":"9a…", "task":"no, drop it", "from":"voice", "in_reply_to":"c7…"}   # the answer
 {"ts":…, "ev":"task.done",      "agent":"reviewer", "id":"c7…", "text":"two issues, both in parser.py"}
+{"ts":…, "ev":"task.failed",    "agent":"reviewer", "id":"c7…", "text":"the tests do not run here"}   # instead of task.done
 {"ts":…, "ev":"agent.state",    "agent":"reviewer", "state":"idle"}
 {"ts":…, "ev":"call.ring",      "agent":"donna", "about":"review finished"}     # Donna walks to the phone
 {"ts":…, "ev":"call.answered",  "agent":"donna"}   /  {"ev":"call.ended", …}
@@ -129,3 +134,82 @@ Not Saturday: approvals, context %, more than one level, several voices, real re
 
 "GPT-Live lets the voice coordinate your agents inside ChatGPT. We built the same thing on Higgs, open, on your own
 machine: Donna answers the phone, runs your coding agents, and calls you when the work is done."
+
+## 8. Task lifecycle and when Donna's voice speaks (Oct 24, after two real calls)
+
+Vocabulary: **Donna's voice** is the Higgs Realtime session (hears, speaks, calls `delegate_task` / `task_status`); **Donna's
+brain** is the Claude Code session running `/call` (does the work, keeps state, replies `take|note|ask|say|fail`); the
+bridge is the phone line between them. To the user there is one Donna.
+
+Two real mic calls showed the same three gaps: results were announced on the task's clock, not the conversation's (Donna's
+voice asked the user a question, then six seconds later dropped it to say "Done, your page is open"); the voice could not
+tell "queued behind another task" from "being worked on"; Donna's brain had no way to ask the user anything mid-task except
+a `say`, which reads as a result. Reference: remuda-butler's per-session `.state` (`working / idle / needs you`) and its idle-notice
+policy, the explicit list of conditions under which the butler may speak to the owner.
+
+### The state machine (`herd.py`, per task, in `status.json` → `tasks[id]`)
+
+```
+send ──▶ queued ──take──▶ in_progress ──say──▶ done
+                              │   ▲           └─fail─▶ failed
+                             ask  │ send --reply-to ID (the user's answer)
+                              ▼   │
+                            needs_you
+```
+`herd.py reply NAME ID KIND TEXT`, `KIND ∈ take | note | ask | say | fail`:
+
+| reply | from | to | event | agent state |
+|---|---|---|---|---|
+| `send` | – | `queued` | `task.sent` | unchanged |
+| `take` | queued | `in_progress` | `task.taken` | `working` |
+| `take` | in_progress, needs_you | no-op (no line, no event) | – | – |
+| `note` | any | unchanged | `task.note` | – |
+| `ask` | queued, in_progress, needs_you | `needs_you` (+ `asked`) | `task.needs_you` | `needs_you` |
+| `send --reply-to ID` | needs_you | `in_progress` | `task.sent` with `in_reply_to` | `working` |
+| `say` | queued, in_progress, needs_you | `done` | `task.done` | derived |
+| `fail` | queued, in_progress, needs_you | `failed` | `task.failed` | derived |
+| any but `note` | done, failed | **refused** (nothing written) | – | – |
+
+`take`, `ask`, `say` and `fail` on an unknown id are accepted (they create the record): `reply donna now say "…"` is how
+Donna's brain places a call, and an unprompted `ask` rings the user with a question. The agent state is derived after every
+reply: `needs_you` if any task needs the user, else `working` if any task is in progress, else `idle`. Queued tasks do not
+make an agent busy; the inbox is the queue. The user's answer is not a new task: it is an inbox line with `in_reply_to` and
+Donna's brain continues the original task and `say`s on the original id.
+
+### Per transition: what Donna's voice does
+
+| arrives at the voice (from the brain, over the bridge) | spoken? | how |
+|---|---|---|
+| `task.sent` (a second task while one runs) | no | one ack sentence for the user's request, as today; `task_status` says "waiting in Donna's queue" if asked |
+| `take` | no | `task_status` says "working on … for N seconds"; never narrated |
+| `note` | no | `task_status` adds "latest note: …" |
+| `ask` | **now** | a user-role note with the question; the voice asks it in its own words, as its own; the user's next utterance is sent back to the brain verbatim with `herd.py send --reply-to ID` |
+| `say` / `fail` | **when the conversation allows** | the open `delegate_task` call's `function_call_output` (or a plain note for a task sent to the brain from a shell), under the hold policy below |
+
+### The hold policy (`higgslive.py` `_speak_loop`)
+
+A result is **held** while any of these is true, and spoken once none is:
+- (a) the voice's last utterance was an open question and the user has not spoken since. An open question is one that
+  ends with "?", is at least five words, carries a decision (which, should, do you want, prefer, "blue or …", or), and is
+  not a stock closer ("How can I help you today?", "anything else?", "let me know"); a question the brain sent as an `ask`
+  is open whatever the voice's wording. A result held only for an unanswered question is released after 6 s of silence:
+  the user is not going to answer it;
+- (b) the user spoke (or typed) within the last 3 s;
+- (c) less than 2.5 s of mutual quiet since the later of the voice finishing and the user finishing.
+Any hold ends after 10 s at most. `ask` items skip the hold entirely (they only wait for the voice to be idle) and jump
+ahead of any held result. While a result is held and the user **starts speaking**, the result is attached to that turn:
+its `function_call_output` is sent at `speech_started`, before the server's own end-of-turn response (Higgs ignores
+`create_response: false`, so the response cannot be delayed; sending at speech start is what gets the output in front of
+the model for that very reply). The voice then answers the user and adds the result as an aside, which is what the two
+MECHANICS lines ask for: a finished task is mentioned after answering what the user just said; a question from the brain is
+asked plainly, as the voice's own, and the answer is passed back automatically, so the voice only acknowledges. A typed turn (`--text`, or a
+stdin line in `--ring --silent`) attaches the same way: held output, then the user's item, then `response.create`.
+Nothing narrates a state change nobody asked about: `take`, `queued`, `note` reach only `task_status`.
+
+### Donna's brain (`/call` skill)
+
+`take` before starting (sets `working`; an untaken task reads as queued), `note` at each real step, `ask` for a decision
+(the answer comes back as an inbox line with `in_reply_to`), `say` or `fail` once, on the original id. The bridge no longer
+serialises delegations to the brain: every `delegate_task` lands in the inbox at once and `status.json` says which one is
+queued, in progress, or waiting for the user. The headless check for all of this is `tests/fake_donna.py --demo` (a scripted
+brain against a real voice).

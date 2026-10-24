@@ -25,8 +25,9 @@
 How it maps: the voice model calls a function tool; this layer leaves the call OPEN (Higgs tool calls are asynchronous: the
 conversation continues with the output outstanding), requests one response so the model acknowledges, and emits
 `session.delegation.created`. Thinking appends never reach Higgs (as conversation items the model answered them instead of
-the user); the layer keeps the latest one per delegation for `task_status`. The first commentary append for a delegation waits until the voice is idle, the user is quiet and playback has
-drained, then returns the real `function_call_output` plus a one-line cue and requests one response. Instructions appends re-send session.update.
+the user); the layer keeps the latest one per delegation for `task_status`. A result waits until the voice is idle, the user has been quiet for a while, the voice has no question
+open and playback has drained (or HOLD_MAX passes), then returns the real `function_call_output` plus a one-line cue and requests one response; if the user
+starts talking first it rides in on their turn. kind="ask" appends skip that wait: the voice puts the agent's question to the user. Instructions appends re-send session.update.
 """
 import asyncio, base64, json, logging, os, re, time
 from pathlib import Path
@@ -58,9 +59,24 @@ output, often several turns after the call. Never guess or report the result bef
 natural aside and give the outcome in your own words. Never report an action as done, running, or sent unless you called {TOOL}.
 When the user asks how it's going, what's happening or whether something is done, call {STATUS} and answer from its output; while a
 task is running, even a casual "how's it going" means the task. {STATUS} is only for how a task you sent is going; if it can't
-answer what they asked, never say you're checking the status. Never claim progress or results you did not get from a tool."""
+answer what they asked, never say you're checking the status. Never claim progress or results you did not get from a tool.
+When a task's result arrives while the user is talking or has just asked you something, answer what they said first, then mention the finished task as an aside in one sentence.
+When the agent working on a task needs a decision, you will get its question as a note: ask the user plainly in your own words and wait. Their next answer is passed back to the agent automatically; do not call {TOOL} for it, do not repeat the question, just acknowledge.
+Never narrate state changes nobody asked about: a task starting, being queued or being picked up is not news; only results, questions and what the user asks."""
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now for what the user asked, then say you've sent it off."
 RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences]"   # user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
+QUIET = 2.5       # seconds of silence from everyone before a result is spoken: Oct 24 call, the voice asked the user a question and 6 s later dropped it to say "Done, your page is open"
+RECENT_USER = 3.0  # ...and the user must not have spoken within this long
+HOLD_MAX = 10     # a result held this long goes out anyway (the user may never answer)
+QUESTION_MAX = 6  # ...and one held only for an unanswered voice question goes out after this much silence: they are not going to answer
+CLOSER = re.compile(r"\b(how can i help|what can i (do|help)|anything else|what else|what'?s (up|next|on your mind)|need anything|let me know)\b[^?]*\?\s*$")   # a stock closer is not an open question
+TASK_Q = re.compile(r"\b(which|should|do you want|prefer|blue or|or)\b")   # a real question needs a decision in it
+
+
+def open_question(voice: str) -> bool:
+    """The voice's last utterance is a question the user is expected to answer (PR #24 review: "How can I help you today?" held a result 20 s)."""
+    v = voice.strip().lower()
+    return v.endswith("?") and not CLOSER.search(v) and len(v.split()) >= 5 and bool(TASK_Q.search(v))
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
 CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching)|should be running|backend result)")
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat)|let me\s+(creat|mak|check|look|run|open|see)|"
@@ -82,19 +98,31 @@ def status_summary(since: float, sent=(), now: float | None = None) -> str:
     evs = [json.loads(l) for l in (herd / "events.jsonl").read_text().splitlines() if l.strip()] if (herd / "events.jsonl").exists() else []
     sent_at = {e.get("id"): e for e in evs if e.get("ev") == "task.sent"}
     last = {e["agent"]: e for e in evs if e.get("ev") in ("task.note", "task.done")}
-    out, idle = [], []
+    out, idle, known = [], [], set()   # known: task texts in per-task records (ring mode: the same task also arrives in `sent`)
     for f in sorted(herd.glob("*/status.json")):
         name, st = f.parent.name, json.loads(f.read_text())
         if st.get("state") == "dead": continue
-        if st.get("state") != "working": idle.append(name); continue
-        s = f"{name} has been working on {st.get('task') or 'a task'} for {_for(now - sent_at.get(st.get('task_id'), {}).get('ts', st.get('started') or now))}"
-        e = last.get(name)
-        out.append(s + (f", latest note: {e['text']}" if e and e["ev"] == "task.note" and e.get("id") == st.get("task_id") else "") + ".")
+        tid = st.get("task_id")   # no "tasks" key: the agent-level state stands for one record
+        recs = st["tasks"] if "tasks" in st else {tid: {"state": "in_progress", "task": st.get("task"), "ts": sent_at.get(tid, {}).get("ts", st.get("started") or now)}} if st.get("state") == "working" else {}
+        known.update(r.get("task") for r in recs.values() if "tasks" in st)
+        queued = []
+        for tid, r in recs.items():
+            task = r.get("task") or "a task"
+            if r.get("state") == "in_progress":
+                e = last.get(name)
+                out.append(f"{name} has been working on {task} for {_for(now - r.get('ts', now))}" + (f", latest note: {e['text']}" if e and e["ev"] == "task.note" and e.get("id") == tid else "") + ".")
+            elif r.get("state") == "needs_you": out.append(f"{name} is waiting for your answer on {task}: {r.get('asked')}")
+            elif r.get("state") == "queued": queued.append(task)
+        if queued: out.append(f"{len(queued)} task{'s' * (len(queued) != 1)} waiting in {name}'s queue: {', '.join(queued)}.")
+        if not (queued or any(r.get("state") in ("in_progress", "needs_you") for r in recs.values())): idle.append(name)
     if idle: out.append(f"{', '.join(idle)} {'is' if len(idle) == 1 else 'are'} idle.")
     for e in evs:
         if e.get("ev") == "task.done" and e.get("ts", 0) >= since:
             out.append(f"{e['agent']} finished {sent_at.get(e.get('id'), {}).get('task') or 'a task'}: {e.get('text', '')}")
+        if e.get("ev") == "task.failed" and e.get("ts", 0) >= since:
+            out.append(f"{e['agent']} could not finish {sent_at.get(e.get('id'), {}).get('task') or 'a task'}: {e.get('text', '')}")
     for task, t, done, *note in sent:
+        if task in known: continue
         out.append(f"The task sent on this call, {task}, " + ("is finished." if done else f"has been running for {_for(now - t)}"
                    + (f", latest note: {note[0]}" if note and note[0] else "") + "."))
     return PATH.sub(r"\1", " ".join(out)) or "No agents are running and nothing has finished since the call started."
@@ -120,8 +148,12 @@ class Conn:
     def __init__(self, ws, rate, playback=True, model="higgs-realtime"):
         self._ws, self._rate, self._playback, self._model = ws, rate, playback, model
         self._out: asyncio.Queue = asyncio.Queue()        # translated events for the consumer
-        self._spoken: asyncio.Queue = asyncio.Queue()     # (text, delegation_id[, note_for]) waiting for a quiet moment
-        self._st = dict(in_flight=False, user_speaking=False, spk_until=0.0, guarded=False, turn_delegated=False, last_user="", last_voice="", added=None)
+        self._spoken: asyncio.Queue = asyncio.Queue()     # (text, delegation_id, note_for, kind) waiting for a quiet moment
+        self._st = dict(in_flight=False, user_speaking=False, spk_until=0.0, guarded=False, turn_delegated=False, last_user="", last_voice="", added=None,
+                        user_at=0.0, voice_at=0.0, question=False, asked=False, att=None, late=False)   # *_at: monotonic; question: the voice's last words were a question; asked: an ask was delivered this turn; att/late: attached item's ack
+        self._held = None                                 # the queue entry _speak_loop is holding; whoever sets it to None sends it
+        self._lock = asyncio.Lock()                       # item(s) + added ack + response.create go out as one unit
+        self._asking = 0                                  # asks not yet delivered: results wait behind them
         self._pending: set[str] = set()                   # delegations with no commentary yet
         self._arrived: set[str] = set()                   # delegations whose result came in (queued or spoken): their "still working" note is stale
         self._open: set[str] = set()                      # function calls whose output we have not returned yet
@@ -155,9 +187,11 @@ class Conn:
         self._tasks = [asyncio.create_task(self._pump()), asyncio.create_task(self._speak_loop())]
 
     # ---- the three return channels + inputs ------------------------------------------------------------------------
-    async def _commentary(self, content: str, delegation_id: str | None = None):
+    async def _commentary(self, content: str, delegation_id: str | None = None, kind: str = "say"):
+        if kind == "ask":   # the agent needs a decision: not a result, so it skips the queue and the hold
+            self._asking += 1; self._tasks.append(asyncio.create_task(self._ask(content, delegation_id))); return
         self._arrived.add(delegation_id)
-        await self._spoken.put((content[:1500], delegation_id))
+        await self._spoken.put((("The task failed: " + content if kind == "fail" else content)[:1500], delegation_id, None, kind))
 
     async def _thinking(self, content: str, delegation_id: str | None = None):
         # client-side only: as user-role items the model answered the note instead of the user ("Hello." → "Still working on that index.html"), Oct 24 call
@@ -172,38 +206,91 @@ class Conn:
         await self._send({"type": "input_audio_buffer.append", "audio": base64.b64encode(pcm).decode()})
 
     async def _text(self, content: str):
-        self._st.update(guarded=False, turn_delegated=False, last_user=content)
+        self._st.update(guarded=False, turn_delegated=False, last_user=content, question=False, asked=False, user_at=time.monotonic())
+        held, self._held = self._held, None   # a typed turn counts as speech: the held result goes in just before it
+        if held: await self._attach(held, False)
         await self._item(content); await self._send({"type": "response.create"})
 
     async def _item(self, text: str):
         await self._send({"type": "conversation.item.create", "item": _msg(text)})
 
+    def _idle(self, now: float) -> bool:   # voice idle, user not talking, playback drained
+        st = self._st
+        return not (st["in_flight"] or st["user_speaking"] or now < st["spk_until"])
+
+    def _ready(self, now: float) -> bool: return self._idle(now) and not self._asking   # results also wait behind a pending ask
+
+    async def _send_items(self, items):
+        st = self._st
+        for item in items:
+            st["added"] = asyncio.Event()
+            await self._send({"type": "conversation.item.create", "item": item})
+            try: await asyncio.wait_for(st["added"].wait(), 3)   # the server must add each item before we ask for the reply, or it answers without it
+            except asyncio.TimeoutError: log.warning("no item.added ack before response.create")
+        st["in_flight"] = True   # optimistic, before the send (response.done may beat us back): the other sender waits
+        await self._send({"type": "response.create"})
+
+    def _items(self, text: str, did: str | None, cue=False) -> list:
+        if did in self._open:   # the native path: the call stayed open all this time; this is its real output (confirmed with Boson, Oct 23)
+            self._open.discard(did)
+            return [{"type": "function_call_output", "call_id": did, "output": text}] + ([_msg(RESULT_CUE)] if cue else [])
+        return [_msg(text)]     # no open call (opener, "still working" note, a second update for the same task): plain text item
+
+    def _done(self, did, kind):
+        if did: self._pending.discard(did)
+        self._emit("session.commentary.appended", delegation_id=did, kind=kind)
+
+    async def _attach(self, entry, voice: bool):
+        """The user started a turn while `entry` was held: put it in the conversation now, no response.create (the server answers the turn anyway)."""
+        text, did, _, kind = entry
+        if voice: self._st["att"] = asyncio.Event()   # set by its item.added; if response.created beats it, the model never saw the result
+        for item in self._items(text, did): await self._send({"type": "conversation.item.create", "item": item})
+        log.info("→ attached held result %s to the user's turn", did or "(no delegation)")
+        self._done(did, kind)
+
+    async def _ask(self, question: str, did):
+        text = (f"[note] Before the task you sent off can go on, the user has to decide: {question} Ask them this plainly, in your own words, as your own "
+                f"question (never say an agent is asking); wait for their answer; do not call {TOOL} for it, it is passed back automatically.")
+        try:
+            while True:
+                while not self._idle(time.monotonic()): await asyncio.sleep(0.1)
+                async with self._lock:
+                    if not self._idle(time.monotonic()): continue
+                    self._st.update(question=True, asked=True)   # the voice is about to ask: nothing is spoken over the unanswered question, whatever its wording
+                    await self._send_items([_msg(text)])
+                    break
+        finally: self._asking -= 1
+        log.info("→ ask %s", did or "(no delegation)")
+        self._emit("session.commentary.appended", delegation_id=did, kind="ask")
+
     async def _speak_loop(self):
-        # ponytail: one result at a time, oldest first; no priority, no coalescing
+        # ponytail: one result at a time, oldest first, each held by the speech policy; no coalescing
+        st = self._st
         while True:
-            text, did, *about = await self._spoken.get()   # about: the delegation a "still working" note is for
-            st = self._st
-            while st["in_flight"] or st["user_speaking"] or time.monotonic() < st["spk_until"] + 1.0:   # voice idle, user quiet, playback drained + a beat
+            entry = await self._spoken.get()
+            text, did, about, kind = entry   # about: the delegation a "still working" note is for
+            self._held, t0, logged = entry, time.monotonic(), False
+            while self._held is entry:   # _attach (the user spoke or typed) takes it out
+                if about and about in self._arrived: self._held = None; break   # its result came in while the note waited: the result wins (Oct 24 call)
+                now = time.monotonic()
+                if self._ready(now):
+                    quiet = now - max(st["spk_until"], st["voice_at"], st["user_at"])
+                    why = ("voice question unanswered" if st["question"] else f"user spoke {now - st['user_at']:.0f} s ago" if now - st["user_at"] < RECENT_USER
+                           else f"waiting for {QUIET} s of quiet" if quiet < QUIET else None)
+                    if why is None or now - t0 >= HOLD_MAX or (st["question"] and now - t0 >= QUESTION_MAX):
+                        async with self._lock:
+                            if self._held is entry and self._ready(time.monotonic()):   # re-check: an ask or an attach may have got in
+                                self._held = None
+                                await self._send_items(self._items(text, did, cue=True))
+                                log.info("→ commentary %s (%d chars) after %.1f s quiet", did or "(no delegation)", len(text), quiet)
+                                self._done(did, kind)
+                        if self._held is not entry: break
+                    elif not logged: log.info("holding result %s: %s", did or "(no delegation)", why); logged = True
                 await asyncio.sleep(0.1)
-            if about and about[0] in self._arrived: continue   # its result came in while the note waited: the result wins (Oct 24 call)
-            if did in self._open:   # the native path: the call stayed open all this time; this is its real output (confirmed with Boson, Oct 23)
-                self._open.discard(did)
-                items = [{"type": "function_call_output", "call_id": did, "output": text}, _msg(RESULT_CUE)]
-            else:                   # no open call (opener, "still working" note, a second update for the same task): plain text item
-                items = [_msg(text)]
-            for item in items:
-                st["added"] = asyncio.Event()
-                await self._send({"type": "conversation.item.create", "item": item})
-                try: await asyncio.wait_for(st["added"].wait(), 3)   # the server must add each item before we ask for the reply, or it answers without it
-                except asyncio.TimeoutError: log.warning("no item.added ack before response.create")
-            await self._send({"type": "response.create"})
-            if did: self._pending.discard(did)
-            log.info("→ commentary %s (%d chars)", did or "(no delegation)", len(text))
-            self._out.put_nowait(_ev({"type": "session.commentary.appended", "delegation_id": did}))
 
     async def _still_working(self, did: str):
         await asyncio.sleep(STILL_WORKING_AT)
-        if did in self._pending: await self._spoken.put(("[note] The task you handed off is still in progress and taking longer than usual; tell the user in a few words.", None, did))
+        if did in self._pending: await self._spoken.put(("[note] The task you handed off is still in progress and taking longer than usual; tell the user in a few words.", None, did, "say"))
 
     # ---- event translation -----------------------------------------------------------------------------------------
     def _emit(self, type_: str, **kw): self._out.put_nowait(_ev({"type": type_, **kw}))
@@ -222,12 +309,20 @@ class Conn:
         if t == "session.created": self._emit("session.started"); return   # the first session.update is not acknowledged; the socket is ordered, so it applies before any turn
         if t == "error": self._emit("error", error=ev["error"]); return
         if t in ("session.idle_timeout", "session.max_duration_reached"): self._emit("session.closed", reason=t); return
-        if t == "conversation.item.added" and st["added"]: st["added"].set()
-        if t == "response.created": st["in_flight"] = True
+        if t == "conversation.item.added":
+            for k in ("added", "att"):
+                if st[k]: st[k].set()
+        if t == "response.created":
+            st["in_flight"] = True
+            if st["att"]: st["late"], st["att"] = not st["att"].is_set(), None   # the turn's response began before the attached result was acked
+
         if t == "input_audio_buffer.speech_started":
             st.update(user_speaking=True, guarded=False, turn_delegated=False, spk_until=0.0)   # barge-in: the server stops the response; playback is the client's to clear
+            st.update(question=False, asked=False)   # the user is answering it (or ignoring it)
             self._emit("session.input_speech_started")
-        if t == "input_audio_buffer.speech_stopped": st["user_speaking"] = False; self._emit("session.input_speech_stopped")
+            held, self._held = self._held, None   # the server answers this turn whatever we do (create_response is ignored), so the result goes in before it ends
+            if held: await self._attach(held, True)
+        if t == "input_audio_buffer.speech_stopped": st.update(user_speaking=False, user_at=time.monotonic()); self._emit("session.input_speech_stopped")
         if t == "conversation.item.input_audio_transcription.completed":
             st["last_user"] = ev.get("transcript") or ""; self._emit("session.input_transcript.done", transcript=st["last_user"])
         if t == "response.output_audio.delta":
@@ -236,9 +331,12 @@ class Conn:
             self._emit("session.output_audio.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.delta": self._emit("session.output_transcript.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.done":
-            st["last_voice"] = ev["transcript"]; self._emit("session.output_transcript.done", transcript=ev["transcript"])
+            st["last_voice"], st["question"] = ev["transcript"], st["asked"] or open_question(ev["transcript"]); self._emit("session.output_transcript.done", transcript=ev["transcript"])
         if t == "response.done":
-            st["in_flight"] = False
+            st["in_flight"] = False; st["voice_at"] = time.monotonic()
+            if st["late"]:   # no await on _speak_loop here: in_flight clears in this very function
+                st["late"] = False   # ponytail: a second response.create if this same response also delegated; rare, accepted
+                await self._item("[the task result above arrived during that turn; mention it now in one sentence]"); await self._send({"type": "response.create"})
             calls = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == TOOL and o.get("executor") != "server"][:1]   # server-side tools (web_search, Oct 23) need no output from us. [:1]: 1.0 fires 2-3 near-duplicate calls for one request (9/12, probe/r15/A-tools.md); extras left open cause no error
             status = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == STATUS and o.get("executor") != "server"][:1]
             self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})   # before the status answer: a status call in
@@ -351,4 +449,64 @@ if __name__ == "__main__":   # self-check: no network
     sent = asyncio.run(stale_note())
     assert [e.get("item", {}).get("type") or e["type"] for e in sent] == ["function_call_output", "message", "response.create"], sent
     assert sent[0]["item"]["output"] == "Done, the page is open." and sent[1]["item"]["content"][0]["text"] == RESULT_CUE, sent
+    with tempfile.TemporaryDirectory() as tmp:   # per-task records: in progress, queued, needs_you, failed; ring mode's duplicate `sent` is skipped
+        os.environ["HIGGS_HOME"], h = tmp, Path(tmp) / "herd"
+        for name, st in (("ann", {"state": "working", "tasks": {"t1": {"state": "in_progress", "task": "build x", "ts": now - 125},
+                                                                   "t2": {"state": "queued", "task": "task two", "ts": now}, "t3": {"state": "queued", "task": "task three", "ts": now}}}),
+                         ("bob", {"state": "needs_you", "tasks": {"t4": {"state": "needs_you", "task": "pick a theme", "asked": "light or dark?", "ts": now}}}),
+                         ("cy", {"state": "idle", "tasks": {"t5": {"state": "failed", "task": "zip it", "ts": now}, "t6": {"state": "done", "task": "old", "ts": now}}})):
+            (h / name).mkdir(parents=True); (h / name / "status.json").write_text(json.dumps(st))
+        (h / "events.jsonl").write_text(json.dumps({"ts": now - 5, "ev": "task.failed", "agent": "cy", "id": "t5", "text": "disk full"}) + "\n"
+                                        + json.dumps({"ts": now - 5, "ev": "task.sent", "agent": "cy", "id": "t5", "task": "zip it"}) + "\n")
+        s = status_summary(now - 30, [("build x", now - 125, False), ("open the page", now - 5, False)], now)
+        assert "ann has been working on build x for 2 minutes." in s and "2 tasks waiting in ann's queue: task two, task three." in s, s
+        assert "bob is waiting for your answer on pick a theme: light or dark?" in s and "cy could not finish zip it: disk full" in s, s
+        assert "cy is idle." in s and "old" not in s and s.count("build x") == 1 and "open the page, has been running" in s, s
+    # the speech policy: no network, `rec` plays the server's item.added ack
+    def mk():
+        c, sent = Conn(None, 24000), []
+        async def rec(ev):
+            sent.append(ev)
+            if ev["type"] == "conversation.item.create": [x.set() for x in (c._st["added"], c._st["att"]) if x]
+        c._send, c._open, now = rec, {"d1"}, time.monotonic()
+        return c, sent, now
+    kinds = lambda sent: [e.get("item", {}).get("type") or e["type"] for e in sent]
+    async def hold():   # a voice question is open: the result is held, then rides in before the user's typed answer
+        c, sent, now = mk(); c._st.update(question=True, user_at=now - 10, voice_at=now - 10); t = asyncio.create_task(c._speak_loop())
+        await c.session.commentary.append(content="Done.", delegation_id="d1"); await asyncio.sleep(0.5); assert sent == [], sent
+        await c.input_text.append("blue"); t.cancel()
+        assert kinds(sent) == ["function_call_output", "message", "response.create"] and sent[1]["item"]["content"][0]["text"] == "blue", sent
+    async def quiet():  # 3 s of quiet and no question: out within ~0.3 s; a failure reads as such
+        out = []
+        for kind, want in (("say", "Done."), ("fail", "The task failed: disk full")):
+            c, sent, now = mk(); c._st.update(user_at=now - 3.0, voice_at=now - 3.0); t = asyncio.create_task(c._speak_loop())
+            await c.session.commentary.append(content="disk full" if kind == "fail" else want, delegation_id="d1", kind=kind); await asyncio.sleep(0.3); t.cancel()
+            assert kinds(sent) == ["function_call_output", "message", "response.create"] and sent[0]["item"]["output"] == want, sent
+    async def ask():    # an ask jumps ahead of the held result and leaves the question flag up
+        c, sent, now = mk(); c._st.update(question=True, user_at=now - 10, voice_at=now - 10); t = asyncio.create_task(c._speak_loop())
+        await c.session.commentary.append(content="Done.", delegation_id="d1"); await c.session.commentary.append(content="light or dark?", delegation_id="d1", kind="ask")
+        await asyncio.sleep(0.3); assert kinds(sent) == ["message", "response.create"] and "light or dark?" in sent[0]["item"]["content"][0]["text"] and c._st["question"], sent
+        c._st["in_flight"] = False; await c.input_text.append("dark"); t.cancel()
+        assert kinds(sent) == ["message", "response.create", "function_call_output", "message", "response.create"], sent
+    async def closer():  # a stock closer is not an open question: the result goes out after the quiet beat; a real question holds it
+        for voice, held in (("Hey, how's it going?", False), ("How can I help you today?", False), ("Sure! Anything else I can do for you?", False),
+                            ("Should the page be blue or green?", True), ("Which folder do you want it in?", True)):
+            c, sent, now = mk(); c._st.update(user_at=now - 10, voice_at=now - 10)
+            await c._handle({"type": "response.output_audio_transcript.done", "transcript": voice}); assert c._st["question"] == held, voice
+        c, sent, now = mk(); c._st.update(user_at=now - 10, voice_at=now - 10, asked=True)   # an ask stays open whatever the voice's wording
+        await c._handle({"type": "response.output_audio_transcript.done", "transcript": "Blue or green?"}); assert c._st["question"]
+    async def cap():    # HOLD_MAX / QUESTION_MAX: the user never answers, the result goes out on its own
+        global HOLD_MAX, QUESTION_MAX
+        HOLD_MAX, QUESTION_MAX = 0.3, 10   # the general cap
+        try:
+            c, sent, now = mk(); c._st.update(user_at=now - 1, voice_at=now - 10); t = asyncio.create_task(c._speak_loop())
+            await c.session.commentary.append(content="Done.", delegation_id="d1"); await asyncio.sleep(0.6); t.cancel()
+            assert kinds(sent) == ["function_call_output", "message", "response.create"], sent
+            HOLD_MAX, QUESTION_MAX = 10, 0.3   # a real question nobody answers: released at QUESTION_MAX, long before HOLD_MAX
+            c, sent, now = mk(); c._st.update(question=True, user_at=now - 10, voice_at=now - 10); t = asyncio.create_task(c._speak_loop())
+            await c.session.commentary.append(content="Done.", delegation_id="d1"); await asyncio.sleep(0.15); assert sent == [], sent
+            await asyncio.sleep(0.45); t.cancel(); assert kinds(sent) == ["function_call_output", "message", "response.create"], sent
+        finally: HOLD_MAX, QUESTION_MAX = 10, 6
+    async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer()); await cap()   # cap flips globals: not alongside the others
+    t0 = time.monotonic(); asyncio.run(policy()); assert time.monotonic() - t0 < 3
     print("ok")

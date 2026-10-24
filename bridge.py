@@ -11,8 +11,10 @@
   uv run bridge.py --ring --backend session   # Donna's phone: no call open; a `say` in ~/.higgs/herd/donna/outbox.jsonl rings,
                                           # Enter calls her; hangs up on "bye", 60 s of silence or Higgs idle timeout
                                           # every call starts with ~/.higgs/herd/donna/context.txt; tasks go through herd.py send
+  uv run bridge.py --ring --silent        # headless Donna phone: each stdin line is Enter (no call open) or a typed turn (on a call)
   uv run bridge.py say  ID "text"         # spoken result for delegation ID   (session backend)
   uv run bridge.py note ID "text"         # quiet progress for delegation ID  (session backend)
+  uv run bridge.py take|ask|fail ID "text"   # started (silent) / a question for the user (spoken now) / could not finish (session backend)
 
 Delegations land in ~/.higgs/inbox.jsonl, one JSON line each: {"id", "task", "context": "last turns"}.
 ~/.higgs/context.txt, if present, is sent to the voice at the start of the call (first 4000 chars). If its first line is
@@ -32,20 +34,23 @@ if sys.argv[1:2] == ["hook"]:   # Claude Code PostToolUse hook (docs/herd.md §6
         for line in data.splitlines():
             try: m = json.loads(line)
             except ValueError: continue
-            msgs.append(f"Phone task {m['id']}: {m['task']}\nContext: {m.get('context') or '(none)'}\nAt your next stopping point: uv run -q {herd_py} reply donna {m['id']} note \"…\" now; "
-                        f"uv run -q {herd_py} reply donna {m['id']} say \"…\" when done (≤3 plain sentences).")
+            r = f"uv run -q {herd_py} reply donna {m['id']}"
+            if m.get("in_reply_to"): msgs.append(f"Answer to task {m['in_reply_to']}: {m['task']}"); continue
+            msgs.append(f"Phone task {m['id']}: {m['task']}\nContext: {m.get('context') or '(none)'}\nFirst: {r} take \"\"; progress: {r} note \"…\"; "
+                        f"a decision you need from the person: {r} ask \"…\" (the answer arrives as an inbox line with in_reply_to); "
+                        f"when done: {r} say \"…\" (≤3 plain sentences) or {r} fail \"…\".")
         if msgs: print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n\n".join(msgs)}}))
     except (OSError, ValueError, KeyError, TypeError): pass   # a hook that fails must never break Donna's session
     sys.exit(0)
-import argparse, asyncio, base64, json, logging, os, queue, re, subprocess, sys, threading, time
+import argparse, asyncio, base64, contextlib, json, logging, os, queue, re, subprocess, sys, threading, time, uuid
 import higgslive
 
 RATE = 24000
-HIGGS_DIR = os.path.expanduser(os.environ.get("HIGGS_DIR", "~/.higgs"))
+HIGGS_DIR = os.path.expanduser(os.environ.get("HIGGS_DIR") or os.environ.get("HIGGS_HOME") or "~/.higgs")
 INBOX, OUTBOX, CONTEXT = (os.path.join(HIGGS_DIR, f) for f in ("inbox.jsonl", "outbox.jsonl", "context.txt"))
 HERD = os.path.join(HIGGS_DIR, "herd"); EVENTS = os.path.join(HERD, "events.jsonl"); DONNA = os.path.join(HERD, "donna")
 CALLING_ABOUT = "Calling about:"
-if len(sys.argv) > 2 and sys.argv[1] in ("say", "note"):   # the session's reply path
+if len(sys.argv) > 2 and sys.argv[1] in ("say", "note", "take", "ask", "fail"):   # the session's reply path
     os.makedirs(HIGGS_DIR, exist_ok=True)
     with open(OUTBOX, "a") as f: f.write(json.dumps({"kind": sys.argv[1], "id": sys.argv[2], "text": " ".join(sys.argv[3:])[:1500], "ts": time.time()}) + "\n")
     sys.exit(0)
@@ -101,8 +106,22 @@ logging.getLogger("higgslive").addHandler(_H()); logging.getLogger("higgslive").
 SESSION: dict = {}             # the backend Claude Code session id, kept for the length of the call
 BACKEND_LOCK = asyncio.Lock()  # one agent: tasks run one at a time, in order
 CLAIMED: set = set()           # ring: delegation ids; backend() reads their say/note itself, so the outbox watcher skips them
-SAYS: asyncio.Queue = asyncio.Queue()   # ring: texts of unclaimed `say` lines (the agent calling the user)
+SAYS: asyncio.Queue = asyncio.Queue()   # ring: (kind, id, text) of unclaimed say/ask/fail lines (the agent calling the user)
+TYPED: asyncio.Queue = asyncio.Queue()  # ring: stdin lines: Enter while no call is open, a typed turn on a call
+ASK = {"did": None}            # the task whose question was just asked aloud; the user's next words answer it
 BYE = re.compile(r"\b(bye|goodbye|that'?s all|talk (to you )?later|hang up)\b")
+
+def forward_answer(text, context):
+    """The user's next words answer the question Donna asked for task ASK["did"]: hand them back to her as an inbox line."""
+    did, ASK["did"] = ASK["did"], None
+    if not did: return
+    log(f"answer → donna {did}: {text}")
+    if args.ring:
+        import herd
+        try: herd.send("donna", text, context, "voice", reply_to=did)
+        except SystemExit: log("answer not delivered: Donna is not on duty")
+    else:
+        with open(INBOX, "a") as f: f.write(json.dumps({"id": uuid.uuid4().hex[:8], "task": text, "context": context, "in_reply_to": did}) + "\n")
 
 def summarize_tool(name, inp):
     if inp.get("description"): return str(inp["description"])[:60].lower()
@@ -111,14 +130,14 @@ def summarize_tool(name, inp):
     verb = {"Read": "reading", "Write": "writing", "Edit": "editing", "Bash": "running", "Glob": "searching for", "Grep": "searching"}.get(name, name.lower())
     return f"{verb} {arg}".strip()
 
-async def backend(did: str, task: str, context: str, progress) -> str:
-    """Run the task; await progress(text) per step; return ≤3 spoken sentences: facts, status, next step."""
+async def backend(did: str, task: str, context: str, progress, ask) -> tuple[str, str]:
+    """Run the task; await progress(text) per step, ask(text) for a question to the user; return (≤3 spoken sentences: facts, status, next step; kind say|fail)."""
     if args.backend == "session":
         os.makedirs(os.path.dirname(OUTBOX), exist_ok=True); open(OUTBOX, "a").close()
         if args.ring:   # through herd.py, so task.sent and unread fire; the call_id stays the line's id for the outbox match below
             import herd
             try: herd.send("donna", task, context, "voice", tid=did)
-            except SystemExit: return "Donna isn't on duty right now, so I couldn't hand that off."
+            except SystemExit: return "Donna isn't on duty right now, so I couldn't hand that off.", "fail"
         else:
             with open(INBOX, "a") as f: f.write(json.dumps({"id": did, "task": task, "context": context}) + "\n")
         log(f"  → inbox {did}")
@@ -131,13 +150,16 @@ async def backend(did: str, task: str, context: str, progress) -> str:
                 try: msg = json.loads(line)
                 except Exception: continue
                 if msg.get("id") != did: continue
-                if msg["kind"] == "note": await progress(msg["text"])
-                else: return msg["text"][:800]
-        return "The session did not answer within ten minutes."
+                k = msg["kind"]
+                if k == "take": await progress("started")
+                elif k == "note": await progress(msg["text"])
+                elif k == "ask": await ask(msg["text"])   # the task is not finished: keep reading
+                else: return msg["text"][:800], k if k == "fail" else "say"
+        return "The session did not answer within ten minutes.", "fail"
     if args.backend == "fake":
         for step in ("looking at the folder", "writing the file", "opening it"):
             await asyncio.sleep(2); await progress(step)
-        return "Done. The file is written and open in the browser. Nothing else needed."
+        return "Done. The file is written and open in the browser. Nothing else needed.", "say"
     if args.backend == "codex":   # ponytail: UNTESTED here (this Mac's codex is not logged in); event names from `codex exec --json`
         prompt = f"## Voice conversation context\n{context or '(none)'}\n\n## Task\n{task}\n\n## Return the result\nDo the task in the current directory. Then reply in at most three plain sentences for a voice assistant to speak: facts, status, next step. No code, no markdown, no file paths unless essential."
         cmd = ["codex", "exec", "--json", "--skip-git-repo-check", "-s", "workspace-write", "-C", SANDBOX] + (["resume", SESSION["id"], prompt] if SESSION.get("id") else [prompt])
@@ -155,8 +177,8 @@ async def backend(did: str, task: str, context: str, progress) -> str:
                     elif it.get("type") == "agent_message": result = it.get("text")
                     elif ev.get("type") == "turn.failed": result = "the backend reported an error"
         except TimeoutError:
-            p.kill(); return "The backend timed out after two minutes."
-        return (result or "The backend returned nothing.")[:800]
+            p.kill(); return "The backend timed out after two minutes.", "say"
+        return (result or "The backend returned nothing.")[:800], "say"
     prompt = f"""## Voice conversation context
 {context or '(none)'}
 
@@ -185,8 +207,8 @@ Do the task in the current directory. Then reply in at most three plain sentence
                 elif ev.get("type") == "result":
                     result = ev.get("result") or ("the backend reported an error" if ev.get("is_error") else None)
     except TimeoutError:
-        p.kill(); return "The backend timed out after two minutes."
-    return (result or "The backend returned nothing.")[:800]
+        p.kill(); return "The backend timed out after two minutes.", "say"
+    return (result or "The backend returned nothing.")[:800], "say"
 
 def context_seed() -> str:
     return open(CONTEXT).read()[:4000].strip() if os.path.exists(CONTEXT) else ""
@@ -225,7 +247,7 @@ async def watch_outbox():
         for line in data.splitlines():
             try:
                 m = json.loads(line)
-                if m.get("kind") == "say" and m.get("text") and m.get("id") not in CLAIMED: SAYS.put_nowait(m["text"])
+                if m.get("kind") in ("say", "ask", "fail") and m.get("text") and m.get("id") not in CLAIMED: SAYS.put_nowait((m["kind"], m["id"], m["text"]))
             except Exception: continue
 
 async def call(seed: str) -> str:
@@ -269,17 +291,23 @@ async def call(seed: str) -> str:
         async def run_delegation(did, task):
             st["pending"] += 1
             try:
-                if BACKEND_LOCK.locked(): await conn.session.thinking.append(content="queued behind the current task", delegation_id=did)
-                async with BACKEND_LOCK:
+                sess = args.backend == "session"   # Donna's inbox is the queue; claude/codex are one agent at a time
+                if not sess and BACKEND_LOCK.locked(): await conn.session.thinking.append(content="queued behind the current task", delegation_id=did)
+                async with contextlib.nullcontext() if sess else BACKEND_LOCK:
                     t = time.monotonic(); log(f"backend started for {did}: {task[:90]}")
                     async def progress(text): await conn.session.thinking.append(content=text, delegation_id=did)
-                    text = await backend(did, task, "\n".join(transcript[-6:]), progress)
+                    async def ask(text): await conn.session.commentary.append(content=text, delegation_id=did, kind="ask"); ASK["did"] = did
+                    text, kind = await backend(did, task, "\n".join(transcript[-6:]), progress, ask)
                     log(f"backend done for {did} in {time.monotonic()-t:.1f}s")
-                    await conn.session.commentary.append(content=text, delegation_id=did)
+                    await conn.session.commentary.append(content=text, delegation_id=did, kind=kind)
             finally: st["pending"] -= 1
 
+        def check_bye(text):
+            if args.ring and BYE.search(text.lower().replace("’", "'")): st["bye"] = time.monotonic()   # no goodbye prompt: the model answers "bye" itself
+
         async def typed_turn(text):
-            transcript.append("User: " + text); log("USER (typed):", text); await conn.input_text.append(text)
+            forward_answer(text, "\n".join(transcript[-6:]))
+            transcript.append("User: " + text); log("USER (typed):", text); st["act"] = time.monotonic(); check_bye(text); await conn.input_text.append(text)
 
         tasks, stream = [], None
         if args.wav:
@@ -310,14 +338,19 @@ async def call(seed: str) -> str:
         if args.ring:
             async def says():   # updates from the work sent off, arriving mid-call
                 while True:
-                    text = await SAYS.get()
-                    await conn.session.commentary.append(content=f"[note] An update just came in from the work you sent off; tell the user in a sentence or two: {text}")
+                    kind, sid, text = await SAYS.get()
+                    if kind == "ask": await conn.session.commentary.append(content=text, delegation_id=sid, kind="ask"); ASK["did"] = sid
+                    elif kind == "fail": await conn.session.commentary.append(content=f"[note] Something you sent off could not be finished; tell the user in a sentence: {text}", kind="fail")
+                    else: await conn.session.commentary.append(content=f"[note] An update just came in from the work you sent off; tell the user in a sentence or two: {text}", kind="say")
+            async def typed():   # stdin lines on a call: typed turns (the headless check's only input)
+                while True:
+                    if text := await TYPED.get(): await typed_turn(text)
             async def ticker():
                 while True:
                     await asyncio.sleep(0.5); now = time.monotonic()
                     if st["bye"] and now - st["bye"] > 8: end("goodbye")   # fallback: no response.done after the goodbye
                     elif now - st["act"] > 60 and not st["pending"] and now - st["audio"] > 2: end("silence")
-            tasks += [asyncio.create_task(says()), asyncio.create_task(ticker())]
+            tasks += [asyncio.create_task(says()), asyncio.create_task(typed()), asyncio.create_task(ticker())]
 
         async def events():
             async for ev in conn:
@@ -336,8 +369,8 @@ async def call(seed: str) -> str:
                     if args.ring and not st["vu"]: st["vu"] = True; event("voice.user")
                 elif t == "session.input_speech_stopped": st["vu"] = False
                 elif t == "session.input_transcript.done":
-                    log("USER:", ev.transcript); transcript.append("User: " + ev.transcript); st["act"] = time.monotonic(); st["vu"] = False
-                    if args.ring and BYE.search(ev.transcript.lower().replace("’", "'")): st["bye"] = time.monotonic()   # no goodbye prompt: the model answers "bye" itself
+                    log("USER:", ev.transcript); forward_answer(ev.transcript, "\n".join(transcript[-6:])); transcript.append("User: " + ev.transcript); st["act"] = time.monotonic(); st["vu"] = False
+                    check_bye(ev.transcript)
                 elif t == "session.output_audio.delta":
                     st["audio_bytes"] = st.get("audio_bytes", 0) + len(ev.delta) * 3 // 4; st["audio"] = time.monotonic()
                     if args.ring and not st["vs"]: st["vs"] = True; event("voice.speaking")
@@ -371,25 +404,30 @@ async def call(seed: str) -> str:
 
 async def main():
     if not args.ring: await call(context_seed()); return
-    loop = asyncio.get_running_loop(); enter = asyncio.Event()
+    loop = asyncio.get_running_loop()
     def stdin_thread():
         try:
-            while sys.stdin.readline(): loop.call_soon_threadsafe(enter.set)   # "" = EOF (stdin is /dev/null): never an Enter
+            while line := sys.stdin.readline(): loop.call_soon_threadsafe(TYPED.put_nowait, line.strip())   # "" = EOF (stdin is /dev/null): never an Enter
         except Exception: pass
     threading.Thread(target=stdin_thread, daemon=True).start()
     watcher = asyncio.create_task(watch_outbox())
     while True:
         log("ring: waiting — Enter to call Donna")
-        while SAYS.empty() and not enter.is_set(): await asyncio.sleep(0.2)
+        while SAYS.empty() and TYPED.empty(): await asyncio.sleep(0.2)
+        if not TYPED.empty(): TYPED.get_nowait()   # any line is an Enter
         seed = context_seed()   # Enter: the voice waits for the user
         if not SAYS.empty():
             await asyncio.sleep(0.5)   # let a burst of says land together
-            about = " ".join(" ".join(SAYS.get_nowait() for _ in range(SAYS.qsize())).split())
-            event("call.ring", about=about); seed = f"{CALLING_ABOUT} {about}\n{seed}".strip()
+            got = [SAYS.get_nowait() for _ in range(SAYS.qsize())]
+            for g in got:
+                if g[0] == "ask": SAYS.put_nowait(g)   # asked aloud by says() once the session is up
+            about = " ".join(" ".join(t for k, _, t in got if k != "ask").split())
+            event("call.ring", about=about or " ".join(t for _, _, t in got))
+            if about: seed = f"{CALLING_ABOUT} {about}\n{seed}".strip()
         event("call.answered"); set_state("on_call"); reason = "interrupted"
         try: reason = await call(seed)
         except Exception as e: log("call failed:", repr(e)); reason = "error"
-        finally: event("call.ended", reason=reason); set_state("idle"); enter.clear()
+        finally: event("call.ended", reason=reason); set_state("idle")
 
 try: asyncio.run(main())
 except KeyboardInterrupt: log("hung up (Ctrl-C)")
