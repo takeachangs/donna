@@ -89,7 +89,7 @@ def open_question(voice: str) -> bool:
     v = voice.strip().lower()
     return v.endswith("?") and not CLOSER.search(v) and len(v.split()) >= 5 and bool(TASK_Q.search(v))
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
-CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching|reaching|connecting|transferring|getting)|should be running|backend result|i'?ll\s+have\s+(the|an|my)\s+agent)")   # the last: "I'll have the agent take a look" (Oct 24 probe)
+CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching|reaching|connecting|transferring|getting|updating|changing|adding|fixing|passing)|should be running|backend result|i'?ll\s+have\s+(the|an|my)\s+agent)")   # the last: "I'll have the agent take a look" (Oct 24 probe)
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat|connect|put|transfer)|let me\s+(creat|mak|check|look|run|open|see)|"
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
                    r"shall i (set|get|start) (that|it|this)|i can (connect|put you through|transfer)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
@@ -551,6 +551,7 @@ if __name__ == "__main__":   # self-check: no network
     assert all(ASKED.search(x) for x in ("who built the quiz?", "who's working on the login page?", "get me on the line with her.", "can i talk to maya?"))   # #28
     assert all(THROUGH.search(x) for x in ("get her on the line", "can i talk to maya?", "transfer me", "put me through to maya")) and OFFER.search("i can connect you to her directly.")   # #61
     assert not any(THROUGH.search(x) for x in ("who built the quiz?", "let me talk to you about it", "talk to you later", "how's it going?"))
+    assert CLAIM.search("got it, five-minute breaks. i'm updating that now.")   # #12 rehearsal: the follow-up was claimed, never sent
     assert all(HOWS.search(x) for x in ("how's it going?", "how is it coming along", "any update?")) and not any(HOWS.search(x) for x in ("how do i run it?", "what's going on with you?"))   # #12
     assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
     import tempfile

@@ -533,7 +533,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     elif args.text and not turns and st["spoke_result"] and not st["pending"]: st["done"] = True   # the corrected result was already spoken
                 elif t == "response.done":
                     st["vs"] = False
-                    if st["bye"]: end("goodbye")
+                    if st["bye"] and not ev.calls: end("goodbye")   # #12 rehearsal: "Open a pull request. Thanks, bye" closed on the call's response, before any goodbye was said
                     elif st.get("switch"): end(st["next"])
                     elif st.get("back"): end("back")
                     elif args.text and not ev.calls:   # headless pacing: next typed turn, or exit once everything is spoken
