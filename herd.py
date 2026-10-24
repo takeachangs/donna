@@ -400,7 +400,7 @@ def office(now=None):
         ev, a, tool, inp, ts = e.get("ev"), e.get("agent"), e.get("tool"), e.get("input") or {}, e.get("ts") or 0
         if ev == "SubagentStart" and a: row(a, e)["type"] = e.get("type")
         elif ev in ("SubagentStop", "Stop") and a in rows: r = rows[a]; r["t1"] = r["t1"] or ts; r["summary"] = r["summary"] or e.get("result")  # its background_tasks say "running": ignored. Never a new row (#44): Claude Code's own helpers fire a bare one (agent_type "") after the brain's Stop. A Stop with an agent: a teammate went idle (#65)
-        elif ev == "UserPromptSubmit" and not a: lead.update(t=ts, ask=ts)
+        elif ev == "UserPromptSubmit" and not a: lead.update(t=ts, ask=ts, hires=[])
         elif ev == "Stop" and not a: lead["stop"] = ts
         elif ev == "PostToolUse":
             if a:
@@ -687,8 +687,10 @@ def _selfcheck_office():
         fire("PostToolUse", tool_name="Bash", tool_input={"command": "cd ../p-donna-landing; npm test"}); assert D() == "Running checks"
         fire("PostToolUse", tool_name="Bash", tool_input={"command": "uv run -q herd.py reply donna t9 say \"Done.\""}); assert D() == "Reporting"
         fire("Stop"); assert D() == "Ready" and O()["workers"][0]["status"] == "done"
+        fire("UserPromptSubmit", prompt="Phone task t10: polish it")
         fire("PostToolUse", tool_name="Agent", tool_input={"name": "Ava", "description": "Polishes the page", "prompt": "p", "run_in_background": True},
              tool_response={"status": "teammate_spawned", "agentId": f"Ava@{team}"})  # a reused name is the same id: hired again, working again
+        assert D() == "Hiring Ava for: Polishes the page", D()  # a new turn: the last turn's hires are not named again
         assert WS()[0] == ("Ava", "working", "Hired: Polishes the page") and "completedAt" not in O()["assignments"][0], WS()
 
         if (Path(__file__).parent / "dash.py").exists():  # fallback: no hook events for the brain, workers from its transcript
