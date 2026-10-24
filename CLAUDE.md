@@ -35,6 +35,7 @@ export BOSON_API_KEY=…      # ~/.zshrc; a second key is BOSON_API_KEY_2 in .en
 uv run bridge.py --backend claude --voice nora --out AirPods      # laptop mic in, AirPods out (AirPods mic degrades STT)
 uv run bridge.py --backend fake --silent --text "a | b"           # headless check, no mic, no agent credits
 uv run bridge.py --model higgs-realtime-1.5-preview …            # 1.5 preview (default is higgs-realtime)
+uv run bridge.py --ring --backend session --voice nora           # Donna's phone: no call open; a `say` in ~/.higgs/herd/donna/outbox.jsonl rings, Enter calls her
 ```
 `~/.zshrc` exports an `ANTHROPIC_API_KEY` with low credit; `bridge.py` strips it so headless `claude -p` bills the claude.ai login.
 

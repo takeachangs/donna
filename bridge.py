@@ -7,6 +7,8 @@
   uv run bridge.py --backend session      # the /call skill: a Claude Code session answers via ~/.higgs/inbox.jsonl + outbox.jsonl
   uv run bridge.py --backend fake         # 6 s sleep instead of Claude (no Claude credits)
   uv run bridge.py --text "a | b"         # headless: typed turns instead of the mic; exits after the last result is spoken
+  uv run bridge.py --ring --backend session   # Donna's phone: no call open; a `say` in ~/.higgs/herd/donna/outbox.jsonl rings,
+                                          # Enter calls her; hangs up on "bye", 60 s of silence or Higgs idle timeout
   uv run bridge.py say  ID "text"         # spoken result for delegation ID   (session backend)
   uv run bridge.py note ID "text"         # quiet progress for delegation ID  (session backend)
 
@@ -14,16 +16,17 @@ Delegations land in ~/.higgs/inbox.jsonl, one JSON line each: {"id", "task", "co
 ~/.higgs/context.txt, if present, is sent to the voice at the start of the call (first 4000 chars). If its first line is
 `Calling about: <reason>` the voice speaks first and says why it's calling. The delegation layer itself is higgslive.py.
 """
-import argparse, asyncio, base64, json, logging, os, queue, sys, threading, time
+import argparse, asyncio, base64, json, logging, os, queue, re, subprocess, sys, threading, time
 import higgslive
 
 RATE = 24000
 HIGGS_DIR = os.path.expanduser(os.environ.get("HIGGS_DIR", "~/.higgs"))
 INBOX, OUTBOX, CONTEXT = (os.path.join(HIGGS_DIR, f) for f in ("inbox.jsonl", "outbox.jsonl", "context.txt"))
+HERD = os.path.join(HIGGS_DIR, "herd"); EVENTS = os.path.join(HERD, "events.jsonl"); DONNA = os.path.join(HERD, "donna")
 CALLING_ABOUT = "Calling about:"
 if len(sys.argv) > 2 and sys.argv[1] in ("say", "note"):   # the session's reply path
     os.makedirs(HIGGS_DIR, exist_ok=True)
-    with open(OUTBOX, "a") as f: f.write(json.dumps({"kind": sys.argv[1], "id": sys.argv[2], "text": " ".join(sys.argv[3:])[:1500]}) + "\n")
+    with open(OUTBOX, "a") as f: f.write(json.dumps({"kind": sys.argv[1], "id": sys.argv[2], "text": " ".join(sys.argv[3:])[:1500], "ts": time.time()}) + "\n")
     sys.exit(0)
 
 ap = argparse.ArgumentParser()
@@ -38,7 +41,11 @@ ap.add_argument("--voice", default="default", help="default, chloe, eleanor, jak
 ap.add_argument("--mic", help="substring of the input device name, e.g. MacBook")
 ap.add_argument("--out", help="substring of the output device name, e.g. AirPods")
 ap.add_argument("--project", help="directory the claude backend works in (default: ./sandbox)")
+ap.add_argument("--ring", action="store_true", help="no session until Donna's outbox gets a `say` (or you press Enter); one call at a time, then wait again")
 args = ap.parse_args()
+if args.ring:
+    if args.text: ap.error("--ring cannot be combined with --text")
+    INBOX, OUTBOX = (os.path.join(DONNA, f) for f in ("inbox.jsonl", "outbox.jsonl"))   # Donna's files, not the /call skill's
 HERE = os.path.dirname(os.path.abspath(__file__))
 SANDBOX = os.path.abspath(os.path.expanduser(args.project)) if args.project else os.path.join(HERE, "sandbox")
 
@@ -70,6 +77,9 @@ logging.getLogger("higgslive").addHandler(_H()); logging.getLogger("higgslive").
 
 SESSION: dict = {}             # the backend Claude Code session id, kept for the length of the call
 BACKEND_LOCK = asyncio.Lock()  # one agent: tasks run one at a time, in order
+CLAIMED: set = set()           # ring: delegation ids; backend() reads their say/note itself, so the outbox watcher skips them
+SAYS: asyncio.Queue = asyncio.Queue()   # ring: texts of unclaimed `say` lines (the agent calling the user)
+BYE = re.compile(r"\b(bye|goodbye|that'?s all|talk (to you )?later|hang up)\b")
 
 def summarize_tool(name, inp):
     if inp.get("description"): return str(inp["description"])[:60].lower()
@@ -81,8 +91,8 @@ def summarize_tool(name, inp):
 async def backend(did: str, task: str, context: str, progress) -> str:
     """Run the task; await progress(text) per step; return ≤3 spoken sentences: facts, status, next step."""
     if args.backend == "session":
-        os.makedirs(HIGGS_DIR, exist_ok=True); open(OUTBOX, "a").close()
-        with open(INBOX, "a") as f: f.write(json.dumps({"id": did, "task": task, "context": context}) + "\n")
+        os.makedirs(os.path.dirname(OUTBOX), exist_ok=True); open(OUTBOX, "a").close()
+        with open(INBOX, "a") as f: f.write(json.dumps({"id": did, "task": task, "context": context, **({"from": "voice", "ts": time.time()} if args.ring else {})}) + "\n")
         log(f"  → inbox {did}")
         t0 = time.monotonic()
         with open(OUTBOX) as f:
@@ -153,13 +163,53 @@ Do the task in the current directory. Then reply in at most three plain sentence
 def context_seed() -> str:
     return open(CONTEXT).read()[:4000].strip() if os.path.exists(CONTEXT) else ""
 
-async def main():
+def event(ev, **kw):
+    try:
+        os.makedirs(HERD, exist_ok=True)
+        with open(EVENTS, "a") as f: f.write(json.dumps({"ts": time.time(), "ev": ev, "agent": "donna", **kw}) + "\n")
+    except OSError as e: log("event write failed:", e)
+    log("event", ev, kw or "")
+
+def set_state(s):
+    try:
+        herd_py = os.path.join(HERE, "herd.py")
+        if os.path.exists(herd_py): subprocess.run(["uv", "run", "-q", herd_py, "state", "donna", s], timeout=15)   # herd.py writes the state + its own event
+        else:   # ponytail: no herd.py yet, write status.json directly
+            p = os.path.join(DONNA, "status.json"); os.makedirs(DONNA, exist_ok=True)
+            try: d = json.load(open(p))
+            except Exception: d = {}
+            d["state"] = s
+            with open(p + ".tmp", "w") as f: json.dump(d, f)
+            os.replace(p + ".tmp", p); event("agent.state", state=s)
+    except Exception as e: log("set_state failed:", repr(e))
+
+async def watch_outbox():
+    pos = os.path.getsize(OUTBOX) if os.path.exists(OUTBOX) else 0
+    while True:
+        await asyncio.sleep(0.3)
+        try:
+            if (size := os.path.getsize(OUTBOX)) < pos: pos = 0
+            if size == pos: continue
+            with open(OUTBOX, "rb") as f: f.seek(pos); data = f.read()
+        except OSError: pos = 0; continue
+        if b"\n" not in data: continue
+        data = data[:data.rindex(b"\n") + 1]; pos += len(data)   # only complete lines
+        for line in data.splitlines():
+            try:
+                m = json.loads(line)
+                if m.get("kind") == "say" and m.get("text") and m.get("id") not in CLAIMED: SAYS.put_nowait(m["text"])
+            except Exception: continue
+
+async def call(seed: str) -> str:
+    """One session, start to hang-up. Returns why it ended."""
     spk: queue.Queue = queue.Queue(); loop = asyncio.get_running_loop()
-    st = {"done": False, "pending": 0, "spoke_result": False}
+    st = {"done": False, "pending": 0, "spoke_result": False, "act": time.monotonic(), "audio": 0.0, "bye": None, "vs": False, "vu": False}
+    def end(reason):
+        if not st["done"]: st.update(done=True, reason=reason)
     transcript: list[str] = []
     turns = [t.strip() for t in args.text.split("|")] if args.text else []
     sd = None
-    if not args.silent or not (args.text or args.wav): import sounddevice as sd
+    if not args.silent or not (args.text or args.wav or args.ring): import sounddevice as sd
 
     def spk_thread():
         try:
@@ -182,7 +232,6 @@ async def main():
             while True: spk.get_nowait()
         except queue.Empty: pass
 
-    seed = context_seed()
     log("connecting…")
     async with higgslive.connect(playback=not args.silent, model=args.model) as conn:
         await conn.session.start(session={"instructions": PROMPT, "delegation": {"type": "client"}, "voice": args.voice,
@@ -203,7 +252,7 @@ async def main():
         async def typed_turn(text):
             transcript.append("User: " + text); log("USER (typed):", text); await conn.input_text.append(text)
 
-        tasks = []
+        tasks, stream = [], None
         if args.wav:
             async def play_wav():
                 data = open(args.wav, "rb").read()[44:]; step = RATE // 10 * 2
@@ -211,7 +260,7 @@ async def main():
                     await conn.input_audio.append(data[i:i+step]); await asyncio.sleep(0.1)
                 log("wav finished")
             tasks.append(asyncio.create_task(play_wav())); log("streaming wav as mic")
-        elif not args.text:
+        elif not (args.text or args.ring and args.silent):   # ring+silent: headless, no mic
             import array
             meter = {"n": 0, "peak": 0}
             def on_mic(indata, frames, t, status):
@@ -227,8 +276,19 @@ async def main():
                 log(f"mic: {sd.query_devices(dev)['name'] if dev is not None else 'no match for ' + args.mic + ', using default'}")
             stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=RATE // 10, callback=on_mic, device=dev); stream.start()
         if args.max_seconds:
-            async def deadline(): await asyncio.sleep(args.max_seconds); st["done"] = True; log("max-seconds reached")
+            async def deadline(): await asyncio.sleep(args.max_seconds); end("max-seconds"); log("max-seconds reached")
             tasks.append(asyncio.create_task(deadline()))
+        if args.ring:
+            async def says():   # updates from the work sent off, arriving mid-call
+                while True:
+                    text = await SAYS.get()
+                    await conn.session.commentary.append(content=f"[note] An update just came in from the work you sent off; tell the user in a sentence or two: {text}")
+            async def ticker():
+                while True:
+                    await asyncio.sleep(0.5); now = time.monotonic()
+                    if st["bye"] and now - st["bye"] > 8: end("goodbye")   # fallback: no response.done after the goodbye
+                    elif now - st["act"] > 60 and not st["pending"] and now - st["audio"] > 2: end("silence")
+            tasks += [asyncio.create_task(says()), asyncio.create_task(ticker())]
 
         async def events():
             async for ev in conn:
@@ -241,19 +301,28 @@ async def main():
                     elif turns: await typed_turn(turns.pop(0))
                     elif not args.wav: log("mic live — talk. Ctrl-C to hang up.")
                 elif t == "error": log("ERROR", ev.error)
-                elif t == "session.closed": log("session closed:", ev.reason); st["done"] = True
-                elif t == "session.input_speech_started": clear_spk(); log("… user speaking (barge-in: playback cleared)")
-                elif t == "session.input_transcript.done": log("USER:", ev.transcript); transcript.append("User: " + ev.transcript)
+                elif t == "session.closed": log("session closed:", ev.reason); end(ev.reason)
+                elif t == "session.input_speech_started":
+                    clear_spk(); log("… user speaking (barge-in: playback cleared)"); st["act"] = time.monotonic()
+                    if args.ring and not st["vu"]: st["vu"] = True; event("voice.user")
+                elif t == "session.input_speech_stopped": st["vu"] = False
+                elif t == "session.input_transcript.done":
+                    log("USER:", ev.transcript); transcript.append("User: " + ev.transcript); st["act"] = time.monotonic(); st["vu"] = False
+                    if args.ring and BYE.search(ev.transcript.lower().replace("’", "'")): st["bye"] = time.monotonic()   # no goodbye prompt: the model answers "bye" itself
                 elif t == "session.output_audio.delta":
-                    st["audio_bytes"] = st.get("audio_bytes", 0) + len(ev.delta) * 3 // 4
+                    st["audio_bytes"] = st.get("audio_bytes", 0) + len(ev.delta) * 3 // 4; st["audio"] = time.monotonic()
+                    if args.ring and not st["vs"]: st["vs"] = True; event("voice.speaking")
                     if not args.silent: spk.put(base64.b64decode(ev.delta))
                 elif t == "session.output_transcript.done":
                     secs = st.pop("audio_bytes", 0) / (RATE * 2); words = len(ev.transcript.split())
-                    log(f"VOICE ({secs:.1f}s, {words / secs * 60:.0f} wpm):" if secs > 0.5 else "VOICE:", ev.transcript); transcript.append("Sam: " + ev.transcript)
+                    log(f"VOICE ({secs:.1f}s, {words / secs * 60:.0f} wpm):" if secs > 0.5 else "VOICE:", ev.transcript); transcript.append("Sam: " + ev.transcript); st["act"] = time.monotonic()
                 elif t == "session.delegation.created":
                     log(f"DELEGATION {ev.delegation.id} @{ev.offset_ms}ms: {ev.delegation.task[:90]}"); st["delegated"] = True
-                    tasks.append(asyncio.create_task(run_delegation(ev.delegation.id, ev.delegation.task)))
+                    CLAIMED.add(ev.delegation.id); tasks.append(asyncio.create_task(run_delegation(ev.delegation.id, ev.delegation.task)))
                 elif t == "session.commentary.appended" and ev.delegation_id: st["spoke_result"] = True
+                elif t == "response.done" and args.ring:
+                    st["vs"] = False
+                    if st["bye"]: end("goodbye")
                 elif t == "response.done" and args.text and not ev.calls:   # headless pacing: next typed turn, or exit once everything is spoken
                     if turns: await asyncio.sleep(1.5); await typed_turn(turns.pop(0))
                     elif (st["spoke_result"] and not st["pending"]) or not st.get("delegated"):
@@ -263,10 +332,35 @@ async def main():
         ev_task = asyncio.create_task(events())
         try:
             while not st["done"]: await asyncio.sleep(0.2)
+            while args.ring and not args.silent and not spk.empty(): await asyncio.sleep(0.1)   # let the goodbye finish playing
             await asyncio.sleep(0.5 if args.silent else 3)
         finally:
             for t in tasks + [ev_task]: t.cancel()
+            if stream: stream.stop(); stream.close()
             spk.put(None); log("closed")
+    return st.get("reason", "done")
+
+async def main():
+    if not args.ring: await call(context_seed()); return
+    loop = asyncio.get_running_loop(); enter = asyncio.Event()
+    def stdin_thread():
+        try:
+            while sys.stdin.readline(): loop.call_soon_threadsafe(enter.set)   # "" = EOF (stdin is /dev/null): never an Enter
+        except Exception: pass
+    threading.Thread(target=stdin_thread, daemon=True).start()
+    watcher = asyncio.create_task(watch_outbox())
+    while True:
+        log("ring: waiting — Enter to call Donna")
+        while SAYS.empty() and not enter.is_set(): await asyncio.sleep(0.2)
+        seed = ""   # Enter: the voice waits for the user
+        if not SAYS.empty():
+            await asyncio.sleep(0.5)   # let a burst of says land together
+            about = " ".join(" ".join(SAYS.get_nowait() for _ in range(SAYS.qsize())).split())
+            event("call.ring", about=about); seed = f"{CALLING_ABOUT} {about}"
+        event("call.answered"); set_state("on_call"); reason = "interrupted"
+        try: reason = await call(seed)
+        except Exception as e: log("call failed:", repr(e)); reason = "error"
+        finally: event("call.ended", reason=reason); set_state("idle"); enter.clear()
 
 try: asyncio.run(main())
 except KeyboardInterrupt: log("hung up (Ctrl-C)")
