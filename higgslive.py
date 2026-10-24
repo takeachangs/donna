@@ -259,7 +259,9 @@ class Conn:
         if kind == "ask":   # the agent needs a decision: not a result, so it skips the queue and the hold
             self._asking += 1; self._tasks.append(asyncio.create_task(self._ask(content, delegation_id))); return
         self._arrived.add(delegation_id)
-        await self._spoken.put((("The task failed: " + content if kind == "fail" else content)[:1500], delegation_id, None, kind))
+        text = "The task failed: " + content if kind == "fail" else content
+        if kind in ("say", "fail") and (task := self._sent.get(delegation_id, ("",))[0]): text = f'Result for "{task.strip()}": {text}'   # with three calls open, a bare "Done." for the first was told as the last (#55); a transfer line is an instruction, not a result
+        await self._spoken.put((text[:1500], delegation_id, None, kind))
 
     async def _thinking(self, content: str, delegation_id: str | None = None):
         # client-side only: as user-role items the model answered the note instead of the user ("Hello." → "Still working on that index.html"), Oct 24 call
@@ -299,7 +301,6 @@ class Conn:
         await self._send({"type": "response.create"})
 
     def _items(self, text: str, did: str | None, cue=False) -> list:
-        if task := self._sent.get(did, ("",))[0]: text = f'Result for "{task.strip()}": {text}'   # with three calls open, a bare "Done." for the first was told as the last (#55)
         if did in self._open:   # the native path: the call stayed open all this time; this is its real output (confirmed with Boson, Oct 23)
             self._open.discard(did)
             return [{"type": "function_call_output", "call_id": did, "output": text}] + ([_msg(RESULT_CUE)] if cue else [])
