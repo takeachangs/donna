@@ -3,7 +3,8 @@
 tests/record_office_events.py) through the real herd code (send/reply/hook) in a temp HIGGS_HOME, take herd.office() after
 every step, and check the office.json timeline against what happened.
 
-  uv run tests/office_sync.py [FIXTURE]                 run the checks (default fixture: tests/fixtures/office_run.jsonl)
+  uv run tests/office_sync.py [FIXTURE]                 run the checks (default: tests/fixtures/office_run.jsonl, then the two-room
+                                                          office_rooms.jsonl: a Marketing team hired mid-run, #83)
   uv run tests/office_sync.py --snapshots OUT [FIXTURE]  also write the timeline for the office's own test
                                                           (office/tests/fixtures/office-sync.json; re-run after re-recording)
 """
@@ -102,12 +103,39 @@ def check(tl):
     assert (lead(o)["status"], lead(o)["currentAction"]) == ("done", "Ready") and all(w["status"] == "done" for w in o["workers"][1:]), o["workers"]
 
 
+def check_rooms(tl):  # #83: a Marketing team hired while the app is built gets its own room (tests/fixtures/office_rooms.jsonl)
+    at = lambda pred: next(k for k, (s, _) in enumerate(tl) if pred(s))
+    tids = [s["send"]["tid"] for s, _ in tl if "send" in s]
+    main = tl[0][1]["projects"][0]
+    note = at(lambda s: s.get("reply", {}).get("tid") == tids[1] and s["reply"]["kind"] == "note")
+    spawns = [k for k, (s, _) in enumerate(tl) if s.get("hook") == "PostToolUse" and s["data"].get("tool_name") == "Agent"][2:]
+    mkt = main["id"] + "#marketing"
+    app = lambda o: [(w["id"], w["projectId"], w["name"], w["role"]) for w in o["workers"][1:] if w["projectId"] == main["id"] and not w["id"].startswith("brief-")]
+    for k, (s, o) in enumerate(tl):
+        assert o["projects"][0] == {**main, "memory": o["projects"][0]["memory"]}, (k, o["projects"])  # the first room never moves
+        assert [p["id"] for p in o["projects"]] == [main["id"]] + ([mkt] if k >= note else []), (k, o["projects"])  # the room exists from the hiring note on
+        if k >= note: assert o["projects"][1] | {"memory": 0} == {"id": mkt, "name": "Marketing", "goal": "", "parentId": main["id"], "memory": 0}, o["projects"][1]
+        if note <= k < spawns[0]:  # Nova and Sam are briefed with Donna, in the Marketing room's project
+            assert sorted((w["name"], w["status"], w["projectId"]) for w in o["workers"] if w["id"].startswith("brief-")) == [("Nova", "queued", mkt), ("Sam", "queued", mkt)], o["workers"]
+        if k > note: assert app(o) == app(tl[note][1]), (k, app(o))  # Ava and Ben keep their room, ids and roles
+    o = tl[spawns[1]][1]  # both spawned: working in Marketing, the app's two still working in the first room
+    by = lambda o, n: next(w for w in o["workers"] if w["name"] == n)
+    assert [(by(o, n)["projectId"], by(o, n)["status"]) for n in ("Nova", "Sam", "Ava", "Ben")] == [(mkt, "working")] * 2 + [(main["id"], "working")] * 2, o["workers"]
+    assert {a["projectId"] for a in o["assignments"] if a["workerId"] in (by(o, "Nova")["id"], by(o, "Sam")["id"])} == {mkt}
+    o = tl[-1][1]  # each result in its own room, credited to its own team only
+    b = {x["id"]: x for x in o["briefings"]}
+    assert (b[tids[0]]["projectId"], sorted(c["name"] for c in b[tids[0]]["contributors"])) == (main["id"], ["Ava", "Ben"]), b[tids[0]]
+    assert (b[tids[1]]["projectId"], sorted(c["name"] for c in b[tids[1]]["contributors"])) == (mkt, ["Nova", "Sam"]), b[tids[1]]
+    assert o["projects"][1]["memory"]["latest"] == b[tids[1]]["summary"] and all(w["status"] == "done" for w in o["workers"][1:]), o
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
     out = a[a.index("--snapshots") + 1] if "--snapshots" in a else None
     rest = [x for x in a if x not in ("--snapshots", out)]
     tl = replay(rest[0] if rest else HERE / "fixtures" / "office_run.jsonl")
-    check(tl)
+    check(tl) if "rooms" not in str(rest[:1]) else check_rooms(tl)
+    if not rest: check_rooms(r := replay(HERE / "fixtures" / "office_rooms.jsonl")); print(f"ok: two rooms ({len(r)} steps)")
     if out:
         label = lambda s: s.get("hook", "") + (f" {s['data'].get('tool_name')}" if s.get("data", {}).get("tool_name") else "") if "hook" in s else \
             next(k for k in ("send", "reply", "spoken") if k in s) + (f" {s['reply']['kind']}" if "reply" in s else "")

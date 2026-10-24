@@ -123,6 +123,13 @@ Shell variables do not carry over between commands, so each command sets its own
      the first name you give it (the office shows them being briefed in Donna's suite until they spawn). The voice names nobody
      until a note does (it reads notes through its status tool); before that it says the office has the job. Then wait
      for their notifications; do not poll, and keep the wait loop of step 2 running.
+   - **A team** ("get a marketing team on the branding", "put design on it", "a QA team"): the office gives a team its own
+     room, so hire 1–3 fresh workers whose `description` starts with the team's name and a colon, one or two capitalized
+     words ("Marketing: writes the brand guide", "Marketing: drafts the launch copy"), and name the team in the note in
+     exactly this form: `R <id> note "Hiring Nova and Sam for a Marketing team: brand guide and launch copy"` (herd reads
+     "for a <Team> team"; the room appears with the note). Workers already out stay in their room, untouched. The team's
+     files go in the task's worktree under a folder named after it (`marketing/`), or its own worktree if files could
+     overlap. No team named: no prefix, the workers join the main room.
    - Codex (no Agent tool): hire through herd, the same rules (a first name, fresh per task; a complete brief; the task's
      worktree; separable parts as several workers). Per worker, one command:
      `H=~/projects/higgs-hackathon; uv run -q $H/herd.py new Ava --kind codex --project <worktree> && uv run -q $H/herd.py send Ava "<brief>"`.
