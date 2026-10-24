@@ -488,7 +488,7 @@ def office(now=None):
         call = sj.get("state") or "off"
     except (OSError, ValueError, AttributeError): call, sj = "off", {}
     on = (sj.get("with") or "").lower()  # #28: who the person is talking to, by name (bridge.py); the office gets that worker's id, else "donna"
-    with_ = next((w["id"] for w in workers[1:] if w["name"].lower() == on), "donna") if call != "off" and on else None
+    with_ = next((w["id"] for w in workers[1:] if w["name"].lower() == on and w["status"] != "queued"), "donna")  # a briefed name has no desk yet (#65) if call != "off" and on else None
     prev = rj(h / "office.json").get("revision")
     return {"revision": prev + 1 if isinstance(prev, int) else 0, "call": {"state": call, **({"with": with_} if with_ else {})},
             "secretary": {"id": "mara", "name": "Donna", "role": "Secretary", "voice": "nora", "characterKey": "char-female-b"},

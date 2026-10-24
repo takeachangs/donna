@@ -120,4 +120,4 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
   delegate, take, hiring note, 2 background workers, their tools and stops, say, spoken) through herd's own send/reply/hook and
   checks the office.json timeline; `--snapshots office/tests/fixtures/office-sync.json` feeds `office/tests/office-sync.test.ts`
   (seats, briefing spots, desk captions, labels, `adapt()`). Re-record: `uv run tests/record_office_events.py run <out>` (headless
-  Sonnet, ~1 min) or, on a live brain, its `settings` + `export`.
+  Sonnet, ~1 min) or, on a live brain, `settings > ~/.higgs/rec-settings.json`, `claude --settings ~/.higgs/rec-settings.json`, then `export`.

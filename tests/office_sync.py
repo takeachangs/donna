@@ -7,7 +7,7 @@ every step, and check the office.json timeline against what happened.
   uv run tests/office_sync.py --snapshots OUT [FIXTURE]  also write the timeline for the office's own test
                                                           (office/tests/fixtures/office-sync.json; re-run after re-recording)
 """
-import contextlib, io, json, os, sys, tempfile
+import contextlib, io, json, os, re, sys, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -66,7 +66,7 @@ def check(tl):
         w = row(tl[k][1], i)
         assert (w["name"], w["status"], w["currentAction"]) == (n, "working", "Hired: " + s["data"]["tool_input"]["description"]), w
         assert row(tl[k][1], f"brief-{n}") is None  # the briefed stand-in left: the hire walks to a desk
-        mine = lambda s: s.get("data", {}).get("agent_id") == i
+        mine = lambda s: i in (s.get("data", {}).get("agent_id"), (re.search(r"--agent-id (\S+)", s.get("parent", "")) or [None, None])[1])  # a teammate: its process args name it
         stop = at(lambda s: mine(s) and (hk(s, "SubagentStop") or hk(s, "Stop") or hk(s, "PostToolUse", "SubagentHandback")))
         assert k < stop
         for j in range(k, len(tl)):

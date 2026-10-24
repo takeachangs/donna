@@ -8,8 +8,9 @@ Claude Code process that fired it, which names a teammate) and every herd line, 
   record_office_events.py run OUT        headless end to end: scratch repo, temp HIGGS_HOME, delegate -> `claude -p` brain
                                          (take, hiring note, 2 background workers, say) -> task.spoken; then export (Sonnet, ~1 min)
 
-Live re-record: start the brain with `claude --settings <(uv run tests/record_office_events.py settings)` (HIGGS_HOME as usual),
-make the call, then `uv run tests/record_office_events.py export tests/fixtures/office_run.jsonl`.
+Live re-record: `uv run tests/record_office_events.py settings > ~/.higgs/rec-settings.json`, start the brain with
+`claude --settings ~/.higgs/rec-settings.json` (a real file: teammates are started later with the same --settings path), make the
+call, then `uv run tests/record_office_events.py export tests/fixtures/office_run.jsonl`.
 """
 import json, os, subprocess, sys, tempfile, time
 from pathlib import Path
@@ -47,7 +48,7 @@ def export(out):
     meta = herd.rj(dd / "meta.json")
     steps += [{"t": m["ts"], "send": {"tid": m["id"], "task": m["task"], **({"reply_to": m["in_reply_to"]} if m.get("in_reply_to") else {})}}
               for m in herd.tail(dd / "inbox.jsonl", 1 << 30) if m.get("ts", 0) >= meta.get("since", 0)]
-    steps += [{"t": o["ts"], "reply": {"tid": o["id"], "kind": o["kind"], "text": o.get("text") or ""}} for o in herd.tail(dd / "outbox.jsonl", 1 << 30)]
+    steps += [{"t": o["ts"], "reply": {"tid": o["id"], "kind": o["kind"], "text": o.get("text") or ""}} for o in herd.tail(dd / "outbox.jsonl", 1 << 30) if o.get("ts", 0) >= meta.get("since", 0)]
     steps += [{"t": e["ts"], "spoken": e["id"]} for e in herd.tail(herd.root() / "events.jsonl", 1 << 30) if e.get("ev") == "task.spoken"]
     steps.sort(key=lambda s: s["t"])
     t0 = steps[0]["t"] if steps else 0
