@@ -153,6 +153,10 @@ details p {
   line-height: 1.5;
   white-space: nowrap;
 }
+.phone-button {
+  flex: none;
+  white-space: nowrap;
+}
 /* No display here: [hidden] must keep winning. Ellipsis keeps a long action on one line at phone width. */
 .donna-line {
   flex: 0 1 auto;

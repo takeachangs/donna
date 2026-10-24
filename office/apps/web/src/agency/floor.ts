@@ -67,6 +67,12 @@ export function entranceRoute(room: Footprint, home: Point): Point[] {
 export function donnaLine(workers: { lead?: boolean; currentAction?: string }[]): string {
   return workers.find((w) => w.lead)?.currentAction?.trim() || '';
 }
+/** #75: the call bar's button: Call Donna while the phone (bridge.py --ring) runs and the line is off, Hang up while a call is
+ * open, disabled (no cmd) while no phone runs. The key is an i18n key. */
+export function phoneButton(state: string, phone: string): { cmd?: 'call' | 'hangup'; key: string } {
+  if (phone !== 'armed') return { key: 'agency.phone_absent' };
+  return state === 'off' ? { cmd: 'call', key: 'agency.call_donna' } : { cmd: 'hangup', key: 'agency.hang_up' };
+}
 /** A provisional row ("Being briefed"): the brain named someone before its Agent call. No desk, no lounge seat: it stands by Donna's desk. */
 export const briefed = (w: { lead?: boolean; status: string }) => !w.lead && w.status === 'queued';
 /** Where briefed workers stand: in Donna's suite, east and south of her desk, each facing her (secretaryPosition). */

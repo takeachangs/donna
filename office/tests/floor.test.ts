@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import {
+  phoneButton,
   briefSpot,
   briefed,
   deskCaption,
@@ -95,4 +96,11 @@ it('badges a worker only while its action is the producer’s "Hired: …"', () 
   expect(hired({ status: 'working', currentAction: 'Write index.html' })).toBe(false);
   expect(hired({ status: 'done', currentAction: 'Hired: Builds the page' })).toBe(false);
   expect(hired({ status: 'working' })).toBe(false);
+});
+
+it('phone button: Call Donna when the phone runs and the line is off, Hang up on a call, disabled without a phone (#75)', () => {
+  expect(phoneButton('off', 'armed')).toEqual({ cmd: 'call', key: 'agency.call_donna' });
+  for (const s of ['ringing', 'listening', 'thinking', 'speaking'])
+    expect(phoneButton(s, 'armed')).toEqual({ cmd: 'hangup', key: 'agency.hang_up' });
+  for (const s of ['off', 'speaking']) expect(phoneButton(s, 'absent')).toEqual({ key: 'agency.phone_absent' });
 });

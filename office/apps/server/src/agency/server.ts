@@ -1,11 +1,13 @@
-// The office server: the built page, GET health and workspace, and /agency-ws, which streams office.json. Nothing else.
+// The office server: the built page, GET health and workspace, /agency-ws, which streams office.json, and POST phone (#75),
+// which writes the Call Donna / Hang up button's command for bridge.py --ring. Nothing else.
 import { createServer, type ServerResponse } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { WebSocketServer, WebSocket } from 'ws';
 import { serveWeb } from './static.js';
 import { log } from './log.js';
-import { officeFile, watchOffice, type Office } from './state.js';
+import { officeFile, phoneState, watchOffice, type Office } from './state.js';
 
 const version = (() => {
   const v = JSON.parse(readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8')).version;
@@ -16,6 +18,7 @@ const version = (() => {
   }
 })();
 const file = officeFile(),
+  home = dirname(file),
   clients = new Set<WebSocket>(),
   message = (o: Office) => JSON.stringify({ type: 'workspace', workspace: o.workspace });
 let seen = '';
@@ -35,7 +38,23 @@ const server = createServer((req, res) => {
   const u = new URL(req.url || '/', 'http://localhost');
   if (u.pathname === '/agency-api/health') {
     const o = office.get();
-    return json(res, { ok: true, version, state: o.state, updated: o.updated });
+    return json(res, { ok: true, version, state: o.state, updated: o.updated, phone: phoneState(home) });
+  }
+  if (u.pathname === '/agency-api/phone' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (d) => (body += d).length > 1024 && req.destroy());
+    req.on('end', () => {
+      let cmd: unknown;
+      try {
+        cmd = JSON.parse(body).cmd;
+      } catch {}
+      if (cmd !== 'call' && cmd !== 'hangup') return json(res, { error: 'cmd must be call or hangup' }, 400);
+      const f = join(home, 'phone.cmd');
+      writeFileSync(f + '.tmp', cmd);
+      renameSync(f + '.tmp', f); // whole or absent: the bridge reads it every 250 ms
+      json(res, { ok: true, cmd });
+    });
+    return;
   }
   if (u.pathname === '/agency-api/workspace') return json(res, office.get().workspace);
   if (!u.pathname.startsWith('/agency-api/') && serveWeb(req, res, u.pathname)) return;

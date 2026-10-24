@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WebSocket } from 'ws';
@@ -70,4 +70,24 @@ it('sends the workspace on connect and again when office.json changes', async ()
   expect(got.at(-1)).toMatchObject({ type: 'workspace', workspace: { revision: 7, call: { state: 'speaking' } } });
   expect((await get('/agency-api/health')).state).toBe('file');
   ws.close();
+});
+
+it('POST phone writes phone.cmd for bridge.py --ring; health says whether the phone runs (#75)', async () => {
+  expect((await get('/agency-api/health')).phone).toBe('absent');
+  writeFileSync(join(dir, 'state.json'), JSON.stringify({ state: 'off', armed: true }));
+  expect((await get('/agency-api/health')).phone).toBe('armed');
+  utimesSync(join(dir, 'state.json'), new Date(Date.now() - 5000), new Date(Date.now() - 5000)); // a killed bridge stops writing
+  expect((await get('/agency-api/health')).phone).toBe('absent');
+  writeFileSync(join(dir, 'state.json'), JSON.stringify({ state: 'off', armed: false }));
+  expect((await get('/agency-api/health')).phone).toBe('absent');
+  const post = (body: unknown, headers = {}) =>
+    fetch(base + '/agency-api/phone', { method: 'POST', body: JSON.stringify(body), headers });
+  expect((await post({ cmd: 'call' })).status).toBe(200);
+  expect(readFileSync(join(dir, 'phone.cmd'), 'utf8')).toBe('call');
+  expect((await post({ cmd: 'hangup' })).status).toBe(200);
+  expect(readFileSync(join(dir, 'phone.cmd'), 'utf8')).toBe('hangup');
+  rmSync(join(dir, 'phone.cmd'));
+  expect((await post({ cmd: 'rm -rf' })).status).toBe(400);
+  expect((await post({ cmd: 'call' }, { Origin: 'http://evil.example' })).status).toBe(403);
+  expect(existsSync(join(dir, 'phone.cmd'))).toBe(false);
 });
