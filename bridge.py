@@ -16,6 +16,25 @@ Delegations land in ~/.higgs/inbox.jsonl, one JSON line each: {"id", "task", "co
 ~/.higgs/context.txt, if present, is sent to the voice at the start of the call (first 4000 chars). If its first line is
 `Calling about: <reason>` the voice speaks first and says why it's calling. The delegation layer itself is higgslive.py.
 """
+import json, os, sys
+if sys.argv[1:2] == ["hook"]:   # Claude Code PostToolUse hook (docs/herd.md §6): runs after every tool call, so stdlib only, before the imports below
+    try:
+        d = os.path.join(os.environ.get("HIGGS_HOME") or os.path.expanduser("~/.higgs"), "herd", "donna")
+        if os.path.realpath(json.load(sys.stdin)["cwd"]) != os.path.realpath(json.load(open(os.path.join(d, "meta.json")))["project"]): sys.exit(0)
+        off = os.path.join(d, ".hook_offset"); o = int(open(off).read()) if os.path.exists(off) else 0
+        with open(os.path.join(d, "inbox.jsonl"), "rb") as f: f.seek(o); data = f.read()
+        data = data[:data.rfind(b"\n") + 1]   # complete lines only
+        if not data: sys.exit(0)
+        with open(off, "w") as f: f.write(str(o + len(data)))
+        herd_py, msgs = os.path.join(os.path.dirname(os.path.abspath(__file__)), "herd.py"), []
+        for line in data.splitlines():
+            try: m = json.loads(line)
+            except ValueError: continue
+            msgs.append(f"Phone task {m['id']}: {m['task']}\nContext: {m.get('context') or '(none)'}\nAt your next stopping point: uv run -q {herd_py} reply donna {m['id']} note \"…\" now; "
+                        f"uv run -q {herd_py} reply donna {m['id']} say \"…\" when done (≤3 plain sentences).")
+        if msgs: print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n\n".join(msgs)}}))
+    except (OSError, ValueError, KeyError, TypeError): pass   # a hook that fails must never break Donna's session
+    sys.exit(0)
 import argparse, asyncio, base64, json, logging, os, queue, re, subprocess, sys, threading, time
 import higgslive
 
