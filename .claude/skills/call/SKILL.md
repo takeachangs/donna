@@ -101,7 +101,9 @@ Shell variables do not carry over between commands, so each command sets its own
        Ava built it; she can polish it or open the pull request. Which?"`. When their words ask for anyone, that worker
        is already out (above).
    - Spawn: any task that makes or changes something goes to a worker, however small. Claude Code: the Agent tool with
-     `run_in_background: true`, `model: "sonnet"`, `name` = a first name ("Ava"; never spawn an unnamed worker),
+     `run_in_background: true`, `model: "sonnet"`, `name` = a first name ("Ava"; never spawn an unnamed worker;
+     every new task gets NEW first names, never one used earlier in this session: the office draws a new hire walking in
+     from the entrance; a name is reused only to continue that worker's own work, by SendMessage to them),
      `description` = the role ("Writes the game page"), and a complete brief (goal, files, what done looks like, which
      checks to run, what to report). In a git repo every brief names the task's worktree and says "Work only in
      <worktree>; never checkout or switch branches in <project dir>." Every brief also says: "If the person is put through

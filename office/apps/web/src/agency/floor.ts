@@ -58,6 +58,18 @@ export const phoneFace: Point = { x: -1.75, z: 12.4 };
 export function phoneRoute(room: Footprint, home: Point, s?: Point): Point[] {
   return [...(s ? afterReport(s).reverse().slice(1, -1) : deliveryRoute(room, home).slice(0, 5)), phoneSpot];
 }
+/** A fresh hire's walk: from the phone by the entrance (phoneSpot, where it spawns) to its desk: phoneRoute reversed, then home. */
+export function entranceRoute(room: Footprint, home: Point): Point[] {
+  return [...phoneRoute(room, home)].reverse().concat(home);
+}
+/** What Donna is doing, in the lead row's own words (the producer keeps it non-empty while fresh); '' when there is no lead or no action. */
+export function donnaLine(workers: { lead?: boolean; currentAction?: string }[]): string {
+  return workers.find((w) => w.lead)?.currentAction?.trim() || '';
+}
+/** A desk screen's second line: what the worker is doing while it works, else its role. */
+export function deskCaption(w: { status: string; currentAction?: string; role: string }): string {
+  return (w.status === 'working' && w.currentAction?.trim()) || w.role;
+}
 /** The worker a call is put through to: the call is on and `with` names a worker with a desk (not Donna, not the lead). */
 export function onTheLine(
   call: { state: string; with?: string } | undefined,

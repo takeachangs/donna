@@ -21,6 +21,10 @@ import {
   onTheLine,
   phoneFace,
   phoneRoute,
+  phoneSpot,
+  entranceRoute,
+  donnaLine,
+  deskCaption,
   type ToolCall,
   type Footprint,
   type Point,
@@ -37,6 +41,7 @@ type Trip = {
   hold?: boolean;
   report?: boolean;
   phone?: boolean;
+  entrance?: boolean;
   call?: string;
   face?: Point;
 };
@@ -65,6 +70,10 @@ export class AgencyScene implements GameScene {
   private homes = new Map<string, Point>();
   private trips = new Map<string, Trip>();
   private seen?: Set<string>;
+  /** Every worker id this scene has placed, across rebuilds; unset until the first workspace (no parade on reload). */
+  private known?: Set<string>;
+  /** 'mara' (Donna's screen) and worker id → repaint that screen's second line in place. */
+  private captions = new Map<string, (text: string) => void>();
   private handoffs: Briefing[] = [];
   private seats = new Map<string, number>();
   private tv?: THREE.MeshBasicMaterial;
@@ -140,22 +149,29 @@ export class AgencyScene implements GameScene {
     const c = document.createElement('canvas');
     c.width = 512;
     c.height = 256;
-    const ctx = c.getContext('2d')!;
-    ctx.fillStyle = '#25231f';
-    ctx.fillRect(0, 0, 512, 256);
-    ctx.fillStyle = '#D4A574';
-    ctx.font = 'bold 50px system-ui';
-    ctx.fillText(name.slice(0, 20), 28, 98, 450);
-    ctx.fillStyle = '#E7DDCC';
-    ctx.font = '34px system-ui';
-    ctx.fillText(role.slice(0, 27), 28, 174, 450);
-    const m = new THREE.Mesh(
-      new THREE.PlaneGeometry(width - 0.12, 0.59),
-      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c) }),
-    );
+    const ctx = c.getContext('2d')!,
+      map = new THREE.CanvasTexture(c);
+    let last: string | undefined;
+    // Repaints the whole face; the caller keeps it to change the second line without rebuilding the desk.
+    const paint = (text: string) => {
+      if (text === last) return;
+      last = text;
+      ctx.fillStyle = '#25231f';
+      ctx.fillRect(0, 0, 512, 256);
+      ctx.fillStyle = '#D4A574';
+      ctx.font = 'bold 50px system-ui';
+      ctx.fillText(name.slice(0, 20), 28, 98, 450);
+      ctx.fillStyle = '#E7DDCC';
+      ctx.font = '34px system-ui';
+      ctx.fillText(text.length > 27 ? text.slice(0, 26) + '…' : text, 28, 174, 450);
+      map.needsUpdate = true;
+    };
+    paint(role);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(width - 0.12, 0.59), new THREE.MeshBasicMaterial({ map }));
     m.userData.agencyOwned = true;
     m.position.set(x, 1.9, z + 0.06);
     g.add(m);
+    return paint;
   }
   private plaque(g: THREE.Group, text: string, x: number, z: number, width = 7) {
     const c = document.createElement('canvas');
@@ -180,7 +196,7 @@ export class AgencyScene implements GameScene {
   private desk(g: THREE.Group, name: string, role: string, x: number, z: number) {
     this.furniture(g, 'table_medium', x, z, 1.05);
     this.furniture(g, 'chair_B', x, z + 1.7, 1, Math.PI);
-    this.screen(g, name, role, x, z);
+    return this.screen(g, name, role, x, z);
   }
   private buildRoom(id: string, name: string, p: Footprint) {
     const { width: w, depth: d, side } = p,
@@ -360,6 +376,9 @@ export class AgencyScene implements GameScene {
     this.lastWorkspace = workspace;
     if (!this.loaded) return;
     this.projects(workspace.projects);
+    const donna = donnaLine(workspace.workers) || t('agency.briefing_queue'),
+      reduce = matchMedia('(prefers-reduced-motion: reduce)').matches,
+      known = (this.known ??= new Set(workspace.workers.filter((w) => !w.lead).map((w) => w.id)));
     if (this.secretaryName !== workspace.secretary.name) {
       this.secretaryName = workspace.secretary.name;
       const secretary = this.npcs.get('mara'),
@@ -369,7 +388,7 @@ export class AgencyScene implements GameScene {
         secretary.setLabel(workspace.secretary.name);
       }
       this.clearOwned(r.stations);
-      this.desk(r.stations, workspace.secretary.name, t('agency.briefing_queue'), 2.4, 4);
+      this.captions.set('mara', this.desk(r.stations, workspace.secretary.name, donna, 2.4, 4));
       this.furniture(r.stations, 'chair_B', 5.5, 5.5, 1, -Math.PI / 2);
       this.box(r.stations, 0.12, 0.55, 0.12, 2.25, 0.28, 0.4, 0x6d5138);
       this.box(r.stations, 0.34, 0.12, 0.2, 2.25, 0.6, 0.4, 0x2f2a25);
@@ -382,6 +401,9 @@ export class AgencyScene implements GameScene {
       ]);
     if (signature !== this.workerSignature) {
       this.workerSignature = signature;
+      // A hire still walking in when the next row lands starts its walk again (the rebuild below drops its trip).
+      const entering = new Set([...this.trips].filter(([, t]) => t.entrance).map(([k]) => k));
+      for (const k of [...this.captions.keys()]) if (k !== 'mara') this.captions.delete(k);
       for (const n of this.npcs.getAll())
         if (n.id !== 'mara') {
           this.npcs.remove(n.id);
@@ -407,9 +429,12 @@ export class AgencyScene implements GameScene {
             z = 2.1 + Math.floor(i / cols) * 3.3,
             name = w.name || t('agency.naming'),
             home = { x: r.x + x, z: r.z + z + 1.65 };
-          this.desk(r.stations, name, w.role, x, z);
+          this.captions.set(w.id, this.desk(r.stations, name, deskCaption(w), x, z));
+          // New here and not resting: spawn by the entrance phone and walk to the desk (reduced motion: just there).
           const si = this.seats.get(w.id),
-            sp = si === undefined ? home : loungeSpots[si];
+            walk = si === undefined && !reduce && (!known.has(w.id) || entering.has(w.id)),
+            sp = si !== undefined ? loungeSpots[si] : walk ? phoneSpot : home;
+          known.add(w.id);
           this.homes.set(w.id, home);
           this.npcs.createNPCs([
             {
@@ -423,9 +448,20 @@ export class AgencyScene implements GameScene {
             },
           ]);
           this.npcs.get(w.id)?.lookAtTarget({ x: home.x, z: home.z - 1.65 });
+          if (walk)
+            this.trips.set(w.id, {
+              points: entranceRoute(r, home).slice(1),
+              index: 0,
+              returning: true,
+              wait: 0,
+              moving: false,
+              entrance: true,
+            });
         });
       }
     }
+    this.captions.get('mara')?.(donna);
+    for (const w of activeWorkers) this.captions.get(w.id)?.(deskCaption(w));
     for (const w of workspace.workers) if (!this.trips.has(w.id)) this.workerActivity(w);
     const lead = workspace.workers.filter((w) => w.lead && w.status === 'working'),
       mood = lead.some((w) => workspace.assignments.find((a) => a.id === w.assignmentId)?.kind === 'plan')
