@@ -22,7 +22,7 @@ Shape = the office's existing `Workspace` type (`office/apps/web/src/agency/type
   ],
   "assignments": [{"id":"<agentId>","projectId":"<cwd slug>","workerId":"<agentId>","title":"<Agent description>","brief":"<Agent prompt>","acceptance":"","status":"working","cwd":"<cwd>","summary":"<final report, when done>","startedAt":"<iso>","completedAt":"<iso>"}],
   "decisions": [{"id":"<task id>","projectId":"<cwd slug>","title":"<ask text>","context":"","status":"open","createdAt":"<iso>"}],
-  "briefings": [{"id":"<task id>","projectId":"<cwd slug>","workerId":"<agentId of the worker who did it, or the brain row>","title":"<say text, first 60 chars>","summary":"<say text>","status":"queued","contributors":[{"name":"<worker names, exactly as in workers[].name>"}],"createdAt":"<iso>"}],
+  "briefings": [{"id":"<task id>","projectId":"<cwd slug>","workerId":"<agentId of the worker who did it, or the brain row>","title":"<say text, first 60 chars>","summary":"<say text>","status":"queued|presented","contributors":[{"name":"<worker names, exactly as in workers[].name>"}],"createdAt":"<iso>"}],
   "activity": [{"at":"<iso>","projectId":"<cwd slug>","message":"<herd event>"}]
 }
 ```
@@ -57,6 +57,10 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
 - Fallback without hooks: `dash.py`'s `find_orch` + `parse_transcript` on `~/.claude/projects/<slug>/<session>.jsonl`
   (Agent tool_use → worker rows, task notifications → done/failed). Hooks carry the Agent prompt, so nothing else needs it.
 - Herd: `~/.higgs/herd/donna/{inbox,outbox,status}`, `herd/events.jsonl` → decisions (open `ask`), briefings (`say`), activity.
+  Only the current duty period counts (#31): lines at or after `donna/meta.json` `since`, which every `herd.py new donna`
+  (/call step 1) resets. Briefings are the last 10 `say`s of that period, `queued` until a `task.spoken` event names their id
+  (`bridge.py` writes it when the result goes into the call, or when a ring call opens with it), then `presented`; the scene
+  walks only `queued` ones. Decisions are the period's open asks; activity is the period's last 20 herd events.
 - Call state: `bridge.py` writes `~/.higgs/state.json` `{"state": "off|ringing|listening|thinking|speaking"}` every
   250 ms, `off` last (Mike's contract); the producer reads a file older than 3 s as `off` (a crashed bridge).
 

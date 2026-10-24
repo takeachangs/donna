@@ -109,7 +109,7 @@ def demo():
         time.sleep(3)
         type_("Also make a backup of the notes folder.")
         wait_log("DELEGATION", 20)  # sent from the call: the bridge claims its id
-        wait_log("VOICE", 20)
+        time.sleep(3)  # the ack: logged before or after the DELEGATION line, depending on the response
         type_("Thanks, bye")  # the backup is still running: no "done" claim, the sign-off still closes
         wait_log("call.ended", 30)
         wait_log("call.ring", 40)  # the brain's later say for the call's own task rings

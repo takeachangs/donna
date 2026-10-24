@@ -82,14 +82,15 @@ def new(name, kind="session", project=None):
     d = check_name(name)
     if (d / "meta.json").exists():  # /call runs `new donna` on every start
         print(f"herd: {name} exists", file=sys.stderr)
+        m = json.loads((d / "meta.json").read_text())
         if project:  # the session may have moved: the project is updated and the old brain session forgotten (the hook records the new one right after this command)
-            m = {k: v for k, v in json.loads((d / "meta.json").read_text()).items() if k != "session"}
-            write_json(d / "meta.json", {**m, "project": str(Path(project).resolve())})
+            m = {**{k: v for k, v in m.items() if k != "session"}, "project": str(Path(project).resolve())}
+        write_json(d / "meta.json", {**m, "since": time.time()})  # a new duty period: office() shows only what came after
         return
     d.mkdir(parents=True, exist_ok=True)
     ts = time.time()
     write_json(d / "meta.json", {"name": name, "kind": kind, "project": str(Path(project or ".").resolve()),
-                                 "parent": None, "created": ts})
+                                 "parent": None, "created": ts, "since": ts})
     write_json(d / "status.json", {"state": "starting", "task_id": None, "task": None, "last_note": None,
                                    "started": ts, "unread": 0, "tasks": {}})
     event("agent.new", name, kind=kind, parent=None)
@@ -299,9 +300,11 @@ def office(now=None):
     meta, st = rj(dd / "meta.json"), rj(dd / "status.json")
     proj = meta.get("project") or ""
     pid = re.sub(r"[^A-Za-z0-9]", "-", proj)
+    since = meta.get("since") or meta.get("created") or 0  # this duty period: since the last `herd.py new donna` (#31)
     inbox, outbox = tail(dd / "inbox.jsonl"), tail(dd / "outbox.jsonl")
-    says = [o for o in outbox if o.get("kind") == "say"][-10:]
+    says = [o for o in outbox if o.get("kind") == "say" and (o.get("ts") or 0) >= since][-10:]
     hev, evs = tail(root() / "events.jsonl"), tail(h / "events.jsonl")
+    spoken = {e.get("id") for e in hev if e.get("ev") == "task.spoken"}  # bridge.py: the voice delivered it, on the call or as the ring's opener
     # the brain's session: registered by /call, else the newest brain event fired from the project dir
     sess, real = meta.get("session"), lambda p, c={}: c.get(p) or c.setdefault(p, os.path.realpath(p))
     if not sess and proj:
@@ -343,7 +346,7 @@ def office(now=None):
                                  "t1": x["t1"], "fail": x["fail"], "summary": None, "cwd": proj, "matched": True}
         except Exception: pass
     stt = lambda r: "failed" if r["fail"] else "done" if r["t1"] else "working"
-    needs = {k: t for k, t in (st.get("tasks") or {}).items() if t.get("state") == "needs_you"}
+    needs = {k: t for k, t in (st.get("tasks") or {}).items() if t.get("state") == "needs_you" and (t.get("ts") or 0) >= since}
     lid = f"brain-{sess[:8]}" if sess else "brain"
     workers = [{"id": lid, "projectId": pid, "name": "Donna", "role": "Brain", "responsibility": "", "characterKey": "char-female-b",
                 "status": "waiting" if needs else "working" if lead["t"] > lead["stop"] else "done", "assignmentId": "", "currentAction": action(lead["act"]), "lead": True}]
@@ -360,12 +363,13 @@ def office(now=None):
     for o in says:  # contributors: the workers that started between the task and its say; workerId the first of them (the office walks that desk to Donna), else the lead
         ws = [w for w, r in zip(workers[1:], rows.values()) if sent.get(o["id"], 0) <= r["t0"] <= o["ts"]]
         briefings.append({"id": o["id"], "assignmentId": ws[0]["id"] if ws else "", "projectId": pid, "workerId": ws[0]["id"] if ws else lid, "deliveryKey": o["id"],
-                          "title": (o.get("text") or "")[:60], "summary": o.get("text") or "", "artifacts": [], "verification": [], "status": "queued",
+                          "title": (o.get("text") or "")[:60], "summary": o.get("text") or "", "artifacts": [], "verification": [], "status": "presented" if o["id"] in spoken else "queued",
                           "createdAt": iso(o["ts"]), "contributors": [{"name": w["name"], "title": "", "summary": ""} for w in ws]})
     decisions = [{"id": k, "projectId": pid, "title": t.get("asked") or "", "context": t.get("task") or "", "status": "open",
                   "createdAt": iso(t.get("ts") or 0), "updatedAt": iso(t.get("ts") or 0)} for k, t in needs.items()]
     act = [{"at": iso(e.get("ts") or 0), "projectId": pid,
-            "message": (f"{e.get('agent')} {e.get('ev')}" + (f": {x}" if (x := e.get("text") or e.get("task") or e.get("state")) else ""))[:120]} for e in hev[-20:]]
+            "message": (f"{e.get('agent')} {e.get('ev')}" + (f": {x}" if (x := e.get("text") or e.get("task") or e.get("state")) else ""))[:120]}
+           for e in [e for e in hev if (e.get("ts") or 0) >= since][-20:]]
     try:  # a crashed bridge must not leave the office "speaking": the state file counts for 3 s
         p = h / "state.json"
         call = json.loads(p.read_text())["state"] if now - p.stat().st_mtime <= 3 else "off"
@@ -495,6 +499,17 @@ def selfcheck_office():  # the brain-side hook and office.json, replayed from a 
             with contextlib.redirect_stdout(se): hook("Stop"); hook("PostToolUse", {"tool_input": 5, "session_id": None}); hook("Notification", {})
         finally: sys.stdin = so
         assert se.getvalue() == ""
+
+        t3 = send("donna", "old ask"); reply("donna", t3, "ask", "keep it?"); write_office()  # #31: a new duty period starts clean
+        assert O()["briefings"] and O()["decisions"] and O()["activity"]
+        time.sleep(0.01); new("donna", project=proj); write_office()
+        assert (o := O())["briefings"] == [] and o["decisions"] == [] and o["activity"] == [], o
+        t4 = send("donna", "count the files"); reply("donna", t4, "say", "Four files."); write_office()
+        assert [(b["id"], b["status"]) for b in O()["briefings"]] == [(t4, "queued")], O()["briefings"]; assert len(O()["activity"]) == 2, O()["activity"]
+        event("task.spoken", "donna", id=t4); write_office()  # bridge.py: the voice said it
+        assert O()["briefings"][0]["status"] == "presented"
+        for i in range(12): reply("donna", f"s{i}", "say", f"result {i}")
+        write_office(); assert len(O()["briefings"]) == 10 and O()["briefings"][-1]["summary"] == "result 11"
 
         if (Path(__file__).parent / "dash.py").exists():  # fallback: no hook events for the brain, workers from its transcript
             (H / "events.jsonl").unlink(); write_json(mp, m)
