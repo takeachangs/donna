@@ -1,0 +1,91 @@
+import {WebSocket} from 'ws';
+import {randomUUID} from 'node:crypto';
+import {appendFileSync,mkdirSync,writeFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+
+export type Job={id:string;mode:'conversation';started:number;cancelled:boolean;rounds:number};
+export type VoiceOptions={instructions:()=>string;context:()=>unknown;tools:unknown[];voice:string};
+type CallRow={id:string;roomId:string;agentId:string;voice:string;jobId:string;mode:string;responseId:string;startedAt:string;firstAudioMs?:number;completeMs?:number;usage?:any;estimatedUSD?:number;usageMissing?:boolean;status?:string;transcript?:string;file?:string;outputAudioSeconds?:number;tools?:any[]};
+function wav(pcm:Buffer){const b=Buffer.alloc(44);b.write('RIFF');b.writeUInt32LE(36+pcm.length,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(24000,24);b.writeUInt32LE(48000,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(pcm.length,40);return Buffer.concat([b,pcm]);}
+export function cost(usage:any){if(!usage||!Number.isFinite(usage.input_tokens)||!Number.isFinite(usage.output_tokens))return undefined;const cached=Math.max(0,Math.min(usage.input_tokens,usage.input_token_details?.cached_tokens||usage.input_tokens_details?.cached_tokens||0));return ((usage.input_tokens-cached)*.75+cached*.25+usage.output_tokens*4.5)/1e6;}
+export class HiggsColleague {
+ private ws?:WebSocket;private ready=false;private closed=false;private job?:Job;private expectedItem='';private chunks=new Map<string,Buffer[]>();private rows=new Map<string,{row:CallRow;job:Job;started:number}>();private responseCount=0;
+ constructor(readonly id:string,private roomId:()=>string,private root:string,private emit:(e:any)=>void,private tool:(name:string,args:any,job:Job)=>any,private ended:(id:string,job:Job,audio:boolean)=>void,private barge:()=>void,private options:VoiceOptions){mkdirSync(resolve(root,'audio'),{recursive:true});}
+ private voice(){return this.options.voice;}
+ private currentContext(){return this.options.context();}
+ async connect(){
+  if(!process.env.BOSON_API_KEY)throw Error('BOSON_API_KEY missing');this.closed=false;this.ready=false;
+  const ws=this.ws=new WebSocket('wss://api.boson.ai/v1/realtime',{headers:{Authorization:`Bearer ${process.env.BOSON_API_KEY}`},handshakeTimeout:15000});
+  await new Promise<void>((resolveReady,reject)=>{
+   const timer=setTimeout(()=>reject(Error(`${this.id}: Higgs session update timed out`)),20000);
+   ws.on('open',()=>this.send({type:'session.update',session:{model:'higgs-realtime',output_modalities:['audio'],max_output_tokens:3500,instructions:this.options.instructions(),audio:{input:{format:{type:'audio/pcm',rate:24000},turn_detection:{type:'server_vad',threshold:.65,silence_duration_ms:550,prefix_padding_ms:300}},output:{format:{type:'audio/pcm',rate:24000},voice:this.voice()}},tools:this.options.tools,tool_choice:'auto'}}));
+   ws.on('message',raw=>{try{const e=JSON.parse(raw.toString());if((e.type==='session.updated'||e.type==='session.created')&&!this.ready){this.ready=true;clearTimeout(timer);resolveReady();this.emit({type:'colleague_ready',agentId:this.id,voice:e.session?.audio?.output?.voice||this.voice()});}if(e.type==='error'&&!this.ready){clearTimeout(timer);reject(Error(String(e.error?.message||'Higgs rejected configuration')));return;}this.receive(e);}catch(err){this.emit({type:'error',agentId:this.id,message:String(err)});}});
+   ws.once('error',err=>{clearTimeout(timer);reject(err);});
+   ws.on('error',err=>this.emit({type:'error',agentId:this.id,message:String(err.message)}));
+   ws.on('close',()=>{if(ws!==this.ws)return;clearTimeout(timer);for(const [id] of this.rows)this.finish(id,'DISCONNECTED');if(!this.ready)reject(Error(`${this.id}: disconnected before ready`));if(!this.closed&&this.ready)this.emit({type:'colleague_disconnected',agentId:this.id});});
+  });
+ }
+ get busy(){return !!this.job;}
+ get mode(){return this.job?.mode;}
+ private send(e:any){if(this.ws?.readyState===WebSocket.OPEN)this.ws.send(JSON.stringify(e));}
+ private createResponse(){this.send({type:'response.create'});}
+ private refreshVoiceContext(){this.send({type:'conversation.item.create',item:{type:'message',role:'user',content:[{type:'input_text',text:'[INTERNAL STATE UPDATE, not a new user request] '+JSON.stringify(this.currentContext())}]}});}
+ async ask(text:string){
+  if(!this.ready)throw Error(`${this.id} is not connected`);
+  if(this.job)await this.cancel();
+  const mode='conversation' as const;
+  const job=this.job={id:randomUUID(),mode,started:performance.now(),cancelled:false,rounds:0};
+  this.expectedItem='request_'+randomUUID().replaceAll('-','');
+  this.emit({type:'thinking',agentId:this.id,jobId:job.id,mode});
+  this.send({type:'conversation.item.create',item:{id:this.expectedItem,type:'message',role:'user',content:[{type:'input_text',text:`[CURRENT AUTHORITATIVE OFFICE STATE] ${JSON.stringify(this.currentContext())}\n[USER REQUEST]\n${text}`}]}});
+  return job;
+ }
+ audio(audio:string){if(!this.ready)return;this.send({type:'input_audio_buffer.append',audio});}
+ clearInput(){this.send({type:'input_audio_buffer.clear'});}
+ truncate(itemId:string,audioEndMs:number){this.send({type:'conversation.item.truncate',item_id:itemId,content_index:0,audio_end_ms:Math.max(0,Math.floor(audioEndMs))});}
+ async cancel(){const previous=this.job;if(previous){previous.cancelled=true;this.send({type:'response.cancel'});this.expectedItem='';const start=performance.now();while([...this.rows.values()].some(r=>r.job===previous)&&performance.now()-start<2500)await new Promise(r=>setTimeout(r,20));if(this.job===previous)this.job=undefined;}}
+ private receive(e:any){
+  if((e.type==='conversation.item.added'||e.type==='conversation.item.created')&&e.item?.id===this.expectedItem){this.expectedItem='';if(!this.job?.cancelled)this.createResponse();return;}
+  if(e.type==='error'){
+   if(/cancel.*not.*active|No active response|buffer.*empty/i.test(`${e.error?.code} ${e.error?.message}`))return;
+   const job=this.job;this.job=undefined;this.emit({type:'error',agentId:this.id,message:String(e.error?.message||e.error?.code)});if(job)this.ended(this.id,job,false);return;
+  }
+  if(e.type==='input_audio_buffer.speech_started'){
+   if(this.job)this.job.cancelled=true;
+   this.expectedItem='';this.barge();this.refreshVoiceContext();this.emit({type:'speech_started',agentId:this.id});
+  }
+  if(e.type==='input_audio_buffer.speech_stopped'){
+   this.job={id:randomUUID(),mode:'conversation',started:performance.now(),cancelled:false,rounds:0};this.emit({type:'thinking',agentId:this.id,jobId:this.job.id,mode:'conversation'});
+  }
+  if(e.type==='conversation.item.input_audio_transcription.completed')this.emit({type:'user_transcript',agentId:this.id,text:e.transcript});
+  if(e.type==='response.created'){
+   if(++this.responseCount>100){this.close();this.emit({type:'error',message:'Session has reached 100 responses; reconnect explicitly.'});return;}
+   const job=this.job||{id:randomUUID(),mode:'conversation' as const,started:performance.now(),cancelled:false,rounds:0};this.job=job;
+   const row:CallRow={id:randomUUID(),roomId:this.roomId(),agentId:this.id,voice:this.voice(),jobId:job.id,mode:job.mode,responseId:e.response.id,startedAt:new Date().toISOString()};
+   this.rows.set(e.response.id,{row,job,started:performance.now()});
+  }
+  const record=this.rows.get(e.response_id),row=record?.row;
+  if(e.type==='response.output_audio.delta'||e.type==='response.audio.delta'){
+   const b=Buffer.from(e.delta,'base64');if(b.length<2||b.length%2)return;this.chunks.set(e.response_id,[...(this.chunks.get(e.response_id)||[]),b]);if(row)row.firstAudioMs??=performance.now()-record!.job.started;
+   if(record&&!record.job.cancelled)this.emit({type:'audio',agentId:this.id,audio:e.delta,itemId:e.item_id,responseId:e.response_id,jobId:record?.job.id});
+  }
+  if(e.type==='response.output_audio_transcript.delta'||e.type==='response.audio_transcript.delta'){if(record&&!record.job.cancelled)this.emit({type:'speech_text',agentId:this.id,delta:e.delta,responseId:e.response_id});}
+  if(e.type==='response.output_audio_transcript.done'||e.type==='response.audio_transcript.done'){if(row)row.transcript=e.transcript;}
+  if(e.type==='response.done'){
+   const r=this.rows.get(e.response.id);if(!r)return;const {job}=r;
+   r.row.usage=e.response.usage;r.row.tools=[];
+   const calls=(e.response.output||[]).filter((c:any)=>c.type==='function_call');
+   for(const c of calls){let result:any;try{if(job.cancelled)throw Error('CANCELLED: this generation was interrupted; do not apply its tools.');result=this.tool(c.name,JSON.parse(c.arguments),job);}catch(err){result={committed:false,error:String(err),state:this.currentContext()};}r.row.tools.push({name:c.name,arguments:c.arguments,result});this.send({type:'conversation.item.create',item:{type:'function_call_output',call_id:c.call_id,output:JSON.stringify(result)}});}
+   const hasAudio=!!this.chunks.get(e.response.id)?.length;
+   this.finish(e.response.id,job.cancelled?'INTERRUPTED':e.response.status||'unknown');
+   if(!job.cancelled&&calls.length&&++job.rounds<5){this.createResponse();}
+   else{if(this.job===job)this.job=undefined;this.emit({type:'turn_done',agentId:this.id,jobId:job.id,responseId:e.response.id,mode:job.mode,cancelled:job.cancelled,hasAudio});this.ended(this.id,job,hasAudio);}
+  }
+ }
+ private finish(id:string,status:string){
+  const r=this.rows.get(id);if(!r)return;const pcm=Buffer.concat(this.chunks.get(id)||[]);const row=r.row;row.status=status;row.completeMs=performance.now()-r.started;row.estimatedUSD=cost(row.usage);row.usageMissing=row.estimatedUSD===undefined;
+  if(pcm.length){row.file=`audio/${row.id}.wav`;row.outputAudioSeconds=pcm.length/48000;writeFileSync(resolve(this.root,row.file),wav(pcm));}
+  appendFileSync(resolve(this.root,'calls.jsonl'),JSON.stringify(row)+'\n');this.rows.delete(id);this.chunks.delete(id);this.emit({type:'usage',row});
+ }
+ close(){this.closed=true;if(this.job)this.job.cancelled=true;for(const [id] of this.rows)this.finish(id,'INTERRUPTED');this.ws?.close();}
+}
