@@ -15,6 +15,8 @@ export default {
   'agency.reconnecting': 'Reconnecting…',
 
   'agency.reports': 'Reports',
+  'agency.open_result': 'Open result',
+  'agency.open_result_named': 'Open result: {name}',
   'agency.briefing_queue': 'Reports',
   'agency.hide_panel': 'Hide panel',
   'agency.back': '‹ Back',

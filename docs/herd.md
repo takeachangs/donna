@@ -1,5 +1,40 @@
 # Donna and the herd: the mailbox between the voice and the brain (design memo Oct 23, rewritten Oct 24 for the shipped code)
 
+Windows host: `start-windows.ps1` keeps the same Codex worker/mail/office contracts without tmux.
+`bridge.py --brain-engine codex` registers a `native_brain`; `wake()` resumes its CLI thread on
+new phone tasks or worker results. The brain reads pending inbox tasks, hires/revises named herd
+workers and writes its own note/ask/say replies. A completed CLI turn is not itself a completed
+parent task: planning acknowledgements remain open, and worker results wake the review turn.
+`meta.thread` and `meta.session` retain the actual brain ID; each worker retains its own thread.
+Workers use an OS file lock (fcntl on Unix, msvcrt on Windows), UTF-8 and stdin prompts. This is
+still the CLI implementation; app-server live steering remains an optional future upgrade.
+
+The voice receives the attached project identity on every call, including when `context.txt`
+is absent. Both the voice and `/call` interpret "here" as that repository and its task
+worktrees, not sibling folders or the saved agent-app project catalogue. This is a project
+selection/prompt contract; it does not turn the orchestrator's full-access CLI into an OS
+filesystem jail. Models must not expand a lookup outside the attached project.
+
+## Result delivery and restart
+
+After review, register a file with `herd.py result donna <task-id> <file> --title "Page"`.
+The helper accepts only the attached repository or one of its Git worktrees, snapshots the
+file in local result storage and adds an Open result link to its report. Registration can
+also attach a file to a completed task without changing its native session or creating
+another completion. HTML must be standalone, with embedded styles and scripts.
+
+`notifications.py` derives pending speech from the saved outbox and task/project state.
+The phone recovers unspoken results after restart instead of starting at EOF. Acknowledgements
+live in `herd/donna/notification-acks.json`; `task.spoken` is emitted only after a response
+conveying the reviewed report has finished its playback window. A greeting alone is not a
+delivery receipt. Recovery callbacks read the saved report rather than merely announcing
+why Donna is calling. A connection failure, interrupted
+speech or speaker failure leaves the result pending for the next restart. Delivery is
+at-least-once across a crash at the acknowledgement boundary. Already resolved questions,
+superseded requests and other projects do not ring; transfers remain live-call commands.
+Identical reports for the same registered file can acknowledge their refinement task IDs
+with one callback. Saying goodbye or using Hang up keeps the service armed; Ctrl+C stops it.
+
 Reference: `warmblood-kr/remuda` and `warmblood-kr/remuda-butler` (verbs `new/ls/send/capture/close`; mail with a `Next:` reply
 line; deferred replies; code-built status). We borrow the vocabulary and the invariants, not the Rust/Lua/Matrix.
 

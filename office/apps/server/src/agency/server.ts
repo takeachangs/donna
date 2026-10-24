@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { WebSocketServer, WebSocket } from 'ws';
 import { serveWeb } from './static.js';
+import { serveResult } from './results.js';
 import { log } from './log.js';
 import { officeFile, phoneState, watchOffice, type Office } from './state.js';
 
@@ -57,6 +58,7 @@ const server = createServer((req, res) => {
     return;
   }
   if (u.pathname === '/agency-api/workspace') return json(res, office.get().workspace);
+  if (serveResult(req, res, u.pathname, home, office.get().workspace)) return;
   if (!u.pathname.startsWith('/agency-api/') && serveWeb(req, res, u.pathname)) return;
   return json(res, { error: 'Not found' }, 404);
 });

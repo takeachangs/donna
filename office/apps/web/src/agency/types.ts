@@ -2,6 +2,7 @@ export type Colleague = { id: string; name: string; role: string; voice: string;
 export type Project = { id: string; name: string; deletedAt?: string };
 export type View = 'secretary' | 'command' | 'project';
 export type WorkStatus = 'queued' | 'working' | 'waiting' | 'review' | 'done' | 'paused' | 'failed';
+export type ResultFile = { id: string; file: string; title: string };
 export type Worker = {
   id: string;
   projectId: string;
@@ -54,6 +55,7 @@ export type Briefing = {
   workerId: string;
   title: string;
   summary: string;
+  artifacts?: ResultFile[];
   status: 'queued' | 'presented' | 'superseded';
   contributors: { name: string }[];
   createdAt: string;

@@ -18,7 +18,33 @@ cd office && npm install && npm run dev                                         
 # start the phone once in a terminal, then use the office's Call Donna / Hang up button (Enter in the bridge terminal still works)
 ```
 
-Checks that need no mic and no credits: `uv run bridge.py selftest`, `uv run higgslive.py`, `uv run herd.py`, `uv run tests/fake_donna.py --demo`.
+Offline checks: `uv run bridge.py selftest`, `uv run higgslive.py`, `uv run herd.py`.
+
+### Windows (Codex brain and workers)
+
+Install Python 3.11+, Node.js 22.12+, Git and the Codex CLI; sign in with `codex login`.
+Put `BOSON_API_KEY=...` in a local `.env`, then run from PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start-windows.ps1
+# Or use your repository and an audio device:
+# .\start-windows.ps1 -Project C:\projects\my-repo -OutputDevice 'Headphones'
+```
+
+The script installs local dependencies, builds the office at http://127.0.0.1:3014/ and opens
+the phone in the current terminal. Press Enter to call Donna; say goodbye to end a call.
+The default project is an isolated Git repository in `sandbox/`; state lives in `.runtime/donna/`.
+Native Windows resumes the same Codex brain when phone tasks or worker results arrive; tmux
+and Claude hooks are not required. The brain delegates to named Codex workers and reviews
+their files, using the same skill and the upstream brain permission settings. Workers use
+`workspace-write`. Model/effort overrides are local to the process (`DONNA_CODEX_MODEL`,
+`DONNA_CODEX_EFFORT`); the launcher defaults to Sol with low-effort workers and a medium-effort brain.
+
+`python tests/test_codex.py` checks the worker/office path with a fake CLI. The voice demos
+(`tests/fake_donna.py --demo`, including `--engine codex`) still call real Higgs; a fake brain
+does not make voice free. The Codex demo also starts real Codex workers. Run live checks only
+when authorized. Original local snapshots and native histories are not test fixtures.
+Measured Windows acceptance results and usage: [docs/codex-windows-results.md](docs/codex-windows-results.md).
 
 ## Layout
 

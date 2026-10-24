@@ -124,6 +124,21 @@ details p {
   background: var(--paper);
   border-bottom: 1px solid var(--line);
 }
+.result-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.result-link:hover { background: #f0ece4; }
+.result-link:focus-visible { outline: 2px solid #76583b; outline-offset: 3px; }
 .brand {
   display: flex;
   align-items: center;

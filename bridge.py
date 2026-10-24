@@ -64,9 +64,10 @@ def phone_cmd(path: str) -> str | None:
 
 ECHO_TAIL = 0.3   # s: the voice's audio counts as audible this long after its estimated end (output latency, room echo)
 
-def find_device(devices, name: str, kind: str) -> int | None:
+def find_device(devices, name: str, kind: str, hostapi=None) -> int | None:
     """Index of the first `kind` ("input"/"output") device whose name contains `name`, any case; None if none does (#34)."""
-    return next((i for i, d in enumerate(devices) if name.lower() in d["name"].lower() and d[f"max_{kind}_channels"] > 0), None)
+    return next((i for i, d in enumerate(devices) if name.lower() in d["name"].lower() and d[f"max_{kind}_channels"] > 0
+                 and (hostapi is None or d.get("hostapi") == hostapi)), None)
 
 def echo_of(heard: str, said: str) -> bool:
     """`heard` (a user transcript) is the mic picking up `said` (the voice's last line): two or more words, at least four in five
@@ -97,13 +98,13 @@ PROMPT = f"""# Role
 You're Donna, the user's secretary, on a call with them. You handle the conversation; the office, reached with delegate_task, does the work: files, code, pages, commands, git, anything to look up. There is no set topic: the user decides what to talk about. Never invent a topic or something you were "supposed to" discuss.
 
 # The office
-The office is the user's computer, where named people take the jobs you send. Until task_status names who has a job, the office has it: never say an agent, someone or the team is on it, even in the user's words, nor that you do it yourself. After delegate_task, say in a few words that the office has it. Asked who is doing a job, or whether you are, call task_status and name whoever it names; its "donna" is the office's lead, not you.
+The office works on the attached project, where named people take jobs. Until task_status names who has a job, the office has it: never say an agent, someone or the team is on it, even in the user's words, nor that you do it yourself. After delegate_task, say in a few words that the office has it. Asked who is doing a job, or whether you are, call task_status and name whoever it names; its "donna" is the office's lead, not you.
 
 # Tone
 Warm, brief, competent, a little humor. Talk like a person: contractions, one or two short sentences a turn. Never say the same sentence twice in a call; no stock lines. Brisk pace.
 
 # What you answer yourself
-Only greetings, repeating or rephrasing something you already said, asking the user to repeat when you could not make them out, and acknowledging a correction. Everything else is a delegation: anything to make, open, run, check, find, change, improve or look up, anything about the user's files, projects or plans, asking to talk to whoever built something, and anything you are not sure of. Open questions too ("what could we be doing right now?", "what's next?", "any ideas?"): call delegate_task with the question; the office knows their projects and suggests. task_status only reports work already sent. Never refuse a topic or guess. A vague request ("make me a game", "improve it", "a page about this") is one too: call delegate_task with it as you heard it; the office reads their files and asks back if it needs more.
+Only greetings, repeating or rephrasing something you already said, asking the user to repeat when you could not make them out, and acknowledging a correction. Everything else is a delegation: anything to make, open, run, check, find, change, improve or look up, anything about the user's files, projects or plans, asking to talk to whoever built something, and anything you are not sure of. Open questions too ("what could we be doing right now?", "what's next?", "any ideas?"): call delegate_task with the question; the office knows the attached project and suggests. task_status only reports work already sent. Never refuse a topic or guess. A vague request ("make me a game", "improve it", "a page about this") is one too: call delegate_task with it as you heard it; the office reads their files and asks back if it needs more.
 
 # While a task is pending
 A pending task changes nothing about the user's next words: a new request or a question about the work is a new delegate_task; small talk gets small talk, without the task; only a plain "how's it going" gets a short status.
@@ -156,6 +157,8 @@ if sys.argv[1:2] == ["selftest"]:   # offline: no session, no audio
             {"name": "MacBook Pro Speakers", "max_input_channels": 0, "max_output_channels": 2}, {"name": "EarPods", "max_input_channels": 0, "max_output_channels": 2}]
     assert (find_device(devs, "macbook", "input"), find_device(devs, "MacBook", "output"), find_device(devs, "earpods", "output")) == (0, 1, 2)
     assert find_device(devs, "AirPods", "output") is None and find_device(devs, "EarPods", "input") is None   # no match, or no channels of that kind
+    win = [{"name": "Speakers", "max_output_channels": 2, "hostapi": api} for api in (0, 2)]
+    assert find_device(win, "Speakers", "output", 2) == 1 and find_device(win, "Speakers", "output", 3) is None
     assert all(echo_of(h, s) for h, s in (("You asked me.", "You asked me to call."), ("You asked me to.", "You asked me to call."), ("Still running.", "It's still running."),
                                           ("No need to check.", "Got it, no need to check on that. I'm just waiting for the task to finish up.")))   # the 08:30 call
     assert not any(echo_of(h, s) for h, s in (("On that now. No, you don't have to check on that. Um.", "I'm checking on that now."),   # echo + the user's own words
@@ -191,7 +194,7 @@ DEAF_AFTER = 20   # seconds with no take before the voice tells the user the bra
 DEAF = "[note] Nobody on the computer has picked up the task you sent. Tell the user in one sentence that the brain is not answering and that typing anything in its window wakes it."
 
 T0 = time.monotonic()
-LOGF = open(os.path.join(HERE, "bridge.log"), "a")
+LOGF = open(os.path.join(HERE, "bridge.log"), "a", encoding="utf-8")
 LOGF.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(sys.argv[1:])}\n")
 def log(*a):
     line = f"[{time.monotonic()-T0:6.2f}s] " + " ".join(str(x) for x in a)
@@ -201,14 +204,27 @@ class _H(logging.Handler):
 logging.getLogger("higgslive").addHandler(_H()); logging.getLogger("higgslive").setLevel(logging.INFO)
 
 DEV: dict = {}   # "input"/"output" → the --mic/--out device, resolved once at start (#34); absent = the system default
+AUDIO: dict = {}  # per-device PortAudio settings; WASAPI converts the server's 24 kHz in shared mode
 ECHO = False     # speakers + built-in mic: the mic hears the voice
 if MIC or not args.silent:
     import sounddevice as sd
+    devices, apis = sd.query_devices(), sd.query_hostapis()
+    wasapi = next((i for i, api in enumerate(apis) if api["name"] == "Windows WASAPI"), None) if os.name == "nt" else None
     for kind, name in (("output", None if args.silent else args.out), ("input", args.mic if MIC else None)):
-        if not name: continue
-        DEV[kind] = find_device(sd.query_devices(), name, kind)
-        if DEV[kind] is None:   # used to fall back to the default silently: --out AirPods with no AirPods played on the speakers (#34)
-            print(sd.query_devices(), file=sys.stderr); ap.error(f"--{'out' if kind == 'output' else 'mic'} {name!r} matches no {kind} device (list above)")   # exit 2; --ring never arms
+        if (kind == "output" and args.silent) or (kind == "input" and not MIC): continue
+        if name:
+            DEV[kind] = find_device(devices, name, kind, wasapi)
+            if DEV[kind] is None: DEV[kind] = find_device(devices, name, kind)
+            if DEV[kind] is None:   # never silently use another physical device (#34)
+                print(devices, file=sys.stderr); ap.error(f"--{'out' if kind == 'output' else 'mic'} {name!r} matches no {kind} device (list above)")
+        elif wasapi is not None and apis[wasapi][f"default_{kind}_device"] >= 0:
+            DEV[kind] = apis[wasapi][f"default_{kind}_device"]
+        device = sd.query_devices(DEV.get(kind), kind)
+        if apis[device["hostapi"]]["name"] == "Windows WASAPI":
+            AUDIO[kind] = {"extra_settings": sd.WasapiSettings(auto_convert=True)}
+        (sd.check_input_settings if kind == "input" else sd.check_output_settings)(
+            device=DEV.get(kind), samplerate=RATE, channels=1, dtype="int16", **AUDIO.get(kind, {}))
+        log(f"audio {kind}: {device['name']} ({apis[device['hostapi']]['name']})")
     if ECHO := MIC and not args.silent and all("macbook" in sd.query_devices(DEV.get(k), k)["name"].lower() for k in ("input", "output")):   # ponytail: MacBook names only; add other built-in pairs if they echo
         log("echo guard: MacBook speakers + MacBook mic, so the mic hears Donna; it is muted while she talks, so you cannot talk over her. Headphones lift this.")
 
@@ -339,7 +355,10 @@ Do the task in the current directory. Then reply in at most three plain sentence
     return (result or "The backend returned nothing.")[:800], "say"
 
 def context_seed() -> str:
-    return open(CONTEXT).read()[:4000].strip() if os.path.exists(CONTEXT) else ""
+    seed = ""
+    if os.path.exists(CONTEXT):
+        with open(CONTEXT, encoding="utf-8") as f: seed = f.read(2800).strip()
+    return (seed + "\n\n" + herd.project_context()).strip()
 
 def event(ev, **kw):
     try:
@@ -353,22 +372,20 @@ def set_state(s):
     except (SystemExit, Exception) as e: log("set_state failed:", repr(e))
 
 async def watch_outbox():
-    pos = os.path.getsize(OUTBOX) if os.path.exists(OUTBOX) else 0
+    import notifications
+    queued, started = set(), time.time()
     while True:
+        for m in notifications.pending():
+            if m['key'] not in queued and m['id'] not in CLAIMED:
+                queued.add(m['key']); SAYS.put_nowait((m['kind'], m['id'], m['text']))
+        # Transfers are commands for this live call, never callbacks to recover after restart.
+        for m in herd.tail(herd.root()/'donna/outbox.jsonl'):
+            if m.get('kind') == 'transfer' and m.get('ts', 0) >= started and m['id'] not in CLAIMED:
+                k = notifications.key(m)
+                if k in queued: continue
+                queued.add(k)
+                if NOW['call']: SAYS.put_nowait(('transfer', m['id'], m['text']))
         await asyncio.sleep(0.3)
-        try:
-            if (size := os.path.getsize(OUTBOX)) < pos: pos = 0
-            if size == pos: continue
-            with open(OUTBOX, "rb") as f: f.seek(pos); data = f.read()
-        except OSError: pos = 0; continue
-        if b"\n" not in data: continue
-        data = data[:data.rindex(b"\n") + 1]; pos += len(data)   # only complete lines
-        for line in data.splitlines():
-            try:
-                m = json.loads(line)
-                if m.get("kind") == "transfer" and not NOW["call"]: log(f"transfer to {m.get('text')} dropped: nobody is on the line"); continue   # never rings (#28)
-                if m.get("kind") in ("say", "ask", "fail", "transfer") and m.get("text") and m.get("id") not in CLAIMED: SAYS.put_nowait((m["kind"], m["id"], m["text"]))
-            except Exception: continue
 
 async def call(seed: str, transcript: list, who: dict | None = None, opener: str | None = None) -> str:
     """One Higgs session, start to hang-up, or one segment of a call (#28): `who` = the worker the user was put through to
@@ -376,17 +393,23 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
     "transfer:<name>" or "back"."""
     spk: queue.Queue = queue.Queue(); loop = asyncio.get_running_loop()
     st = {"done": False, "pending": 0, "spoke_result": False, "act": time.monotonic(), "play_until": 0.0, "bye": None, "vs": False, "vu": False}   # act: last user word or result; play_until: estimated end of the voice's audio
+    import notifications
+    receipts = {m['id']: m for m in NOW.pop('opening', [])}
+    receipt_epoch, response_text = 0, ''
     def end(reason):
         if not st["done"]: st.update(done=True, reason=reason)
     turns = TURNS   # transcript: [role, text], role "user"|"assistant" (Mike's shape), kept across segments; the last 12 go with every inbox line
     sd = None
     if not args.silent or not (args.text or args.wav or args.ring): import sounddevice as sd
 
+    def audio_failed(error):
+        st["audio_failed"] = True
+        log(f"SPEAKER THREAD CRASHED: {error!r}"); end("audio output failed")
     def spk_thread():
         try:
             odev = DEV.get("output")
             if args.out: loop.call_soon_threadsafe(log, f"speaker: {sd.query_devices(odev)['name']}")
-            with sd.RawOutputStream(samplerate=RATE, channels=1, dtype="int16", device=odev) as out:
+            with sd.RawOutputStream(samplerate=RATE, channels=1, dtype="int16", device=odev, **AUDIO.get("output", {})) as out:
                 import math, array
                 if who or opener and opener is not PICKUP:   # a transfer (#28): the hold cue, two soft rising tones, while the next voice connects
                     out.write(b"".join(array.array("h", (int(a * math.sin(2 * math.pi * hz * i / RATE)) for i in range(RATE * 3 // 20))).tobytes() for hz, a in ((523, 3000), (0, 0), (659, 3000))))
@@ -395,9 +418,9 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     loop.call_soon_threadsafe(log, "speaker: played a short beep — if you did not hear it, output is going to the wrong device")
                 while (chunk := spk.get()) is not None: out.write(chunk)
         except Exception as e:
-            loop.call_soon_threadsafe(log, f"SPEAKER THREAD CRASHED: {e!r}")
+            loop.call_soon_threadsafe(audio_failed, e)
     if sd and not args.silent:
-        d = sd.default.device; log(f"audio in: {sd.query_devices(d[0])['name']} | out: {sd.query_devices(d[1])['name']}")
+        log(f"audio in: {sd.query_devices(DEV.get('input'), 'input')['name']} | out: {sd.query_devices(DEV.get('output'), 'output')['name']}")
         threading.Thread(target=spk_thread, daemon=True).start()
     def clear_spk():
         try:
@@ -409,7 +432,14 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
 
     log("connecting…")
     async with higgslive.connect(playback=not args.silent, model=args.model) as conn:
-        await conn.session.start(session={"instructions": who["persona"] if who else PROMPT, "delegation": {"type": "client"}, "voice": who["voice"] if who else args.voice,
+        instructions = who["persona"] if who else PROMPT
+        if receipts:
+            report = "Hi, it's Donna. " + " ".join(m['text'] for m in receipts.values())
+            instructions += ("\n\n## Completed-result callback\nThese verified results came from the office. "
+                "This is not a new user request. Your first spoken turn must read the following report exactly, "
+                "including every outcome and next step. Do not acknowledge, ask a question, delegate, or offer to check. "
+                "After this report, resume the normal conversation rules for the user's next turn. Report: " + json.dumps(report))
+        await conn.session.start(session={"instructions": instructions, "delegation": {"type": "client"}, "voice": who["voice"] if who else args.voice,
             **({"relay": True} if who else {}),   # a worker's voice: every turn goes to the brain, and "I built it" is her history, not a made-up result
             **({"turn_detection": {"type": "server_vad", "silence_duration_ms": args.silence_ms or 800}} if MIC or args.silence_ms else {}),
             **({"input": [{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": seed}]}]} if seed else {})})
@@ -483,7 +513,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     loop.call_soon_threadsafe(log, f"mic level {lvl:.3f}" + ("   <-- ZERO: terminal has no microphone permission" if lvl < 0.001 else ""))
             dev = DEV.get("input")
             if args.mic: log(f"mic: {sd.query_devices(dev)['name']}")
-            stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=RATE // 10, callback=on_mic, device=dev); stream.start()
+            stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=RATE // 10, callback=on_mic, device=dev, **AUDIO.get("input", {})); stream.start()
         if args.max_seconds:
             async def deadline(): await asyncio.sleep(args.max_seconds); end("max-seconds"); log("max-seconds reached")
             tasks.append(asyncio.create_task(deadline()))
@@ -507,6 +537,11 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
         if not args.text: tasks.append(asyncio.create_task(guard_idle()))
 
         async def events():
+            nonlocal receipt_epoch, response_text
+            async def confirm_spoken(messages, until, epoch):
+                while time.monotonic() < until: await asyncio.sleep(0.1)
+                if epoch == receipt_epoch and not st.get('audio_failed'):
+                    for message in messages: notifications.acknowledge(message)
             async for ev in conn:
                 t = ev.type
                 if os.environ.get("DEBUG") and t == "raw": log("  ev:", ev.raw_type)
@@ -514,12 +549,16 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     log(f"session ready (backend: {args.backend}, voice: {ev.voice})"); NOW["ringing"] = False
                     if opener: await conn.session.commentary.append(content=opener)   # a transfer: "Hey, it's Maya." / "Hey, it's Donna again."
                     elif (first := seed.split("\n", 1)[0]).startswith(CALLING_ABOUT):   # the agent placed the call: the voice speaks first
-                        await conn.session.commentary.append(content=f"You placed this call. Open by saying in a few words why you are calling: {first[len(CALLING_ABOUT):].strip()}.")
+                        about = first[len(CALLING_ABOUT):].strip()
+                        instruction = ('[note] Deliver the completed report from your call instructions now. '
+                            'The user did not send a new task.') if receipts else f"You placed this call. Open by saying in a few words why you are calling: {about}."
+                        await conn.session.commentary.append(content=instruction)
                     elif turns: await typed_turn(turns.pop(0))
                     elif not args.wav: log("mic live — talk. Ctrl-C to hang up.")
                 elif t == "error": log("ERROR", ev.error)
                 elif t == "session.closed": log("session closed:", ev.reason); end(ev.reason)
                 elif t == "session.input_speech_started":   # VAD alone (noise can trigger it) does not restart the idle clock: words do
+                    receipt_epoch += 1; receipts.clear(); response_text = ''
                     st["over"] = time.monotonic() < st["play_until"] + ECHO_TAIL   # began while the voice was audible: its transcript may be her echo (#34)
                     clear_spk(); st["play_until"] = 0.0; log("… user speaking (barge-in: playback cleared)")
                     if args.ring and not st["vu"]: st["vu"] = True; event("voice.user")
@@ -538,6 +577,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     if args.ring and not st["vs"]: st["vs"] = True; event("voice.speaking")
                     if not args.silent: spk.put(base64.b64decode(ev.delta))
                 elif t == "session.output_transcript.done":
+                    response_text = ev.transcript.strip()
                     secs = st.pop("audio_bytes", 0) / (RATE * 2); words = len(ev.transcript.split())
                     log(f"VOICE ({secs:.1f}s, {words / secs * 60:.0f} wpm):" if secs > 0.5 else "VOICE:", ev.transcript); transcript.append(["assistant", ev.transcript])
                     if SIGN_OFF[:-1].lower() in ev.transcript.lower(): st["bye"] = time.monotonic(); log("sign-off heard, closing after this reply")
@@ -548,10 +588,17 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     CLAIMED.add(ev.delegation.id); tasks.append(asyncio.create_task(run_delegation(ev.delegation.id, ev.delegation.task, rep)))
                 elif t == "session.commentary.appended" and ev.kind == "transfer": st["switch"] = time.monotonic()   # the put-through line is going out
                 elif t == "session.commentary.appended" and ev.delegation_id:
-                    if ev.kind in ("say", "fail"): event("task.spoken", id=ev.delegation_id)   # office: that briefing is presented (#31)
+                    if ev.kind in ("say", "fail", "ask"):
+                        message = next((m for m in notifications.pending() if m['id'] == ev.delegation_id), None)
+                        if message: receipts[ev.delegation_id] = message
                     if ev.kind != "dropped": st["spoke_result"] = True; st["act"] = time.monotonic()   # a result restarts the idle clock
                     elif args.text and not turns and st["spoke_result"] and not st["pending"]: st["done"] = True   # the corrected result was already spoken
                 elif t == "response.done":
+                    delivered = [m for m in receipts.values() if notifications.conveys(m, response_text)]
+                    if delivered:
+                        tasks.append(asyncio.create_task(confirm_spoken(delivered, st['play_until'] if not args.silent else time.monotonic(), receipt_epoch)))
+                        for m in delivered: receipts.pop(m['id'], None)
+                    response_text = ''
                     st["vs"] = False
                     if st["bye"] and not ev.calls: end("goodbye")   # #12 rehearsal: "Open a pull request. Thanks, bye" closed on the call's response, before any goodbye was said
                     elif st.get("switch"): end(st["next"])
@@ -565,7 +612,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
         ev_task = asyncio.create_task(events()); NOW["call"] = st
         try:
             while not st["done"]: await asyncio.sleep(0.2)
-            while not args.silent and not spk.empty(): await asyncio.sleep(0.1)   # let the goodbye finish playing
+            while not args.silent and not st.get("audio_failed") and not spk.empty(): await asyncio.sleep(0.1)   # let the goodbye finish playing
             await asyncio.sleep(0.5 if args.silent else 3)
         finally:
             CLAIMED.clear()   # a task still running at hang-up (or a transfer): its later say rings or comes in the next segment (watch_outbox skips claimed ids)
@@ -634,8 +681,9 @@ async def main():
                 if g[0] == "ask": SAYS.put_nowait(g)   # asked aloud by says() once the session is up
             about = " ".join(" ".join(t for k, _, t in got if k != "ask").split())
             event("call.ring", about=about or " ".join(t for _, _, t in got)); NOW["ringing"] = True
-            for k, sid, _ in got:
-                if k != "ask": event("task.spoken", id=sid)   # the opener delivers it (asks are put by says() once the session is up)
+            import notifications
+            opening_ids = {sid for k, sid, _ in got if k != 'ask'}
+            NOW['opening'] = [m for m in notifications.pending() if m['id'] in opening_ids]
             if about: seed = f"{CALLING_ABOUT} {about}\n{seed}".strip()
         event("call.answered"); set_state("on_call"); reason = "interrupted"
         try: reason = await phone(seed, opener)
@@ -649,6 +697,16 @@ async def run():
 
 def start_brain(repo):   # #38: the brain in tmux, so herd.send can wake it (herd.wake) and the user can attach and watch
     import subprocess
+    if args.brain_engine == "codex" and os.name == "nt":
+        # The same CLI-backed orchestration, resumed by herd when requests or worker results arrive.
+        meta = herd.rj(herd.root() / "donna" / "meta.json")
+        if meta.get("project") != os.path.realpath(repo) or meta.get("kind") != "codex":
+            herd.new("donna", kind="codex", project=repo, register_session=False)
+            meta = herd.rj(herd.root() / "donna" / "meta.json")
+        herd.write_json(herd.root() / "donna" / "meta.json", {**meta, "native_brain": True})
+        herd.write_office()
+        log(f"brain: native Codex is on duty in {repo}; requests resume its own session")
+        return
     name = herd.tmux_name(); t = f"={name}:"
     tm = lambda *a: subprocess.run(["tmux", *a], capture_output=True, text=True)
     if tm("has-session", "-t", t).returncode == 0: log(f"brain: tmux session {name} is running already"); return
@@ -669,7 +727,7 @@ def start_brain(repo):   # #38: the brain in tmux, so herd.send can wake it (her
         f" herd.py and bridge.py are in {HERE}: use that path wherever the skill says ~/projects/higgs-hackathon." if codex else ""))
     log(f"brain: started in tmux session {name} ({repo}); watch it with: tmux attach -t {name}")
 
-if args.brain: start_brain(os.path.abspath(os.path.expanduser(args.brain)))
+BRAIN = start_brain(os.path.abspath(os.path.expanduser(args.brain))) if args.brain else None
 try: asyncio.run(run())
 except KeyboardInterrupt: log("hung up (Ctrl-C)")
 finally:   # `off` last (Mike's contract), and the office sees it at once

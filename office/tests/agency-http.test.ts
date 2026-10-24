@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WebSocket } from 'ws';
@@ -90,4 +90,29 @@ it('POST phone writes phone.cmd for bridge.py --ring; health says whether the ph
   expect((await post({ cmd: 'rm -rf' })).status).toBe(400);
   expect((await post({ cmd: 'call' }, { Origin: 'http://evil.example' })).status).toBe(403);
   expect(existsSync(join(dir, 'phone.cmd'))).toBe(false);
+});
+
+it('opens only registered result snapshots in an isolated preview', async () => {
+  const id = 'abcdef012345abcdef012345',
+    folder = join(dir, 'results', id), file = 'result.html';
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, file), '<h1>Reviewed page</h1><script>document.title="Result"</script>');
+  const office = join(dir, 'office.json');
+  writeFileSync(office + '.tmp', JSON.stringify({ briefings: [{ id: 'task', artifacts: [{ id, file, title: 'My page' }] }] }));
+  renameSync(office + '.tmp', office);
+  for (let i = 0; i < 100 && !(await get('/agency-api/workspace')).briefings[0]?.artifacts; i++)
+    await new Promise((r) => setTimeout(r, 20));
+  const url = `/agency-api/results/${id}/${file}`, response = await fetch(base + url);
+  expect(response.status).toBe(200);
+  expect(await response.text()).toContain('Reviewed page');
+  expect(response.headers.get('content-security-policy')).toContain('sandbox allow-scripts;');
+  expect(response.headers.get('content-security-policy')).not.toContain('allow-same-origin');
+  expect((await fetch(base + url, { method: 'HEAD' })).status).toBe(200);
+  for (const path of [url.replace(id, '000000000000000000000000'), url.replace(file, '.env'), url + '/../../.env',
+    `/agency-api/results/${id}/%2e%2e%2f.env`, `/agency-api/results/${id}/..%5c.env`])
+    expect((await fetch(base + path)).status).toBe(404);
+  expect((await fetch(base + url, { method: 'POST' })).status).toBe(404);
+  expect((await fetch(base + url, { headers: { Origin: 'http://evil.example' } })).status).toBe(403);
+  rmSync(join(folder, file));
+  expect((await fetch(base + url)).status).toBe(404);
 });

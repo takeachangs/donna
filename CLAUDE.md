@@ -41,8 +41,11 @@ uv run bridge.py … --brain <repo> --brain-engine codex                        
 cd office && npm install && npm run dev                           # the office: http://127.0.0.1:5183/ (API 3003; HIGGS_HOME picks another folder)
 ```
 Wired EarPods are the output (the laptop mic hears the speakers, and AirPods' Bluetooth mic degrades STT); `bridge.py` exits if `--out` matches no device.
-Headless checks, no mic and no agent credits: `uv run bridge.py selftest`, `uv run higgslive.py`, `uv run herd.py`,
-`uv run tests/fake_donna.py --demo`, `uv run bridge.py --backend fake --silent --text "a | b"`.
+Offline checks: `uv run bridge.py selftest`, `uv run higgslive.py`, `uv run herd.py`.
+Voice demos (`tests/fake_donna.py --demo`, `bridge.py --backend fake --silent --text "a | b"`) still call Higgs;
+`tests/fake_donna.py --demo --engine codex` also runs real Codex workers. Fake CLI checks: `python tests/test_codex.py`.
+Windows: `powershell -ExecutionPolicy Bypass -File .\start-windows.ps1` starts a native Codex brain and the read-only
+office on 3014; no tmux. The host resumes the brain for requests and worker results and preserves its native thread.
 `--model higgs-realtime-1.5-preview` selects the 1.5 preview (default `higgs-realtime`).
 `~/.zshrc` exports an `ANTHROPIC_API_KEY` with low credit; `bridge.py` strips it so headless `claude -p` bills the claude.ai login.
 

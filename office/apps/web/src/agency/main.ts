@@ -209,6 +209,15 @@ function reportDetail(b: Briefing) {
     el('agency-scene').scrollIntoView({ block: 'center', behavior: 'instant' });
     scene?.replayHandoff(b.id);
   };
+  const artifacts = Array.isArray(b.artifacts) ? b.artifacts : [];
+  for (const file of artifacts) {
+    const open = make('a', 'result-link', artifacts.length > 1 ? t('agency.open_result_named', { name: file.title }) : t('agency.open_result'));
+    open.href = `/agency-api/results/${encodeURIComponent(file.id)}/${encodeURIComponent(file.file)}`;
+    open.target = '_blank';
+    open.rel = 'noopener noreferrer';
+    open.setAttribute('aria-label', t('agency.open_result_named', { name: file.title }));
+    actions.append(open);
+  }
   actions.append(replay);
   return [
     make('h3', 'report-title', b.title),

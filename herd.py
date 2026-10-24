@@ -23,6 +23,34 @@ Imports stay light (no argparse/tempfile/uuid at the top): the hook runs after e
 import json, os, re, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
+from contextlib import contextmanager
+
+
+@contextmanager
+def worker_lock(path):
+    with open(path, "a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+            if not lock.tell(): lock.write(b"0"); lock.flush()
+            lock.seek(0)
+            while True:
+                try: msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1); break
+                except OSError: time.sleep(.05)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def codex_state_lock(fn):
+    from functools import wraps
+    @wraps(fn)
+    def guarded(name, *args, **kwargs):
+        d = check_name(name)
+        if rj(d / 'meta.json').get('kind') == 'codex':
+            with worker_lock(d / '.state.lock'): return fn(name, *args, **kwargs)
+        return fn(name, *args, **kwargs)
+    return guarded
 
 
 def home() -> Path:
@@ -31,6 +59,17 @@ def home() -> Path:
 
 def root() -> Path:  # resolved per call so tests can set HIGGS_HOME
     return home() / "herd"
+
+
+def project_context(project=None):
+    project = project or rj(root() / "donna" / "meta.json").get("project")
+    if not project: return "No project is attached. Ask the person to attach a project before looking up their files."
+    return (f"Current attached project: {Path(project).name}. Project directory: {project}. "
+            "Here, this project, our projects, and all projects mean the attached office project and its task worktrees. "
+            "Answer from this project's files, task records and workers only. Never enumerate parent or sibling directories, "
+            "scan the computer, or query the saved Codex/Claude project catalogue. Other folders are not office projects. "
+            "If the person means a different project, explain that it is not attached; do not silently expand scope. "
+            "Donna's implementation and runtime directories are support files, not additional user projects.")
 
 
 def die(msg):
@@ -51,7 +90,11 @@ def lines(path, n=None):
 def write_json(path, obj):
     tmp = path.with_name(f".{path.name}.{os.urandom(4).hex()}")  # not tempfile: that import alone is ~20 ms and this runs in the hook
     tmp.write_text(json.dumps(obj))
-    os.replace(tmp, path)
+    for attempt in range(5):
+        try: os.replace(tmp, path); break
+        except PermissionError:
+            if os.name != 'nt' or attempt == 4: raise
+            time.sleep(.01)
 
 
 def event(ev, agent, **extra):
@@ -72,15 +115,15 @@ def agent_dir(name):
 
 
 def update(d, **kw):  # merge into status.json
-    s = json.loads((d / "status.json").read_text())
+    s = load(d)
     s.update(kw)
     write_json(d / "status.json", s)
     return s
 
 
-def new(name, kind="session", project=None):
+def new(name, kind="session", project=None, register_session=True):
     d = check_name(name)
-    me = {"session": os.environ["CODEX_THREAD_ID"]} if name == "donna" and kind == "codex" and os.environ.get("CODEX_THREAD_ID") else {}  # #66: a Codex brain registers itself (no hook): the thread it runs in
+    me = {"session": os.environ["CODEX_THREAD_ID"]} if register_session and name == "donna" and kind == "codex" and os.environ.get("CODEX_THREAD_ID") else {}  # #66: a Codex brain registers itself (no hook): the thread it runs in
     if (d / "meta.json").exists():  # /call runs `new donna` on every start
         print(f"herd: {name} exists", file=sys.stderr)
         m = json.loads((d / "meta.json").read_text())
@@ -100,7 +143,7 @@ def new(name, kind="session", project=None):
 def ls():
     out = []
     for m in sorted(root().glob("*/meta.json")):
-        meta, st = json.loads(m.read_text()), json.loads((m.parent / "status.json").read_text())
+        meta, st = rj(m, strict=True), load(m.parent)
         out.append({**meta, **st})
     return out
 
@@ -115,7 +158,7 @@ def settle(d, name, s, ev, **kw):  # write status with the agent state from the 
 
 
 def load(d):  # status.json, tasks always present
-    s = json.loads((d / "status.json").read_text())
+    s = rj(d / "status.json", strict=True)
     s.setdefault("tasks", {})
     return s
 
@@ -127,6 +170,16 @@ def tmux_name():  # the brain's tmux session (bridge.py --brain): "donna" for ~/
 
 def wake(text):  # #38: an idle brain gets a turn at once: the line is typed into its tmux session, if there is one
     import subprocess
+    meta = rj(root() / "donna" / "meta.json")
+    if meta.get("native_brain"):
+        pending = [i for i, t in rj(root() / "donna" / "status.json").get("tasks", {}).items() if t.get("state") in ("queued", "in_progress")]
+        if pending:
+            child = subprocess.Popen([sys.executable, '-X', 'utf8', os.path.abspath(__file__), 'run', 'donna', pending[0]],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0, start_new_session=os.name != 'nt')
+            import threading
+            threading.Thread(target=child.wait, daemon=True).start()
+        return
     t = f"={tmux_name()}:"  # "=": exact session name (tmux matches prefixes otherwise)
     try:
         if subprocess.run(["tmux", "has-session", "-t", t], capture_output=True).returncode == 0:
@@ -137,10 +190,12 @@ def wake(text):  # #38: an idle brain gets a turn at once: the line is typed int
         pass
 
 
+@codex_state_lock
 def send(name, task, context=None, frm="user", tid=None, reply_to=None, transcript=None, replaces=None, with_=None):  # tid: the caller's id (bridge.py passes the Higgs call_id)
     d = agent_dir(name)
     tid = tid or os.urandom(4).hex()
     line = {"id": tid, "task": task, "context": context, "from": frm, "ts": time.time()}
+    line["project"] = rj(d / "meta.json").get("project")
     if transcript is not None:  # [[role, text], ...] role "user"|"assistant": the call so far, printed by the hook instead of `context`
         line["transcript"] = transcript
     if with_:  # #28: the person is on the line with this worker: the brain forwards the words to them and says their answer
@@ -161,9 +216,11 @@ def send(name, task, context=None, frm="user", tid=None, reply_to=None, transcri
     if name == "donna":
         wake(f"Answer to task {reply_to}: {task}" if reply_to else f"Phone task {tid}" + (f" (on the line with {with_})" if with_ else "") + f": {task}")
     elif not reply_to and rj(d / "meta.json").get("kind") == "codex":  # #66: a codex worker: its turn runs in the background (run below)
-        import subprocess
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "run", name, tid], start_new_session=True,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        import subprocess, threading
+        child = subprocess.Popen([sys.executable, '-X', 'utf8', os.path.abspath(__file__), "run", name, tid], start_new_session=os.name != 'nt',
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        threading.Thread(target=child.wait, daemon=True).start()
     return tid
 
 
@@ -175,29 +232,59 @@ def step(it):  # a `codex exec --json` item -> a note: "Running npm test", "Edit
 
 
 def run(name, tid):  # #66: one turn of a codex worker: take, a note per command or edit, say (its last message) or fail at exit, then wake the brain
-    import fcntl, subprocess
+    import subprocess
     d = agent_dir(name)
     out = lambda kind, text: reply(name, tid, kind, text)
-    with open(d / ".run.lock", "w") as lk:
-        fcntl.flock(lk, fcntl.LOCK_EX)  # one codex turn at a time per worker: a second send waits for the first
+    with worker_lock(d / ".run.lock"):  # one codex turn at a time, including native Windows
         m, brief = rj(d / "meta.json"), next(l["task"] for l in reversed(lines(d / "inbox.jsonl")) if l["id"] == tid)
+        native_brain = name == "donna" and m.get("native_brain")
+        if native_brain:
+            pending = {i: t for i,t in load(d)["tasks"].items() if t["state"] in ("queued", "in_progress")}
+            if not pending: return
+            tid = next(iter(pending))
+            brief = (f"You are Donna, the orchestrator. Read {Path(__file__).parent}/.claude/skills/call/SKILL.md. "
+                f"The Donna checkout is {Path(__file__).parent}; task repo {m['project']}. "
+                + project_context(m["project"]) + " "
+                f'Use "{getattr(sys, "_base_executable", sys.executable)}" -X utf8 "{Path(__file__).resolve()}" for herd commands. '
+                "This native Windows host already registered you and wakes your exact session for each request/result. "
+                "Do not register again, start a bridge, or wait for inbox input. Handle the pending tasks below and return. "
+                "Delegate all edits to named herd Codex workers in git worktrees; never edit project files yourself. "
+                f"Put worktrees under {home()}/worktrees. Give real progress as notes on the original task IDs. "
+                "If workers are still busy, leave the parent task open and return; their results wake you automatically. "
+                "If you need the person, use ask and return. Answers are in your inbox. Review files and run checks before "
+                "one say/fail per original task ID. For a page/document, register its reviewed entry file with "
+                "herd.py result donna <task-id> <absolute-file> before say, then mention Open result in the report. "
+                "Forward a worker phone question to the same worker with herd send, "
+                "then relay its actual response; transfer still uses the same worker voice. "
+                f"Read {d}/inbox.jsonl and the named workers' capture results. Pending: {json.dumps(pending)}")
         out("take", "")
-        cmd = ["codex", "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check", "-c", 'model_reasoning_effort="medium"', "-C", m["project"],
-               *(["resume", m["thread"]] if m.get("thread") else []), brief]  # a second send resumes the worker's thread (SendMessage on Claude)
+        executable = os.environ.get("DONNA_CODEX_BIN", "codex")
+        cmd = ([sys.executable, executable] if executable.endswith(".py") else [executable]) + ["exec", "--json", "-s", "danger-full-access" if native_brain else "workspace-write", "--skip-git-repo-check", "-c", 'model_reasoning_effort="' + ("medium" if native_brain else os.environ.get("DONNA_CODEX_EFFORT", "medium")) + '"', "-C", m["project"],
+               *(["-m", os.environ["DONNA_CODEX_MODEL"]] if os.environ.get("DONNA_CODEX_MODEL") else []),
+               *(["resume", m["thread"]] if m.get("thread") else []), "-"]  # stdin avoids Windows' command-line length limit
         env = {k: v for k, v in os.environ.items() if not k.startswith("CODEX_") or k == "CODEX_HOME"}  # not the brain's thread id or sandbox flags
         text, err, rc = None, None, 1
         try:
-            p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env)
+            p = subprocess.Popen(cmd, cwd=m["project"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", env=env,
+                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            p.stdin.write(brief); p.stdin.close()
             for raw in p.stdout:
                 try: ev = json.loads(raw)
                 except ValueError: continue
                 it, ty = ev.get("item") or {}, ev.get("type")
-                if ty == "thread.started" and ev.get("thread_id"): write_json(d / "meta.json", {**rj(d / "meta.json"), "thread": ev["thread_id"]})
-                elif ty == "item.started" and (n := step(it)): out("note", n)
+                if ty == "thread.started" and ev.get("thread_id"): write_json(d / "meta.json", {**rj(d / "meta.json"), "thread": ev["thread_id"], **({"session": ev["thread_id"]} if native_brain else {})})
+                elif not native_brain and ty in ("item.started", "item.completed") and (n := step(it)): out("note", n)
                 elif ty == "item.completed" and it.get("type") == "agent_message": text = it.get("text")  # the last one is the report; item type "error" is a config warning
                 elif ty in ("turn.failed", "error"): err = (ev.get("error") or {}).get("message") or ev.get("message")
+                elif ty == "turn.completed" and ev.get("usage"):
+                    append(d / "usage.jsonl", {"ts": time.time(), "thread": rj(d / "meta.json").get("thread"), "usage": ev["usage"]})
             rc = p.wait()
         except OSError as e: err = f"codex did not start: {e}"
+        if native_brain:
+            if (rc or err) and load(d)["tasks"].get(tid, {}).get("state") not in ("done", "failed"):
+                out("fail", err or "Codex brain exited without completing the turn.")
+            write_office()
+            return  # The brain owns its say/ask/note; never turn a planning acknowledgement into a result.
         kind = "say" if rc == 0 and text and not err else "fail"
         try: out(kind, (text if kind == "say" else err or text or "Codex exited without a result.")[:4000])
         except SystemExit: return  # the brain closed the task meanwhile
@@ -209,11 +296,47 @@ def capture(name):
     return {**load(d), "outbox": lines(d / "outbox.jsonl", 3)}
 
 
+@codex_state_lock
+def result(name, tid, file, title=None):
+    """Publish one reviewed file locally, from the attached repo or one of its Git worktrees."""
+    import hashlib, subprocess
+    d = agent_dir(name)
+    if tid not in load(d)["tasks"]: die(f"unknown task: {tid}")
+    project = Path(rj(root() / "donna" / "meta.json")["project"]).resolve()
+    roots = [project]
+    git = subprocess.run(["git", "-c", "core.quotePath=false", "-C", str(project), "worktree", "list", "--porcelain"],
+                         capture_output=True, text=True, encoding="utf-8")
+    if git.returncode == 0:
+        roots += [Path(l[9:]).resolve() for l in git.stdout.splitlines() if l.startswith("worktree ")]
+    src = Path(file).resolve(strict=True)
+    if not any(src.is_relative_to(p) for p in roots): die("result must belong to the attached project or its Git worktrees")
+    if not src.is_file() or src.suffix.lower() not in (".html", ".htm", ".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp"):
+        die("result must be a standalone HTML, document or image file")
+    if src.stat().st_size > 10 * 1024 * 1024: die("result exceeds 10 MiB")
+    data = src.read_bytes(); key = hashlib.sha256(data).hexdigest()[:24]
+    base = home().resolve() / "results"
+    if not base.resolve().is_relative_to(home().resolve()): die("result storage is outside the runtime directory")
+    target = base / key / ("result" + src.suffix.lower())
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.parent.resolve().is_relative_to(base): die("result snapshot is outside its storage directory")
+    tmp = target.with_name("." + os.urandom(8).hex())
+    tmp.write_bytes(data); os.replace(tmp, target)
+    item = {"id": key, "file": target.name, "title": title or src.name}
+    saved = rj(d / "results.json"); items = saved.setdefault(tid, [])
+    items[:] = [i for i in items if i.get("id") != key]; items.append(item)
+    write_json(d / "results.json", saved)
+    event("result.added", name, id=tid, title=item["title"])
+    write_office()
+    return item
+
+
+@codex_state_lock
 def close(name):
     update(agent_dir(name), state="dead")
     event("agent.close", name)
 
 
+@codex_state_lock
 def state(name, st):
     update(agent_dir(name), state=st)
     event("agent.state", name, state=st)
@@ -222,6 +345,7 @@ def state(name, st):
 EV = {"take": "task.taken", "ask": "task.needs_you", "say": "task.done", "fail": "task.failed", "transfer": "task.transfer"}
 
 
+@codex_state_lock
 def reply(name, tid, kind, text):  # take|note|ask|say|fail|transfer (text: the worker's name, #28); an illegal transition dies before writing anything
     d = agent_dir(name)
     s = load(d)
@@ -285,10 +409,18 @@ def tail(path, n=TAIL):  # dict rows parsed from the last n bytes of a JSONL fil
     return [r for r in rows if isinstance(r, dict)]
 
 
-def rj(path):  # tolerant JSON read: other processes write these files
-    try: d = json.loads(path.read_text())
-    except (OSError, ValueError): return {}
-    return d if isinstance(d, dict) else {}
+def rj(path, strict=False):  # Windows can briefly deny reads during an atomic replacement.
+    for attempt in range(5):
+        try:
+            d = json.loads(path.read_text(encoding='utf-8'))
+            if isinstance(d, dict): return d
+            raise ValueError(f'Expected a JSON object: {path}')
+        except PermissionError:
+            if os.name == 'nt' and attempt < 4: time.sleep(.01); continue
+            if strict: raise
+        except (OSError, ValueError):
+            if strict: raise
+        return {}
 
 
 def text_of(x):  # a tool_response's text: a str, {content|result|text: str | [{text}]}, or [{text}]
@@ -342,6 +474,7 @@ def phrase(e, hires=()):  # #65: what Donna is doing, in words, from her last to
 
 def parent_args():  # #65: the command line of the Claude Code process running this hook (~4 ms); the self-check swaps it
     import subprocess
+    if os.name == "nt": return ""  # Codex workers do not depend on Unix process inspection.
     return subprocess.run(["ps", "-o", "args=", "-p", str(os.getppid())], capture_output=True, text=True).stdout
 
 
@@ -443,6 +576,7 @@ def office(now=None):
     says = [o for o in outbox if o.get("kind") == "say" and (o.get("ts") or 0) >= since][-10:]
     hev, evs = tail(root() / "events.jsonl"), tail(h / "events.jsonl")
     spoken = {e.get("id") for e in hev if e.get("ev") == "task.spoken"}  # bridge.py: the voice delivered it, on the call or as the ring's opener
+    spoken.update(rj(root() / "donna" / "notification-acks.json").get("spoken", []))
     # the brain's session: registered by /call, else the newest brain event fired from the project dir
     sess, real = meta.get("session"), lambda p, c={}: c.get(p) or c.setdefault(p, os.path.realpath(p))
     if not sess and proj:
@@ -551,7 +685,7 @@ def office(now=None):
         ws = [w for w, (r, _) in zip(workers[1:], vis) if sent.get(o["id"], 0) <= r["t0"] <= o["ts"]]
         ws = [w for w in ws if w["projectId"] == ws[0]["projectId"]]  # #83: a team hired while this task ran is not its contributor. ponytail: one room per result; a task that hires into two rooms credits the first
         briefings.append({"id": o["id"], "assignmentId": ws[0]["id"] if ws else "", "projectId": ws[0]["projectId"] if ws else pid, "workerId": ws[0]["id"] if ws else lid, "deliveryKey": o["id"],
-                          "title": (o.get("text") or "")[:60], "summary": o.get("text") or "", "artifacts": [], "verification": [], "status": "presented" if o["id"] in spoken else "queued",
+                          "title": (o.get("text") or "")[:60], "summary": o.get("text") or "", "artifacts": rj(root() / "donna" / "results.json").get(o["id"], []), "verification": [], "status": "presented" if o["id"] in spoken else "queued",
                           "createdAt": iso(o["ts"]), "contributors": [{"name": w["name"], "title": "", "summary": ""} for w in ws]})
     decisions = [{"id": k, "projectId": pid, "title": t.get("asked") or "", "context": t.get("task") or "", "status": "open",
                   "createdAt": iso(t.get("ts") or 0), "updatedAt": iso(t.get("ts") or 0)} for k, t in needs.items()]
@@ -592,6 +726,7 @@ def selfcheck_office():  # the brain-side hook and office.json, replayed from a 
 def _selfcheck_office():
     global parent_args
     import contextlib, io, tempfile
+    from unittest.mock import patch
     assert [action({"tool": t, "input": i}) for t, i in [("Bash", {"command": "cd /private/tmp/x && uv run pytest -q"}), ("Bash", {"command": "cd /private/tmp/x"}),
             ("Read", {"file_path": "/a/b.py"}), ("Grep", {"pattern": "x"})]] == ["Running checks", "Running a command", "Reading b.py", "Searching the code"]
     assert [action({"tool": "SendMessage", "input": {"to": t}}) for t in ("team-lead", "Maya")] == ["Reporting to Donna", "Messaging Maya"]  # a worker reporting back reads "Reporting to Donna"
@@ -816,9 +951,7 @@ def _selfcheck_office():
             tdir.mkdir(parents=True)
             (tdir / "sid12345-x.jsonl").write_text(json.dumps({"cwd": rj(mp)["project"]}) + "\n" + json.dumps(
                 {"timestamp": iso(time.time()), "message": {"content": [{"type": "tool_use", "id": "tu1", "name": "Agent", "input": {"description": "Old job", "name": "Zed"}}]}}) + "\n")
-            hm = os.environ.get("HOME"); os.environ["HOME"] = tmp
-            try: o = office()
-            finally: os.environ["HOME"] = hm
+            with patch.object(Path, "home", return_value=H): o = office()
             assert [w["id"] for w in o["workers"] if w["status"] != "queued"] == ["brain-sid12345", "tu1"] and o["workers"][1]["name"] == "Zed" and o["workers"][1]["role"] == "Old job"
             assert o["workers"][1]["status"] == "working" and o["assignments"][0]["title"] == "Old job"
 
@@ -827,8 +960,8 @@ def selfcheck_codex():  # #66: a Codex brain registers without a hook; a codex w
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["HIGGS_HOME"] = tmp
-        fake = Path(tmp, "bin", "codex"); fake.parent.mkdir()
-        fake.write_text(f"#!{sys.executable}\nimport json, os, sys\nopen(os.environ['HIGGS_HOME'] + '/codex-args', 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        fake = Path(tmp, "bin", "codex.py"); fake.parent.mkdir()
+        fake.write_text(f"#!{sys.executable}\nimport json, os, sys\nargs=sys.argv[1:]\nif args[-1]=='-': args[-1]=sys.stdin.read()\nopen(os.environ['HIGGS_HOME'] + '/codex-args', 'a').write(json.dumps(args) + '\\n')\n"
                         "for e in [{'type': 'thread.started', 'thread_id': 'th-1'}, {'type': 'item.completed', 'item': {'type': 'error', 'message': 'config warning'}},"
                         " {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'On it.'}},"
                         " {'type': 'item.started', 'item': {'type': 'command_execution', 'command': \"/bin/zsh -lc 'ls   -la'\"}},"
@@ -836,7 +969,8 @@ def selfcheck_codex():  # #66: a Codex brain registers without a hook; a codex w
                         " {'type': 'item.started', 'item': {'type': 'file_change', 'changes': [{'path': '/w/index.html'}, {'path': '/w/a.css'}]}},"
                         " {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Built the page.'}}]: print(json.dumps(e), flush=True)\n")
         fake.chmod(0o755)
-        path, os.environ["PATH"] = os.environ["PATH"], f"{fake.parent}:{os.environ['PATH']}"
+        old_binary = os.environ.get("DONNA_CODEX_BIN")
+        os.environ["DONNA_CODEX_BIN"] = str(fake)
         try:
             os.environ["CODEX_THREAD_ID"] = "cx-brain-1"
             new("donna", kind="codex", project=tmp)
@@ -863,7 +997,8 @@ def selfcheck_codex():  # #66: a Codex brain registers without a hook; a codex w
             time.sleep(0.01); new("donna", kind="codex", project=tmp); new("Ava", kind="codex", project=tmp)  # a new duty period re-hires Ava: drawn again, not done yet
             assert [(w["name"], w["status"]) for w in office()["workers"][1:]] == [("Ava", "working")], office()["workers"]
         finally:
-            os.environ["PATH"] = path
+            if old_binary is None: os.environ.pop("DONNA_CODEX_BIN", None)
+            else: os.environ["DONNA_CODEX_BIN"] = old_binary
 
 
 def selfcheck():
@@ -878,7 +1013,7 @@ def selfcheck():
         os.environ["HIGGS_HOME"] = tmp
         new("donna", project=tmp)
         new("donna", project=tmp + "/moved")  # idempotent: no second agent.new, status untouched, project updated
-        assert json.loads((root() / "donna" / "meta.json").read_text())["project"].endswith("/moved")
+        assert Path(json.loads((root() / "donna" / "meta.json").read_text())["project"]) == Path(tmp, "moved").resolve()
         tid = send("donna", "fix it", context="ctx")
         assert T(tid)["state"] == "queued" and capture("donna")["state"] == "idle"
         reply("donna", tid, "take", ""); reply("donna", tid, "take", "")  # second take: no-op, no event, no outbox line
@@ -945,6 +1080,7 @@ def main(argv):
     a = sub.add_parser("state"); a.add_argument("name"); a.add_argument("state", choices=["working", "idle", "needs_you", "speaking", "on_call"])
     a = sub.add_parser("reply"); a.add_argument("name"); a.add_argument("id"); a.add_argument("kind", choices=["take", "note", "ask", "say", "fail", "transfer"]); a.add_argument("text")
     a = sub.add_parser("run"); a.add_argument("name"); a.add_argument("id")  # internal: started by send for a codex worker
+    a = sub.add_parser("result"); a.add_argument("name"); a.add_argument("id"); a.add_argument("file"); a.add_argument("--title")
     x = p.parse_args(argv)
     if x.cmd == "new":
         new(x.name, x.kind, x.project)
@@ -967,6 +1103,8 @@ def main(argv):
         state(x.name, x.state)
     elif x.cmd == "run":
         run(x.name, x.id)
+    elif x.cmd == "result":
+        print(json.dumps(result(x.name, x.id, x.file, x.title)))
     else:
         reply(x.name, x.id, x.kind, x.text)
 
