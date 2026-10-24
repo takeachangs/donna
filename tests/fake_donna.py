@@ -1,5 +1,5 @@
 # /// script
-# dependencies = []
+# dependencies = ["websockets>=13"]
 # ///
 """A scripted stand-in for Donna's brain (the /call session) for a headless check of the task lifecycle. Stdlib only.
 
@@ -10,14 +10,20 @@
                                         # transcript answers -> back to Donna (her voice) -> bye
     uv run tests/fake_donna.py --fast-take  # #49: the brain takes each task within ~10 ms, then stays silent past the 20 s
                                         # deaf-brain timer: every take must reach the bridge (no "no take for" line)
+    uv run tests/fake_donna.py --order  # #55: three tasks, each result a bare "Done.", landing in another order: each reply
+                                        # names its own task, no claim names one whose result has not gone in
+    uv run tests/fake_donna.py --bye-race [--control]  # #55: the music backup's "Done." lands 0.5 s before "Thanks, bye" while
+                                        # the notes backup runs: it is spoken; --control: no result, no done claim spoken
 """
-import json, os, queue, signal, subprocess, sys, tempfile, threading, time
+import json, os, queue, re, signal, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))   # import herd from the repo root
+sys.path.insert(0, str(REPO))   # import herd, higgslive from the repo root
 answers: dict = {}
 QUIET = threading.Event()  # --fast-take: take at once, then nothing for 25 s (a missed take would look like a deaf brain)
+ORDER, TAKEN = threading.Event(), threading.Barrier(3)  # --order: all three taken, then "Done." for notes, photos, music (#55)
+RACE, GO = threading.Event(), threading.Event()  # --bye-race: the music backup's "Done." when the driver sets GO; the notes backup never ends
 
 
 def out(msg):
@@ -39,6 +45,15 @@ def work(herd, line):
     tid, task = line["id"], line["task"]
     if QUIET.is_set():
         say(herd, tid, "take", ""); time.sleep(25); say(herd, tid, "say", "Done."); return
+    if ORDER.is_set():  # sent photos, music, notes; told notes (1 s), photos (9 s), music (17 s) after the third take
+        say(herd, tid, "take", "")
+        try: TAKEN.wait(60)
+        except threading.BrokenBarrierError: pass
+        time.sleep(next((d for w, d in (("note", 1), ("photo", 9), ("music", 17)) if w in task.lower()), 25)); say(herd, tid, "say", "Done."); return
+    if RACE.is_set():
+        say(herd, tid, "take", "")
+        if "music" in task.lower(): GO.wait(); say(herd, tid, "say", "Done.")
+        return
     said = (task + " " + " ".join(t for _, t in line.get("transcript") or [])).lower()
     if line.get("with") == "Maya":  # put through: the brain forwards to Maya (SendMessage) and says her answer
         say(herd, tid, "take", ""); time.sleep(1.0); say(herd, tid, "say", MAYA if "timer" in said or "question" in said else "That's not mine; Donna will know."); return
@@ -160,6 +175,85 @@ def fast_take_flow(herd, wait_log, type_):  # #49: offline, the old order (seek 
     wait_log("call.ended", 40)
 
 
+NOUNS = ("photo", "music", "note")
+
+
+def spoken(log):  # (kind, value) from bridge.log in order: ("task", (did, noun)), ("result", did), ("voice", line), ("fabricated", line)
+    for l in log.splitlines():
+        if m := re.search(r"DELEGATION (\S+) @\d+ms: (.*)", l): yield "task", (m[1], next((n for n in NOUNS if n in m[2].lower()), None))
+        elif m := re.search(r"→ (?:commentary|attached held result) (\S+)", l): yield "result", m[1]
+        elif m := re.search(r"VOICE[^:]*: (.*)", l): yield "voice", m[1]
+        elif "fabricated:" in l: yield "fabricated", l
+
+
+def judge(log):  # #55: in each result's reply, claims (no LATER word) naming a task whose result has not gone in, or any task when the reply never names its own
+    import higgslive
+    noun, told, bad, named, fab, last = {}, set(), [], 0, 0, None
+    for kind, v in spoken(log):
+        if kind == "task": noun[v[0]] = v[1]
+        elif kind == "result": last = noun.get(v); told.add(last)
+        elif kind == "fabricated": fab += 1
+        elif last:  # "still zipping the music" is no claim; "the notes are archived" is (DONE lacks "archived")
+            own = last in v.lower(); named += own; ok = told if own else set()
+            bad += [v for s in higgslive.sentences(v) if not higgslive.LATER.search(s) for n in NOUNS if n in s and n not in ok]
+            last = None
+    return bad, named, fab
+
+
+def false_claims(voice, about=""):  # done claims (higgslive.fabricated, sentence by sentence) that mention `about`
+    import higgslive
+    return [p for v in voice for p in re.split(r"(?<=[.!?;\]}])\s+", v) if about in p.lower() and higgslive.fabricated(p)]
+
+
+def order_flow(herd, wait_log, type_):  # #55: on main a bare "Done." for the photos archive was told as the notes backup
+    ORDER.set()
+    wait_log("ring: waiting", 30)
+    type_("")
+    wait_log("session ready", 30)
+    time.sleep(1)
+    for req in ("Archive the photos folder.", "Also zip the music folder.", "And make a backup of the notes folder."):
+        type_(req)
+        wait_log("→ inbox", 30)
+        wait_log("~ note: started", 5)
+        time.sleep(2)
+    for _ in NOUNS:
+        wait_log("backend done for", 40)
+    time.sleep(8)  # the last reply
+    bad, named, fab = judge(wait_log.tail())
+    print(f"#55 order: misattributed {len(bad)}, replies naming their task {named}/3, guard swaps {fab}", *bad, sep="\n  ", flush=True)
+    type_("Thanks, bye")
+    wait_log("call.ended", 30)
+    assert not bad, bad
+
+
+def bye_race_flow(herd, wait_log, type_, result=True):  # #55: the #49 run's goodbye swapped a true "The music folder zip is all set." ("backed up" is a DONE word, "zipped" is not)
+    RACE.set()
+    wait_log("ring: waiting", 30)
+    type_("")
+    wait_log("session ready", 30)
+    time.sleep(1)
+    for req in ("Back up the music folder.", "And make a backup of the notes folder."):
+        type_(req)
+        wait_log("→ inbox", 30)
+        wait_log("~ note: started", 5)
+        time.sleep(2)
+    time.sleep(3)  # past the quiet beat: the result goes straight in, its reply in flight when the user says bye
+    at = len(wait_log.tail())
+    if result:
+        GO.set()
+        wait_log("backend done for", 10)
+        time.sleep(0.5)
+    type_("Thanks, bye")
+    wait_log("call.ended", 40)
+    after = wait_log.tail()[at:]
+    voice = [v for k, v in spoken(after) if k == "voice"]
+    claims = false_claims(voice, "note" if result else "")  # with a result: done claims about the notes backup
+    music = any("music" in v.lower() for v in voice)
+    print(f"#55 bye-race {'result' if result else 'control'}: music result spoken {music}, false done claims spoken {len(claims)}, "
+          f"guard swaps {after.count('fabricated:')}", *voice, sep="\n  ", flush=True)
+    assert not claims and (music or not result), voice
+
+
 def demo(flow):
     tmp = tempfile.mkdtemp()
     os.environ["HIGGS_HOME"] = os.environ["HIGGS_DIR"] = tmp
@@ -186,6 +280,7 @@ def demo(flow):
                     return l
             time.sleep(0.2)
         raise TimeoutError(f"no {sub!r} in {timeout}s")
+    wait_log.tail = tail
 
     def type_(text):
         bridge.stdin.write(text + "\n"); bridge.stdin.flush()
@@ -205,4 +300,6 @@ def demo(flow):
 
 
 if __name__ == "__main__":
-    demo(ask_flow) if "--demo" in sys.argv else demo(transfer_flow) if "--transfer" in sys.argv else demo(fast_take_flow) if "--fast-take" in sys.argv else agent()
+    flows = {"--demo": ask_flow, "--transfer": transfer_flow, "--fast-take": fast_take_flow, "--order": order_flow,
+             "--bye-race": (lambda *a: bye_race_flow(*a, result="--control" not in sys.argv))}
+    demo(next(f for k, f in flows.items() if k in sys.argv)) if any(k in sys.argv for k in flows) else agent()
