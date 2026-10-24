@@ -137,6 +137,11 @@ Grep this folder first: `grep -rn "<term>" docs/`. Every file is plain markdown 
   0 fabricated lines in the transcript; the guard fired 2/10 (both real: "The version flag has been added") and the model repeated the fixed line word for word, sign-off included.
   "You're all set" is a goodbye, not a claim (3 false hits before it was exempted). Five bridges at once on one key: 3/10 goodbye
   responses failed `upstream_error` mid-reply, cut before the sign-off, so the call never closed; two at once: 0/10.
+- Several calls open (Oct 24, #55, `higgs-realtime`, `tests/fake_donna.py --order`, key 2): the model does not pair a
+  `function_call_output` with its call. With three `delegate_task` calls open and the results landing in another order (each a
+  bare "Done."), it told the newest task first and then went by recency: 16 sentences in 10/10 runs named the wrong task, and
+  18/30 replies named the right one. The `call_id` alone carries no meaning to it. With the task line inside the output
+  (`Result for "<task>": Done.`), 0 wrong in 10/10 runs and 30/30 named the right task. It never read the prefix aloud.
 - Transfer (Oct 24, #28, `higgs-realtime`, `tests/fake_donna.py --transfer`): a fresh session per segment is cheap. The
   new socket's `session.created` came 0.25 s after the old segment ended, and it echoes the applied voice at
   `session.audio.output.voice` (how the check proves who is talking: nora → chloe → nora). The worker persona's
