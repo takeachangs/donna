@@ -105,6 +105,16 @@ Grep this folder first: `grep -rn "<term>" docs/`. Every file is plain markdown 
 - Function tool output is accepted as a plain string or a JSON string; both work.
 - Model may *claim* to be working without calling a tool; instruct it explicitly never to say so unless it called the tool this turn.
 - Tool choice follows the words in a tool's description, even negated ones (Oct 24, `higgs-realtime`, #23): with "never for files, folders or the computer" in `task_status`'s description, "what's in my directory" called `task_status` in 2/6 runs (0/6 without it, 12/12 once the routing was stated positively in `delegate_task`'s prompt). Keep words about other tools' jobs out of a description. When tasks are queued, "what's in this tray" (STT for "directory") reads as the task in-tray.
+- Unclear objects and status words (Oct 24, #43, `higgs-realtime`, text mode, `probe/r43/probe.py`, key 2). "Make a diagram of this"-style
+  requests with no context: a first-turn `delegate_task` in 1/10, and that one filled the blank ("explains the topic of the user's
+  request"; the 09:48 call wrote "how the delegate_task function works", her own tool's name); the rest said "I'm on it" with no call
+  or interviewed ("Could you please provide more details…"). MECHANICS "the task is the user's request in their own words… a 'this'
+  the call has not explained stays as they said it" + "never ask the user what 'this' is": the call carries their words in 19/20, 0
+  invented objects, but on the first turn only 4/20 (12 "I'm on it", 4 interviews), so the GUARD's nudge does the rest (interview
+  phrases now count as OFFER; NUDGE says "in their words"). Status words: "how many agents", "the lounge", "any reports", "the office"
+  called `task_status` 5/10 → 20/20 once its description named "the agents (workers)… results not told yet" and MECHANICS listed the
+  words. "What did I ask you earlier?" went to `task_status` 9/9 even when MECHANICS said `delegate_task` (descriptions win), so the
+  status carries the duty period's earlier results. File questions still go to `delegate_task` (6/6); r26 first-turn 12/12.
 - `claude -p` headless: pass `--allowedTools` or file tools are denied silently.
 - Claude Code hooks (2.1.309, probed Oct 24 for #44): `SubagentStart` carries `session_id` (set), `cwd`, `prompt_id`, `agent_id`,
   `agent_type` and nothing else: no name, no description; those come only from the brain's `PostToolUse(Agent)`, which for a
