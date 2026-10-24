@@ -35,12 +35,12 @@ Three parts (Oct 24 architecture; the log is `IDEAS.md` from "Oct 24 ~07:00"):
 ## Running
 ```bash
 export BOSON_API_KEY=…      # ~/.zshrc; a second key is BOSON_API_KEY_2 in .env (gitignored)
-uv run bridge.py --ring --backend session --voice nora --out EarPods --brain <repo>   # the phone + the brain (tmux attach -t donna)
+uv run bridge.py --ring --backend session --voice nora --out MacBook --mic MacBook --brain <repo>   # the phone + the brain (tmux attach -t donna)
 uv run bridge.py … --brain <repo> --brain-model sonnet                              # the brain on another model (passed to claude --model)
 uv run bridge.py … --brain <repo> --brain-engine codex                             # #66: the brain on Codex; workers are herd.py codex agents (codex exec), office rows from herd files, no hooks
 cd office && npm install && npm run dev                           # the office: http://127.0.0.1:5183/ (API 3003; HIGGS_HOME picks another folder)
 ```
-Wired EarPods are the output (the laptop mic hears the speakers, and AirPods' Bluetooth mic degrades STT); `bridge.py` exits if `--out` matches no device.
+Default audio is the laptop speakers and mic (`--out MacBook --mic MacBook`): the echo guard mutes the mic while Donna talks, so you cannot talk over her. Wired EarPods (`--out EarPods`, no `--mic`) give barge-in; AirPods' Bluetooth mic degrades STT. `bridge.py` exits if `--out` matches no device.
 Headless checks, no mic and no agent credits: `uv run bridge.py selftest`, `uv run higgslive.py`, `uv run herd.py`,
 `uv run tests/fake_donna.py --demo`, `uv run bridge.py --backend fake --silent --text "a | b"`.
 `--model higgs-realtime-1.5-preview` selects the 1.5 preview (default `higgs-realtime`).

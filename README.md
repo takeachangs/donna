@@ -8,11 +8,11 @@ Higgs Realtime has no client-side delegation, so `higgslive.py` adds it (same sh
 
 ## Run
 
-macOS, [uv](https://docs.astral.sh/uv/), tmux, Claude Code, wired EarPods, and a Boson key.
+macOS, [uv](https://docs.astral.sh/uv/), Claude Code or Codex, and a Boson key. Laptop speakers and mic work (the mic mutes while Donna talks); wired EarPods give you barge-in.
 
 ```bash
 export BOSON_API_KEY=…
-uv run bridge.py --ring --backend session --voice nora --out EarPods --brain <repo>   # the phone + the brain (tmux attach -t donna)
+uv run bridge.py --ring --backend session --voice nora --out MacBook --mic MacBook --brain <repo>   # the phone + the brain (tmux attach -t donna)
 uv run bridge.py … --brain <repo> --brain-engine codex                                 # Codex edition: brain and workers on Codex CLI (signed in)
 cd office && npm install && npm run dev                                                # the office: http://127.0.0.1:5183/
 # start the phone once in a terminal, then use the office's Call Donna / Hang up button (Enter in the bridge terminal still works)

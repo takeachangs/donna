@@ -6,13 +6,13 @@ the script was rehearsed headlessly on Oct 24, 13:05-13:45: typed turns on `brid
 Latency = from the end of the presenter's line to Donna's first audio. Not yet run on a live mic.
 
 ## 1. Setup (once, before going on)
-1. EarPods in (Donna must not come out of the laptop speakers: no echo cancellation). Speak slower on the keywords: on the EarPods mic STT wrote "that encounter" for "session counter" and "Doma" for "Donna" (13:29 call, #82). `export BOSON_API_KEY=…` (one key per live call).
+1. Laptop speakers and mic (`--out MacBook --mic MacBook`): the mic is muted while Donna talks, so wait for her to finish; there is no barge-in on speakers. EarPods instead (`--out MacBook --mic MacBook`) if you want barge-in. Speak slower on the keywords: on the EarPods mic STT wrote "that encounter" for "session counter" and "Doma" for "Donna" (13:29 call, #82). `export BOSON_API_KEY=…` (one key per live call).
 2. Office: `cd office && npm run dev`, open http://127.0.0.1:5183 (API on :3003).
 3. Demo repo `~/projects/donna-demo`: a clean `main`, README only, and a GitHub remote (`git remote -v`; `gh auth status`).
    Without a remote the pull request beat rings back with "I couldn't open the pull request, the project has no GitHub remote".
 4. Brain, terminal 1, in `~/projects/donna-demo`: `claude --settings ~/projects/higgs-hackathon/hooks/office.json --model sonnet`,
    answer the trust question for a new folder, type `/call`. It registers and says Donna is on duty (about 12 s in rehearsal).
-5. Phone, terminal 2, in `~/projects/higgs-hackathon`: `uv run bridge.py --ring --backend session --voice nora --out EarPods`.
+5. Phone, terminal 2, in `~/projects/higgs-hackathon`: `uv run bridge.py --ring --backend session --voice nora --out MacBook --mic MacBook`.
    Expect `ring: waiting`. No `--brain`: nothing types into the brain's terminal; its background wait loop picks up each task.
    Optional instead of step 4: add `--brain ~/projects/donna-demo --brain-model sonnet` to step 5 (the brain runs in tmux);
    watch it with `tmux attach -t =donna`. The `=` matters: plain `-t donna` attaches to any session whose name starts with
