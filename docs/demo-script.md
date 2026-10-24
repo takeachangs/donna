@@ -29,10 +29,9 @@ hooks firing inside the workers. Each of them works in its own git worktree."
 ## 1:20 Talk while they work (Seongmin)
 S: "How's it going?"
 Donna: "Leo is building the timer page and logic, and Mia is handling the stylesheet."
-S interrupts her mid-sentence: "Actually, sorry, one thing: make the break ten minutes."
-Donna stops, listens, and passes it on.
-J: "Barge-in is Higgs. The follow-up went to the brain as a correction, and the brain forwards it to the worker who
-owns that file."
+S interrupts her mid-sentence: "Actually, hold on. ... Never mind, carry on."
+Donna stops the instant he speaks, then picks back up.
+J: "Barge-in is Higgs: she stops mid-word. Nothing was sent, the workers never noticed."
 
 ## 1:50 The result (Donna)
 Donna: "Leo built the focus timer with twenty-five minute sessions, five-minute breaks, and a session counter, and Mia handled the light and dark styling. The code is on its own branch."
@@ -44,14 +43,16 @@ S: "Who built the timer?"  Donna: "Leo."
 S: "Put me through to Leo."
 Hold cue. A different voice: "Hey, it's Leo."
 S: "Why did you pick that interval length?"
-Leo answers in first person, from his own work.
+Leo answers in first person. (Rehearsal note: his voice tends to give a quick guess first and the real answer from his
+own session about twenty seconds later, "the brief specified twenty-five minutes, standard Pomodoro"; keep the second
+answer, cut the first.)
 S: "Put Donna back on."  Donna: "Hey, it's Donna again."
 J: "That was a fresh Higgs session in Leo's voice, and Seongmin's question went into Leo's own Claude Code session,
 the same messaging Claude Code uses between agents."
 
 ## 2:40 Hang up and callback (Seongmin)
-S: "Open a pull request. Thanks, that's all, bye."
-Donna: "Will do. Hanging up now."
+S: "Open a pull request."  Donna: "On it." (wait for that)
+S: "Thanks, that's all, bye."  Donna: "Hanging up now."
 (Ten to twenty seconds. The phone rings. S presses Enter.)
 Donna: "The pull request is up."
 J: "She calls you back. That's the whole idea: you keep coding, the office works, the phone rings when it matters."
