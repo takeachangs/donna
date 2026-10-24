@@ -140,3 +140,63 @@ it('instructs Donna as a phone call, placed after rule one and before tool routi
  for(const x of ['ON THE PHONE',"Hey, it's Donna.",'offer the short version',"I'll let you go",'The bakery page is done, Ellis and Miles finished it. Want the short version?','Never say ids, file paths','Reply to what the user just said'])expect(i).toContain(x);
  expect(phone).toBeGreaterThan(i.indexOf('RULE ONE'));expect(phone).toBeLessThan(i.indexOf('WHICH TOOL'));expect(i).not.toContain('2–3 natural spoken sentences');
 });
+
+const wait=(ms:number)=>new Promise(r=>setTimeout(r,ms));
+const upstream={type:'error',error:{type:'server_error',code:'upstream_error',message:'The response failed because an upstream service call did not complete.'}};
+const failTurn=(socket:any,id:string)=>{socket.receive({type:'response.created',response:{id}});socket.receive(upstream);socket.receive({type:'response.done',response:{id,status:'failed',status_details:{type:'failed',error:{code:'upstream_error',message:'The response failed because an upstream service call did not complete.'}},output:[],usage:null}});};
+const startTurn=async(events:any[],tool:any=()=>({committed:true}))=>{
+ vi.stubEnv('BOSON_API_KEY','offline-fixture');
+ const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);
+ const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,e=>events.push(e),tool,()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({checkpoint:'Draft'}),tools:secretaryTools,voice:'eleanor'});
+ await voice.connect();const socket=transport.sockets[0];const job=await voice.ask('Hello');
+ socket.receive({type:'conversation.item.created',item:{id:job.input!.itemId}});
+ return {voice,socket,creates:()=>socket.sent.filter((e:any)=>e.type==='response.create').length};
+};
+
+it('retries a transient provider failure once without surfacing an error',async()=>{
+ const events:any[]=[];const {voice,socket,creates}=await startTurn(events);
+ expect(creates()).toBe(1);failTurn(socket,'r1');
+ expect(events.some(e=>e.type==='error')).toBe(false);expect(voice.busy).toBe(true);
+ await wait(520);expect(creates()).toBe(2);
+ socket.receive({type:'response.created',response:{id:'r2'}});socket.receive({type:'response.done',response:{id:'r2',status:'completed',output:[],usage:{input_tokens:1,output_tokens:1}}});
+ expect(events.some(e=>e.type==='turn_done')).toBe(true);expect(voice.busy).toBe(false);voice.close();
+});
+
+it('gives up after the second transient failure with a spoken apology and no error',async()=>{
+ const events:any[]=[];const {voice,socket,creates}=await startTurn(events);
+ failTurn(socket,'r1');await wait(520);expect(creates()).toBe(2);
+ failTurn(socket,'r2');await wait(520);expect(creates()).toBe(2);
+ expect(events.find(e=>e.type==='speech_text')?.delta).toBe('Sorry, say that again?');
+ expect(events.some(e=>e.type==='notice')).toBe(true);expect(events.find(e=>e.type==='turn_done')).toMatchObject({cancelled:false,hasAudio:false});
+ expect(events.some(e=>e.type==='error')).toBe(false);expect(voice.busy).toBe(false);voice.close();
+});
+
+it('retries a failed tool-result round without calling the tool again',async()=>{
+ const events:any[]=[],tool=vi.fn(()=>({committed:true}));const {voice,socket,creates}=await startTurn(events,tool);
+ socket.receive({type:'response.created',response:{id:'r1'}});
+ socket.receive({type:'response.done',response:{id:'r1',status:'completed',output:[{type:'function_call',call_id:'c1',name:'delegate_work',arguments:'{}'}],usage:null}});
+ expect(tool).toHaveBeenCalledTimes(1);expect(socket.sent.some((e:any)=>e.item?.type==='function_call_output')).toBe(true);expect(creates()).toBe(2);
+ failTurn(socket,'r2');await wait(520);
+ expect(creates()).toBe(3);expect(tool).toHaveBeenCalledTimes(1);voice.close();
+});
+
+it('reconnects lazily after Higgs closes the session and carries the conversation over',async()=>{
+ vi.stubEnv('BOSON_API_KEY','offline-fixture');
+ const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);const events:any[]=[];
+ const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,e=>events.push(e),()=>({}),()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({checkpoint:'Draft'}),tools:secretaryTools,voice:'eleanor'});
+ await voice.connect();const socket=transport.sockets[0];const job=await voice.ask('Remember the word pineapple');
+ socket.receive({type:'conversation.item.created',item:{id:job.input!.itemId}});
+ socket.receive({type:'response.created',response:{id:'r1'}});
+ socket.receive({type:'response.output_audio_transcript.done',response_id:'r1',transcript:'Noted.'});
+ socket.receive({type:'response.done',response:{id:'r1',status:'completed',output:[],usage:null}});
+ socket.receive({type:'session.idle_timeout',seconds_idle:300});socket.close();
+ expect(voice.state).toBe('reconnecting');expect(events.some(e=>e.type==='voice_state'&&e.state==='reconnecting')).toBe(true);
+ expect(events.some(e=>e.type==='colleague_disconnected'||e.type==='error')).toBe(false);expect(voice.busy).toBe(false);
+ voice.audio('AAAA');expect(transport.sockets).toHaveLength(2);
+ for(let i=0;i<50&&voice.state!=='ready';i++)await wait(10);
+ expect(voice.state).toBe('ready');const next=transport.sockets[1],instructions=next.sent[0].session.instructions;
+ expect(instructions).toContain('pineapple');expect(instructions).toContain('Noted.');expect(instructions).toContain('Draft');
+ expect(events.some(e=>e.type==='voice_state'&&e.state==='ready')).toBe(true);
+ await voice.ask('Again');expect(next.sent.some((e:any)=>e.type==='conversation.item.create')).toBe(true);
+ voice.close();expect(voice.state).toBe('closed');voice.audio('AAAA');expect(transport.sockets).toHaveLength(2);
+});

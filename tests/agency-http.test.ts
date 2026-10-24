@@ -1,6 +1,6 @@
 import {afterAll,beforeAll,expect,it} from 'vitest';
 import {spawn,type ChildProcess} from 'node:child_process';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve,sep} from 'node:path';
 
@@ -37,3 +37,19 @@ it('exposes rename, delete and restore through the actual server routes',async()
  const restore=await post(path+'/restore');expect(restore.status).toBe(200);
  expect(await(await fetch(base+'/agency-api/projects')).json()).toEqual([{id:project.id,name:'Renamed room'}]);
 });
+it('reports health, with the keyless run flagged as a problem',async()=>{
+ const h=await(await fetch(base+'/agency-api/health')).json();
+ expect(h.ok).toBe(false);expect(h.version).toMatch(/^\d+\.\d+\.\d+/);
+ expect(['codex','claude']).toContain(h.engines.default);
+ for(const k of ['codex','claude','brain'])expect(typeof h.engines[k].ready).toBe('boolean');
+ expect(h.voice).toEqual({state:'none',sessions:0});
+ expect(h.problems.some((m:string)=>m.includes('BOSON_API_KEY'))).toBe(true);
+});
+it('refuses to start when the data folder cannot be created',async()=>{
+ const tmp=mkdtempSync(join(tmpdir(),'chamber-doctor-')),file=join(tmp,'file');writeFileSync(file,'x');
+ const bad=spawn(process.execPath,['--import','tsx','apps/server/src/agency/server.ts'],{cwd:resolve('.'),windowsHide:true,stdio:['ignore','pipe','pipe'],env:{...process.env,AGENCY_DATA_DIR:join(file,'data'),AGENCY_PORT:'0',BOSON_API_KEY:''}});
+ let output='';bad.stdout?.on('data',d=>{output+=d});bad.stderr?.on('data',d=>{output+=d});
+ const code=await new Promise<number|null>(r=>bad.once('exit',r));
+ rmSync(tmp,{recursive:true,force:true});
+ expect(code).toBe(1);expect(output).toContain('FATAL');
+},15000);

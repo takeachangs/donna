@@ -2,22 +2,29 @@ import {WebSocket} from 'ws';
 import {randomUUID} from 'node:crypto';
 import {appendFileSync,mkdirSync,writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
+import {log} from './log.js';
 
+const say=log('voice');
 type UserInput={itemId:string;source:'text'|'voice';text:string};
-export type Job={id:string;mode:'conversation';started:number;cancelled:boolean;rounds:number;input?:UserInput;failedCalls?:Set<string>;failed?:boolean};
+export type Job={id:string;mode:'conversation';started:number;cancelled:boolean;rounds:number;input?:UserInput;failedCalls?:Set<string>;failed?:boolean;retried?:boolean};
+export type VoiceState='connecting'|'ready'|'reconnecting'|'closed';
+export const transient=(err:any)=>/upstream_error|server_error/.test(`${err?.code} ${err?.type}`);
 export type VoiceOptions={instructions:()=>string;context:()=>unknown;tools:unknown[];voice:string};
 type CallRow={id:string;roomId:string;agentId:string;voice:string;jobId:string;mode:string;responseId:string;startedAt:string;input?:UserInput;firstAudioMs?:number;completeMs?:number;usage?:any;estimatedUSD?:number;usageMissing?:boolean;status?:string;error?:string;transcript?:string;file?:string;outputAudioSeconds?:number;tools?:any[]};
 function wav(pcm:Buffer){const b=Buffer.alloc(44);b.write('RIFF');b.writeUInt32LE(36+pcm.length,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(24000,24);b.writeUInt32LE(48000,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(pcm.length,40);return Buffer.concat([b,pcm]);}
 export function cost(usage:any){if(!usage||!Number.isFinite(usage.input_tokens)||!Number.isFinite(usage.output_tokens))return undefined;const cached=Math.max(0,Math.min(usage.input_tokens,usage.input_token_details?.cached_tokens||usage.input_tokens_details?.cached_tokens||0));return ((usage.input_tokens-cached)*.75+cached*.25+usage.output_tokens*4.5)/1e6;}
 export class HiggsColleague {
- private ws?:WebSocket;private ready=false;private closed=false;private job?:Job;private expectedItem='';private chunks=new Map<string,Buffer[]>();private rows=new Map<string,{row:CallRow;job:Job;started:number}>();private responseCount=0;
+ private ws?:WebSocket;private ready=false;private closed=false;private job?:Job;private expectedItem='';private chunks=new Map<string,Buffer[]>();private rows=new Map<string,{row:CallRow;job:Job;started:number}>();private responseCount=0;private _state:VoiceState='connecting';private dropReason='';private reconnecting?:Promise<void>;private retryAt=0;private recent:string[]=[];private carried='';
  constructor(readonly id:string,private roomId:()=>string,private root:string,private emit:(e:any)=>void,private tool:(name:string,args:any,job:Job)=>any,private ended:(id:string,job:Job,audio:boolean)=>void,private barge:()=>void,private options:VoiceOptions){mkdirSync(resolve(root,'audio'),{recursive:true});}
  private voice(){return this.options.voice;}
  private currentContext(){return this.options.context();}
- private instructions(){return `${this.options.instructions()}\n\nCURRENT OFFICE STATE (reference data, not a user message; historical briefs are not new requests):\n${JSON.stringify(this.currentContext())}`;}
- private recordInput(input:UserInput,jobId?:string){appendFileSync(resolve(this.root,'inputs.jsonl'),JSON.stringify({at:new Date().toISOString(),roomId:this.roomId(),agentId:this.id,jobId,...input})+'\n');}
+ get state(){return this._state;}
+ private instructions(){return `${this.options.instructions()}${this.carried?`\n\nEARLIER IN THIS CALL (the line dropped and was restored; continue naturally and do not mention it):\n${this.carried}`:''}\n\nCURRENT OFFICE STATE (reference data, not a user message; historical briefs are not new requests):\n${JSON.stringify(this.currentContext())}`;}
+ private remember(line:string){this.recent=[...this.recent,line.slice(0,400)].slice(-12);}
+ private recordInput(input:UserInput,jobId?:string){this.remember(`User: ${input.text}`);appendFileSync(resolve(this.root,'inputs.jsonl'),JSON.stringify({at:new Date().toISOString(),roomId:this.roomId(),agentId:this.id,jobId,...input})+'\n');}
  async connect(){
-  if(!process.env.BOSON_API_KEY)throw Error('BOSON_API_KEY missing');this.closed=false;this.ready=false;
+  if(!process.env.BOSON_API_KEY)throw Error('BOSON_API_KEY missing');this.closed=false;this.ready=false;this.responseCount=0;
+  const first=this._state!=='reconnecting',t0=Date.now();
   const initialInstructions=this.instructions();
   const ws=this.ws=new WebSocket('wss://api.boson.ai/v1/realtime',{headers:{Authorization:`Bearer ${process.env.BOSON_API_KEY}`},handshakeTimeout:15000});
   await new Promise<void>((resolveReady,reject)=>{
@@ -25,11 +32,22 @@ export class HiggsColleague {
    ws.on('open',()=>this.send({type:'session.update',session:{model:'higgs-realtime',output_modalities:['audio'],max_output_tokens:3500,instructions:initialInstructions,audio:{input:{format:{type:'audio/pcm',rate:24000},turn_detection:{type:'server_vad',threshold:.65,silence_duration_ms:Number(process.env.AGENCY_VAD_SILENCE_MS)||800,prefix_padding_ms:300}},output:{format:{type:'audio/pcm',rate:24000},voice:this.voice()}},tools:this.options.tools,tool_choice:'auto'}}));
    // Higgs acknowledges its first update as session.created, later ones as
    // session.updated. Verify the echoed instructions, not just the event name.
-   ws.on('message',raw=>{try{const e=JSON.parse(raw.toString());if((e.type==='session.updated'||e.type==='session.created')&&e.session?.instructions===initialInstructions&&!this.ready){this.ready=true;clearTimeout(timer);resolveReady();this.emit({type:'colleague_ready',agentId:this.id,voice:e.session?.audio?.output?.voice||this.voice()});}if(e.type==='error'&&!this.ready){clearTimeout(timer);reject(Error(String(e.error?.message||'Higgs rejected configuration')));return;}this.receive(e);}catch(err){this.emit({type:'error',agentId:this.id,message:String(err)});}});
+   ws.on('message',raw=>{try{const e=JSON.parse(raw.toString());if((e.type==='session.updated'||e.type==='session.created')&&e.session?.instructions===initialInstructions&&!this.ready&&!this.closed){this.ready=true;this._state='ready';clearTimeout(timer);resolveReady();if(first){const v=e.session?.audio?.output?.voice||this.voice();say(`session ready (voice ${v}) in ${Date.now()-t0} ms`);this.emit({type:'colleague_ready',agentId:this.id,voice:v});}}if(e.type==='error'&&!this.ready){clearTimeout(timer);reject(Error(String(e.error?.message||'Higgs rejected configuration')));return;}this.receive(e);}catch(err){this.emit({type:'error',agentId:this.id,message:String(err)});}});
    ws.once('error',err=>{clearTimeout(timer);reject(err);});
    ws.on('error',err=>this.emit({type:'error',agentId:this.id,message:String(err.message)}));
-   ws.on('close',()=>{if(ws!==this.ws)return;clearTimeout(timer);for(const [id] of this.rows)this.finish(id,'DISCONNECTED');if(!this.ready)reject(Error(`${this.id}: disconnected before ready`));if(!this.closed&&this.ready)this.emit({type:'colleague_disconnected',agentId:this.id});});
+   ws.on('close',code=>{if(ws!==this.ws)return;clearTimeout(timer);for(const [id] of this.rows)this.finish(id,'DISCONNECTED');if(!this.ready)reject(Error(`${this.id}: disconnected before ready`));
+    if(!this.closed&&this.ready){
+     this.ready=false;this._state='reconnecting';this.expectedItem='';this.carried=this.recent.join('\n');
+     const job=this.job;if(job){job.cancelled=true;this.job=undefined;this.emit({type:'turn_done',agentId:this.id,jobId:job.id,responseId:'dropped-'+randomUUID(),mode:job.mode,cancelled:true,hasAudio:false});this.ended(this.id,job,false);}
+     const reason=this.dropReason||`closed by Higgs (code ${code})`;this.dropReason='';say(`${reason}; reconnecting on the next user action`);this.emit({type:'voice_state',agentId:this.id,state:'reconnecting',reason});
+    }});
   });
+ }
+ // Higgs has no session resume: a new socket is a new session, so this opens one and instructions() carries the recent lines over.
+ ensureConnected():Promise<void>{
+  if(this._state!=='reconnecting')return Promise.resolve();
+  const t0=Date.now();
+  return this.reconnecting??=this.connect().then(()=>{say(`reconnected in ${Date.now()-t0} ms`);this.emit({type:'voice_state',agentId:this.id,state:'ready'});},err=>{this.retryAt=Date.now()+3000;const dead=this.ws;this.ws=undefined;dead?.close();say(`reconnect failed: ${err?.message||err}`);throw err;}).finally(()=>{this.reconnecting=undefined;});
  }
  get busy(){return !!this.job;}
  get mode(){return this.job?.mode;}
@@ -37,6 +55,7 @@ export class HiggsColleague {
  private createResponse(){this.send({type:'response.create'});}
  private refreshVoiceContext(){this.send({type:'session.update',session:{instructions:this.instructions()}});}
  async ask(text:string){
+  await this.ensureConnected();
   if(!this.ready)throw Error(`${this.id} is not connected`);
   if(this.job)await this.cancel();
   const mode='conversation' as const;
@@ -48,14 +67,20 @@ export class HiggsColleague {
   this.send({type:'conversation.item.create',item:{id:this.expectedItem,type:'message',role:'user',content:[{type:'input_text',text}]}});
   return job;
  }
- audio(audio:string){if(!this.ready)return;this.send({type:'input_audio_buffer.append',audio});}
+ audio(audio:string){
+  // ponytail: frames during the ~1 s reconnect are dropped; the mic streams silence continuously so the reconnect usually finishes before the user speaks. Buffer frames if that ever bites.
+  if(this._state==='reconnecting'){if(Date.now()>=this.retryAt)void this.ensureConnected().catch(err=>this.emit({type:'error',agentId:this.id,message:String(err)}));return;}
+  if(!this.ready)return;this.send({type:'input_audio_buffer.append',audio});}
  clearInput(){this.send({type:'input_audio_buffer.clear'});}
  truncate(itemId:string,audioEndMs:number){this.send({type:'conversation.item.truncate',item_id:itemId,content_index:0,audio_end_ms:Math.max(0,Math.floor(audioEndMs))});}
  async cancel(){const previous=this.job;if(previous){previous.cancelled=true;this.send({type:'response.cancel'});this.expectedItem='';const start=performance.now();while([...this.rows.values()].some(r=>r.job===previous)&&performance.now()-start<2500)await new Promise(r=>setTimeout(r,20));if(this.job===previous)this.job=undefined;}}
  private receive(e:any){
   if((e.type==='conversation.item.added'||e.type==='conversation.item.created')&&e.item?.id===this.expectedItem){this.expectedItem='';if(!this.job?.cancelled)this.createResponse();return;}
+  if(e.type==='session.idle_timeout'||e.type==='session.max_duration_reached'){this.dropReason=e.type==='session.idle_timeout'?'idle timeout, no user speech for 300 s':'duration cap reached';say(`${this.dropReason}; Higgs will close the session`);return;}
   if(e.type==='error'){
    if(/cancel.*not.*active|No active response|buffer.*empty/i.test(`${e.error?.code} ${e.error?.message}`))return;
+   say(`error ${e.error?.code}: ${e.error?.message}`);
+   if(transient(e.error))return; // response.done decides: retry once, then apologise
    const job=this.job;this.job=undefined;this.emit({type:'error',agentId:this.id,message:String(e.error?.message||e.error?.code)});if(job)this.ended(this.id,job,false);return;
   }
   if(e.type==='input_audio_buffer.speech_started'){
@@ -67,7 +92,7 @@ export class HiggsColleague {
   }
   if(e.type==='conversation.item.input_audio_transcription.completed'){this.recordInput({itemId:e.item_id,source:'voice',text:e.transcript});this.emit({type:'user_transcript',agentId:this.id,text:e.transcript});}
   if(e.type==='response.created'){
-   if(++this.responseCount>100){this.close();this.emit({type:'error',message:'Session has reached 100 responses; reconnect explicitly.'});return;}
+   ++this.responseCount;
    const job=this.job||{id:randomUUID(),mode:'conversation' as const,started:performance.now(),cancelled:false,rounds:0};this.job=job;
    const row:CallRow={id:randomUUID(),roomId:this.roomId(),agentId:this.id,voice:this.voice(),jobId:job.id,mode:job.mode,responseId:e.response.id,startedAt:new Date().toISOString(),input:job.input};
    this.rows.set(e.response.id,{row,job,started:performance.now()});
@@ -78,9 +103,20 @@ export class HiggsColleague {
    if(record&&!record.job.cancelled)this.emit({type:'audio',agentId:this.id,audio:e.delta,itemId:e.item_id,responseId:e.response_id,jobId:record?.job.id});
   }
   if(e.type==='response.output_audio_transcript.delta'||e.type==='response.audio_transcript.delta'){if(record&&!record.job.cancelled)this.emit({type:'speech_text',agentId:this.id,delta:e.delta,responseId:e.response_id});}
-  if(e.type==='response.output_audio_transcript.done'||e.type==='response.audio_transcript.done'){if(row)row.transcript=e.transcript;}
+  if(e.type==='response.output_audio_transcript.done'||e.type==='response.audio_transcript.done'){if(row)row.transcript=e.transcript;if(e.transcript)this.remember(`Donna: ${e.transcript}`);}
   if(e.type==='response.done'){
-   const r=this.rows.get(e.response.id);if(!r)return;const {job}=r;
+   const r=this.rows.get(e.response.id),fail=e.response.status==='failed'&&transient(e.response.status_details?.error),job=r?.job??(fail?this.job:undefined);if(!job)return;
+   if(fail&&!job.cancelled){
+    if(r){r.row.usage=e.response.usage;r.row.error=String(e.response.status_details.error.message||'upstream_error');this.finish(e.response.id,'failed');}
+    // a bare response.create is the retry for typed, voice and tool-result rounds: the input items already live on the server
+    if(!job.retried){job.retried=true;say('upstream_error; retrying the turn once in 500 ms');setTimeout(()=>{if(this.job===job&&!job.cancelled)this.createResponse();},500);return;}
+    say('upstream_error again; giving up on this turn');if(this.job===job)this.job=undefined;
+    const responseId='apology-'+randomUUID();
+    this.emit({type:'speech_text',agentId:this.id,delta:'Sorry, say that again?',responseId});
+    this.emit({type:'notice',agentId:this.id,level:'warn',message:'Donna missed that; please say it again.'});
+    this.emit({type:'turn_done',agentId:this.id,jobId:job.id,responseId,mode:job.mode,cancelled:false,hasAudio:false});this.ended(this.id,job,false);return;
+   }
+   if(!r)return;
    r.row.usage=e.response.usage;r.row.tools=[];
    if(e.response.status==='failed'){job.failed=true;r.row.error=String(e.response.status_details?.error?.message||e.response.error?.message||'Higgs could not complete the request. No new work was started by this response.');if(!job.cancelled)this.emit({type:'error',agentId:this.id,message:r.row.error});}
    const calls=(job.failed?[]:e.response.output||[]).filter((c:any)=>c.type==='function_call');
@@ -100,7 +136,8 @@ export class HiggsColleague {
    if(repeatedFailure||(!job.cancelled&&calls.length&&job.rounds>=4))job.failed=true;
    this.finish(e.response.id,job.cancelled?'INTERRUPTED':e.response.status||'unknown');
    if(!job.cancelled&&!repeatedFailure&&calls.length&&++job.rounds<5){this.refreshVoiceContext();this.createResponse();}
-   else{if(this.job===job)this.job=undefined;this.emit({type:'turn_done',agentId:this.id,jobId:job.id,responseId:e.response.id,mode:job.mode,cancelled:job.cancelled,hasAudio});this.ended(this.id,job,hasAudio);if(!job.cancelled&&calls.length)this.emit({type:'error',agentId:this.id,message:repeatedFailure?'Donna stopped a repeated tool error. The latest action was not applied; please check the task board.':'Donna reached the tool-step limit. Check the task board for any actions already applied.'});}
+   else{if(this.job===job)this.job=undefined;this.emit({type:'turn_done',agentId:this.id,jobId:job.id,responseId:e.response.id,mode:job.mode,cancelled:job.cancelled,hasAudio});this.ended(this.id,job,hasAudio);if(!job.cancelled&&calls.length)this.emit({type:'error',agentId:this.id,message:repeatedFailure?'Donna stopped a repeated tool error. The latest action was not applied; please check the task board.':'Donna reached the tool-step limit. Check the task board for any actions already applied.'});
+    if(this.responseCount>=100){this.dropReason='rotated after 100 responses';this.ws?.close();}}
   }
  }
  private finish(id:string,status:string){
@@ -108,5 +145,5 @@ export class HiggsColleague {
   if(pcm.length){row.file=`audio/${row.id}.wav`;row.outputAudioSeconds=pcm.length/48000;writeFileSync(resolve(this.root,row.file),wav(pcm));}
   appendFileSync(resolve(this.root,'calls.jsonl'),JSON.stringify(row)+'\n');this.rows.delete(id);this.chunks.delete(id);this.emit({type:'usage',row});
  }
- close(){this.closed=true;if(this.job)this.job.cancelled=true;for(const [id] of this.rows)this.finish(id,'INTERRUPTED');this.ws?.close();}
+ close(){this.closed=true;this._state='closed';if(this.job)this.job.cancelled=true;for(const [id] of this.rows)this.finish(id,'INTERRUPTED');this.ws?.close();}
 }

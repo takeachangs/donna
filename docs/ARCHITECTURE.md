@@ -47,6 +47,15 @@ Project settings use local rename/delete/restore endpoints. Deletion pauses acti
 
 `npm run build` type-checks the actual office and builds only its frontend into `dist/web`. `npm start` serves the built UI, API and WebSocket together on loopback port 3003. The old `/agency.html` link remains compatible; `/` is the primary entry. Stop development before starting production on the same port.
 
+## Operations
+
+- **Boot checks** (`npm run doctor`, also run by `npm start`): Node 22.12+ and a writable data directory are fatal (exit 1, server refuses to start). Missing `BOSON_API_KEY`, a default worker engine that is not signed in, or an unavailable Claude Code brain are warnings. One plain line each (`FATAL: …` / `warn: …`) plus a summary.
+- **Health:** `GET /agency-api/health` returns `{ok, version:'0.1.0+<sha>', available (Boson key set), engines:{default, codex:{ready,error?}, claude:{ready,error?}, brain:{ready,error?}}, voice:{state:'none'|'connecting'|'ready'|'reconnecting', sessions}, problems:[]}`. Engines are the boot snapshot; `/agency-api/status` stays live.
+- **Logs:** `HH:MM:SS [prefix] message` with prefixes `boot`, `voice`, `ws`, `worker`, `brain`, `ring`, `engine`. No raw JSON and no secrets.
+- **Voice failures:** a Higgs `upstream_error` is retried once, silently, after 500 ms. A second failure shows the caption "Sorry, say that again?" and a transient `notice` WebSocket event; there is no sticky error.
+- **Higgs closes the session** (300 s without user speech, duration cap, network drop, or the server's own rotation after 100 responses): the server emits `voice_state` `reconnecting` with a reason and reconnects lazily on the next user action (typed text, mic audio, answering a briefing, a ring announcement). It re-sends the instructions, office context and the last 12 conversation lines, then emits `voice_state` `ready`. Audio frames arriving during the ~1 s reconnect are dropped.
+- **Soak test (paid, real Higgs):** `npm run soak -- --port 3013 [--idle]` starts its own server on a temporary data directory, runs two text turns and checks health; it refuses ports 3003 and 5183. `--idle` also waits for the real 300 s Higgs idle close (up to 400 s), then checks the reconnect, that the conversation carried over, and `ready` health. It prints `SOAK PASS` or `SOAK FAIL: reason`.
+
 ## Boundaries kept deliberately small
 
 - New outcomes and project-level decisions belong on the board. Detailed tool traces remain in Codex/Claude.

@@ -6,28 +6,34 @@ A local personal office: speak to a Higgs secretary, delegate real work to local
 
 ## Run
 
-Requires Node.js 22.12+ and npm. One install covers both apps.
+**Prerequisites:** Node.js 22.12+ and npm; Codex CLI and/or Claude Code installed and signed in (workers use your local sign-in; no credentials ship with this repository).
 
 ```sh
 npm ci
+cp .env.example .env     # set BOSON_API_KEY
+npm run doctor
 ```
 
-Copy `.env.example` to `.env`, set `BOSON_API_KEY`, and sign in to your local Codex CLI. Set `AGENCY_CODEX_BIN` only if the executable is not on PATH. `AGENCY_DEFAULT_PROVIDER` (`codex` or `claude`) picks the engine for workers when the plan does not name one; unset, the server uses Codex when signed in, otherwise Claude Code when signed in, and logs which and why. `AGENCY_BRAIN_MODEL` (default `opus`) is the model for Donna's brain. Claude Code workers use your local `claude` sign-in (claude.ai); the server removes `ANTHROPIC_API_KEY` from their environment so a shell API key is never billed. `AGENCY_CLAUDE_BIN` and `AGENCY_CLAUDE_MODEL` (default `sonnet`) are optional. Credentials stay in the backend/native CLI; no credentials are bundled with this repository.
+`npm run doctor` runs the same boot checks as `npm start`, prints one plain line per problem and a summary. `FATAL:` lines (Node older than 22.12, data directory not writable) mean the server will refuse to start. `warn:` lines (no `BOSON_API_KEY`, default worker engine not signed in, Donna's brain unavailable) mean the server starts but that feature will not work.
 
-```sh
-npm run dev
-```
-
-Open **http://127.0.0.1:5183/**. Existing `/agency.html` bookmarks still work. The development API listens on loopback port 3003. The UI and project board can be inspected without connecting paid voice. Choose **Talk to secretary**: the call connects with the microphone live and Donna picks up first ("Hey, it's Donna. What do you need?"). On a call the controls are **Hang up**, **Hold on** and **Mute**; **Type instead** opens the text box. If the browser blocks the microphone, the button reads **Enable microphone** and the status line says so.
-
-For the production build, stop development first:
+**Demo machine (production):**
 
 ```sh
 npm run build
 npm start
 ```
 
-Open **http://127.0.0.1:3003/**. One server serves the built office, API and WebSocket. Keep it running while native tasks are in progress.
+Open **http://127.0.0.1:3003/**. One process serves the UI, API and WebSocket; keep it running while native tasks are in progress. Set `AGENCY_PORT` to use another port; if `npm run dev` is running, stop it first or pick another port. Check it is healthy:
+
+```sh
+curl -s http://127.0.0.1:3003/agency-api/health
+```
+
+If the voice drops (Higgs idle timeout, network, session rotation), do nothing: Donna reconnects on your next action and carries the conversation over. If a reply fails twice she says "Sorry, say that again?"; just repeat yourself.
+
+**Development:** `npm run dev` serves the UI at **http://127.0.0.1:5183/** with the API on loopback port 3003. The UI and project board can be inspected without paid voice. Choose **Talk to secretary**: the call connects with the microphone live and Donna picks up first ("Hey, it's Donna. What do you need?"). On a call the controls are **Hang up**, **Hold on** and **Mute**; **Type instead** opens the text box. If the browser blocks the microphone, the button reads **Enable microphone** and the status line says so. Existing `/agency.html` bookmarks still work.
+
+**Environment** (`.env` or shell): `BOSON_API_KEY` (required for voice), `AGENCY_PORT` (default 3003), `AGENCY_DATA_DIR` (default `artifacts/agency`). `AGENCY_DEFAULT_PROVIDER` (`codex` or `claude`) picks the worker engine when the plan does not name one; unset, the server uses Codex when signed in, otherwise Claude Code, and logs which and why. `AGENCY_BRAIN_MODEL` (default `opus`) is the model for Donna's brain. `AGENCY_CODEX_BIN` and `AGENCY_CLAUDE_BIN` are needed only if the executable is not on PATH; `AGENCY_CLAUDE_MODEL` defaults to `sonnet`. `AGENCY_VAD_SILENCE_MS` (default 800) is the silence before Higgs ends your turn. Claude Code workers use your claude.ai sign-in; the server removes `ANTHROPIC_API_KEY` from their environment so a shell API key is never billed.
 
 ## How the office works
 

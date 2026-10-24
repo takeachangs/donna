@@ -10,14 +10,21 @@ import {AgencyExecutors} from './executors.js';
 import {AgencyWorkspace,type Workspace} from './workspace.js';
 import {secretaryInstructions,secretaryTools,resolveProjectTarget,hangsUp,pickUpNotice} from './secretary.js';
 import {serveWeb} from './static.js';
+import {log} from './log.js';
+import {doctor,dataDir,version} from './doctor.js';
 import {completedBriefing,holdReason,openQuestion,resultNotice,hold,type Briefing,type Presentation} from './briefings.js';
 
-const store=new OfficeStore(process.env.AGENCY_DATA_DIR?resolve(process.env.AGENCY_DATA_DIR):undefined),root=store.root,projects=new Projects(store),executors=new AgencyExecutors(),codex=executors.codex;
+const executors=new AgencyExecutors(),boot=await doctor(executors);
+for(const p of boot.problems)log('boot')(`${p.fatal?'FATAL':'warn'}: ${p.message}`);
+if(boot.problems.some(p=>p.fatal)){executors.close();process.exit(1);}
+const store=new OfficeStore(dataDir()),root=store.root,projects=new Projects(store),codex=executors.codex;
 const defaultProvider=await executors.defaultProvider();
 const clients=new Set<WebSocket>();
 const broadcast=(event:unknown)=>{for(const ws of clients)if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(event));};
 const landed=new Set<(w:Workspace)=>void>();
 const workspace=new AgencyWorkspace(store,projects,codex,w=>{broadcast({type:'workspace',workspace:w});for(const f of landed)f(w);},{claude:executors.claude,brain:executors.brain,defaultProvider});
+const voices=new Set<HiggsColleague>(),seenStatus=new Map(workspace.snapshot().assignments.map(a=>[a.id,a.status]));
+landed.add(w=>{for(const a of w.assignments){const prev=seenStatus.get(a.id);if(prev===a.status)continue;seenStatus.set(a.id,a.status);const k=w.workers.find(k=>k.id===a.workerId);log(a.kind?'brain':'worker')(`${k?.name||k?.role||'unknown'}: ${a.title.slice(0,60)} ${prev??'new'} → ${a.status}`);}});
 const local=(origin:string|undefined)=>!origin||/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(origin);
 const json=(res:any,data:any,status=200)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));};
 async function body(req:any){let text='';for await(const b of req){text+=b;if(text.length>60000)throw Error('Request too large');}return JSON.parse(text||'{}');}
@@ -31,6 +38,7 @@ const server=createServer(async(req,res)=>{
   if(u.pathname==='/agency-api/projects/register'&&req.method==='POST'){const p=projects.register(await body(req));workspace.syncProjects();return json(res,p);}
   if(u.pathname==='/agency-api/projects'){if(req.method==='POST'){const p=projects.create(await body(req));workspace.syncProjects();return json(res,p,201);}return json(res,projects.list());}
   if(parts[0]==='agency-api'&&parts[1]==='projects'&&parts[2]&&req.method==='POST'){const value=await body(req);if(parts[3]==='rename')return json(res,workspace.renameProject(parts[2],value));if(parts[3]==='delete')return json(res,workspace.deleteProject(parts[2]));if(parts[3]==='restore')return json(res,workspace.restoreProject(parts[2]));}
+  if(u.pathname==='/agency-api/health'){const st=[...voices].map(v=>v.state);return json(res,{ok:!boot.problems.length,version,available:!!process.env.BOSON_API_KEY?.trim(),engines:boot.engines,voice:{state:st.includes('reconnecting')?'reconnecting':st.includes('ready')?'ready':st.includes('connecting')?'connecting':'none',sessions:voices.size},problems:boot.problems.map(p=>p.message)});}
   if(u.pathname==='/agency-api/status'){const providers=await executors.status();return json(res,{available:!!process.env.BOSON_API_KEY,assistants:[workspace.snapshot().secretary],model:'higgs-realtime',codex:providers.codex,providers,execution:`local-${providers.defaultProvider}`,maxWorkersPerPlan:4});}
   if(parts[0]==='agency-api'&&parts[1]==='assignments'&&parts[2]){
    const id=parts[2];
@@ -53,7 +61,7 @@ const server=createServer(async(req,res)=>{
 const wss=new WebSocketServer({server,path:'/agency-ws',maxPayload:24000});
 wss.on('connection',(client,req)=>{
  if(!local(req.headers.origin)){client.close(1008);return;}
- clients.add(client);let selected=projects.list()[0]?.id||'',view='secretary',started=false,ready=false,voice:HiggsColleague|undefined,closed=false;
+ clients.add(client);log('ws')(`client connected (${clients.size} open)`);let selected=projects.list()[0]?.id||'',view='secretary',started=false,ready=false,voice:HiggsColleague|undefined,closed=false;
  let presentation:Presentation|undefined;
  const floor={userAt:0,voiceAt:0,userSpeaking:false,playing:false,question:false};let said='',saidFor='',pending:{id:string;since:number}[]=[],seen=new Set<string>(),announceJob:Job|undefined,heldWhy='',timer:ReturnType<typeof setInterval>|undefined,bye=false,pickup:string|undefined;
  const watch=(e:any)=>{const t=Date.now();
@@ -107,10 +115,11 @@ wss.on('connection',(client,req)=>{
    if(['secretary','command','project'].includes(e.view))view=e.view;
    if(selected)emit({type:'state',state:room()});emit({type:'workspace',workspace:workspace.snapshot()});emit({type:'focus',agentId:'mara'});
    voice=new HiggsColleague('mara',()=>selected,root,emit,tool,(_id,job,hasAudio)=>{if(presentation?.job===job)presentation.audioComplete=!job.cancelled&&hasAudio;if(!job.cancelled&&hasAudio)emit({type:'await_playback',jobId:job.id});},()=>{presentation=undefined;emit({type:'interrupted'});},{instructions:()=>secretaryInstructions,context:current,tools:secretaryTools,voice:'eleanor'});
+   voices.add(voice);
    for(let attempt=0;;attempt++){try{await voice.connect();break;}catch(err){voice.close();if(closed||attempt>=2||!String(err).includes('429'))throw err;emit({type:'connection_retry',attempt:attempt+1});await new Promise(r=>setTimeout(r,4000*(attempt+1)));}}
    if(closed){voice.close();return;}ready=true;timer=setInterval(()=>{if(bye&&voice&&!voice.busy&&!floor.userSpeaking&&!floor.playing&&floor.voiceAt>floor.userAt){bye=false;console.log('[call] goodbye played; hanging up');voice.close();client.close();return;}void announce();},250);emit({type:'ready',model:'higgs-realtime'});
    const me=workspace.snapshot().secretary.name||'Donna';let answer:string|undefined;try{if(typeof e.answer==='string')answer=workspace.briefing(e.answer).id;}catch{}
-   if(answer){pickup=me;pending.push({id:answer,since:Date.now()-hold.maxMs});console.log(`[ring] answered ${answer}`);}else await voice.ask(pickUpNotice(me));
+   if(answer){pickup=me;pending.push({id:answer,since:Date.now()-hold.maxMs});console.log(`[ring] answered ${answer}`);}else if(!e.resume)await voice.ask(pickUpNotice(me));
    return;
   }
   if(!started||!voice)throw Error('Connect to the secretary first');
@@ -126,9 +135,11 @@ wss.on('connection',(client,req)=>{
   if(e.type==='focus'){emit({type:'focus',agentId:'mara'});return;}
   if(e.type==='played'){floor.playing=false;floor.voiceAt=Date.now();const id=completedBriefing(presentation,e.jobId);if(id){presentation=undefined;workspace.presentBriefing(id);}return;}
   if(e.type==='stop'){voice.close();client.close();return;}
- }catch(err){emit({type:'error',message:String(err)});}})();});
- client.on('close',()=>{closed=true;clearInterval(timer);landed.delete(onLanded);clients.delete(client);voice?.close();});
+ }catch(err){log('ws')(`error: ${String(err)}`);emit({type:'error',message:String(err)});}})();});
+ client.on('close',()=>{closed=true;clearInterval(timer);landed.delete(onLanded);clients.delete(client);if(voice)voices.delete(voice);voice?.close();log('ws')(`client closed (${clients.size} open)`);});
 });
 void workspace.recover();
+// ws re-emits the http server's listen error on wss, ahead of any server listener.
+wss.on('error',(err:NodeJS.ErrnoException)=>{if(err.code!=='EADDRINUSE')throw err;console.error(`Port ${process.env.AGENCY_PORT||3003} is in use; stop the other Chamber server or set AGENCY_PORT.`);process.exit(1);});
 server.listen(Number(process.env.AGENCY_PORT||3003),'127.0.0.1',()=>{const address=server.address();console.log('Personal Agency API: http://127.0.0.1:'+(typeof address==='object'&&address?address.port:process.env.AGENCY_PORT||3003));});
 for(const signal of ['SIGINT','SIGTERM'] as const)process.once(signal,()=>{workspace.close();for(const ws of clients)ws.close();server.close();setTimeout(()=>process.exit(0),500).unref();});
