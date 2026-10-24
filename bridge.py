@@ -87,6 +87,7 @@ STATE = os.path.join(HIGGS_DIR, "state.json")
 PHONE_CMD = os.path.join(HIGGS_DIR, "phone.cmd")   # #75: the office's button (POST /agency-api/phone) writes call|hangup here
 HANG_UP = object()   # ring: TYPED item for the office's Hang up
 CALLING_ABOUT = "Calling about:"
+PICKUP = '[note] The user just called you. Pick up: say exactly "Hey, it\'s Donna. What do you need?"'   # #12: Enter rings her; she answers like a phone
 
 # Mike's prompt.txt as the model. Measured Oct 24 with probe/r26 (text mode, higgs-realtime): first-turn delegation 24/24 (the old
 # prompt 29/30); an example ack line here ("I'll get the page started") made the model say it WITHOUT calling the tool (8/12).
@@ -384,7 +385,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
             if args.out: loop.call_soon_threadsafe(log, f"speaker: {sd.query_devices(odev)['name']}")
             with sd.RawOutputStream(samplerate=RATE, channels=1, dtype="int16", device=odev) as out:
                 import math, array
-                if who or opener:   # a transfer (#28): the hold cue, two soft rising tones, while the next voice connects
+                if who or opener and opener is not PICKUP:   # a transfer (#28): the hold cue, two soft rising tones, while the next voice connects
                     out.write(b"".join(array.array("h", (int(a * math.sin(2 * math.pi * hz * i / RATE)) for i in range(RATE * 3 // 20))).tobytes() for hz, a in ((523, 3000), (0, 0), (659, 3000))))
                 else:
                     out.write(array.array("h", (int(6000 * math.sin(2 * math.pi * 880 * i / RATE)) for i in range(RATE // 5))).tobytes())
@@ -548,7 +549,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     elif args.text and not turns and st["spoke_result"] and not st["pending"]: st["done"] = True   # the corrected result was already spoken
                 elif t == "response.done":
                     st["vs"] = False
-                    if st["bye"]: end("goodbye")
+                    if st["bye"] and not ev.calls: end("goodbye")   # #12 rehearsal: "Open a pull request. Thanks, bye" closed on the call's response, before any goodbye was said
                     elif st.get("switch"): end(st["next"])
                     elif st.get("back"): end("back")
                     elif args.text and not ev.calls:   # headless pacing: next typed turn, or exit once everything is spoken
@@ -578,10 +579,10 @@ def worker(name: str, transcript: list) -> dict:
     name = w.get("name") or name
     return {"name": name, "voice": w.get("voice") or "oliver", "persona": worker_prompt(name, (o["projects"] or [{}])[0].get("name") or "this project", what, recent)}
 
-async def phone(seed: str) -> str:
+async def phone(seed: str, opener: str | None = None) -> str:
     """One call from the user's side: Donna, then maybe a worker and back (#28; a fresh Higgs session per segment, never a
     session.update mid-call). Returns why it ended."""
-    transcript, who, opener = [], None, None
+    transcript, who = [], None
     NOW["with"] = "donna"
     try:
         while True:
@@ -620,8 +621,9 @@ async def main():
         log("ring: waiting — Enter to call Donna")
         while SAYS.empty() and TYPED.empty(): await asyncio.sleep(0.2)
         if not TYPED.empty() and TYPED.get_nowait() is HANG_UP: continue   # any line is an Enter; a Hang up left from the last call is not
-        seed = context_seed()   # Enter: the voice waits for the user
+        seed, opener = context_seed(), PICKUP   # Enter: the user called her; she picks up first
         if not SAYS.empty():
+            opener = None
             await asyncio.sleep(0.5)   # let a burst of says land together
             got = [SAYS.get_nowait() for _ in range(SAYS.qsize())]
             for g in got:
@@ -632,7 +634,7 @@ async def main():
                 if k != "ask": event("task.spoken", id=sid)   # the opener delivers it (asks are put by says() once the session is up)
             if about: seed = f"{CALLING_ABOUT} {about}\n{seed}".strip()
         event("call.answered"); set_state("on_call"); reason = "interrupted"
-        try: reason = await phone(seed)
+        try: reason = await phone(seed, opener)
         except Exception as e: log("call failed:", repr(e)); reason = "error"
         finally: event("call.ended", reason=reason); set_state("idle")
 

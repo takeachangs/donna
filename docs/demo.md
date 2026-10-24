@@ -1,32 +1,42 @@
 # Demo run sheet and submission draft (#12)
 
-DRAFT for the user to edit. Nothing here was run live. Times are targets, not measurements.
+The spoken lines are those of `docs/demo-script.md` (the video, two presenters). Section 2 is what Donna actually said when
+the script was rehearsed headlessly on Oct 24, 13:05-13:45: typed turns on `bridge.py --ring --silent`, the real brain
+(Claude Code, Sonnet, `/call` from this checkout) in a fresh git repo with only a README, key 2, `uv run tests/rehearse_demo.py`.
+Latency = from the end of the presenter's line to Donna's first audio. Not yet run on a live mic.
 
 ## 1. Setup (once, before going on)
-1. EarPods in (Donna's audio must not come out of the laptop speakers: no echo cancellation, see INDEX Gotchas). Keys exported (`BOSON_API_KEY`; one key per live call).
+1. EarPods in (Donna must not come out of the laptop speakers: no echo cancellation). `export BOSON_API_KEY=…` (one key per live call).
 2. Office: `cd office && npm run dev`, open http://127.0.0.1:5183 (API on :3003).
-3. Phone + brain: `uv run bridge.py --ring --backend session --voice nora --out EarPods --brain <repo>` (the `--brain` flag starts Claude Code on `/call` in tmux session `donna`).
-4. Second screen: `tmux attach -t donna` (the brain at work; type here to wake it).
-5. Checks before stage: `curl -s http://127.0.0.1:3003/agency-api/health` answers; `tail -2 bridge.log` shows `ring: waiting`; the office shows Donna at her desk, call "off"; `uv run bridge.py selftest` prints `ok`; `<repo>` is a git repo with a clean main (workers use worktrees).
+3. Demo repo `~/projects/donna-demo`: a clean `main`, README only, and a GitHub remote (`git remote -v`; `gh auth status`).
+   Without a remote the pull request beat rings back with "I couldn't open the pull request, the project has no GitHub remote".
+4. Brain, terminal 1, in `~/projects/donna-demo`: `claude --settings ~/projects/higgs-hackathon/hooks/office.json --model sonnet`,
+   answer the trust question for a new folder, type `/call`. It registers and says Donna is on duty (about 12 s in rehearsal).
+5. Phone, terminal 2, in `~/projects/higgs-hackathon`: `uv run bridge.py --ring --backend session --voice nora --out EarPods`.
+   Expect `ring: waiting`. No `--brain`: nothing types into the brain's terminal; its background wait loop picks up each task.
+   Optional instead of step 4: add `--brain ~/projects/donna-demo --brain-model sonnet` to step 5 (the brain runs in tmux);
+   watch it with `tmux attach -t =donna`. The `=` matters: plain `-t donna` attaches to any session whose name starts with
+   "donna" (a rehearsal brain got keystrokes that way on Oct 24).
+6. Checks before stage: `curl -s http://127.0.0.1:3003/agency-api/health` answers; `tail -1 bridge.log` shows `ring: waiting`;
+   the office shows Donna alone, call "off"; `uv run bridge.py selftest` prints `ok`.
 
-## 2. The 4-minute script
-Presenter lines in quotes. The phone rings on a `say`; start it with Enter in the bridge terminal (or `uv run herd.py send donna ...` from a shell).
+## 2. The script, as rehearsed
+Presenter lines in quotes, exact. Three runs after the fixes in this PR (run 2 stopped after beat 5); run 1, before them, is not counted. Fixes marked "unverified" landed after the last run.
 
-| Time | Presenter says | Donna / expected | Office shows | If it misbehaves |
-|---|---|---|---|---|
-| 0:00 | Press Enter. "Hi Donna." | Picks up, greets in one short line. | Call state: listening, then speaking. | No sound: check `--out` device (bridge refuses unknown devices and exits 2); restart the bridge. Silence after pickup: say "hello" again; if nothing in 10 s, Ctrl-C and rerun step 3 (Ctrl-C quits the phone, not the call only). |
-| 0:20 | "Make me a quiz game for my kids." (thin request) | Delegates, says one short line, then asks ONE question carrying a proposal ("Should it be a ten-question page, in plain HTML?"). | Donna working; an open decision. | No question, just starts: fine, narrate "she judged it clear". No take within 20 s: the voice says the brain is quiet; type `ok` in the tmux window to wake it (the brain's wait loop may be dead). |
-| 0:50 | "Yes, do that." | Short ack. Workers spawn. | Named workers walk to desks and show "working" with their current action (hook-fed, within about 20 s). | No rows after 30 s: `cat ~/.higgs/office.json` for `workers`; hooks missing means the brain was started without `hooks/office.json`, restart `--brain`. Keep talking: "While that runs, what's on my plate?" shows she chats while work continues. |
-| 1:30 | (Interrupt her once mid-sentence: "Actually, sorry, one thing...") | Stops talking at once, listens. | State flips speaking to listening. | On laptop speakers barge-in is disabled by design; stay on EarPods. |
-| 1:45 | Wait for the result. | Speaks the result in 2-3 sentences ("The quiz is on its own branch and the tests pass. Want a pull request?"). | Worker walks the report to Donna; state speaking. | No result in 60 s: say "How's it going?" (one status line). Still nothing: headless fallback (section 5). |
-| 2:15 | "Who built it?" | Names the worker ("Maya did.") | Highlights nothing new. | Wrong or no name: "Ask the brain who wrote the quiz page" (delegates). |
-| 2:30 | "Put me through to Maya." | Hold cue (two soft rising tones), then "Hey, it's Maya." in a different voice. | Maya walks to Donna's phone; "On the line: Maya". | Stuck on hold over 10 s: say "put Donna back"; if no voice, Ctrl-C and re-ring. |
-| 2:50 | Ask Maya: "What did you cover in the quiz?" | Maya answers in first person from her own context. | Same. | Generic answer: say it is her summary, move on. |
-| 3:10 | "Put Donna back on." | "Hey, it's Donna again." | Phone call back with Donna. | As above. |
-| 3:20 | "Thanks, that's all. Bye." (say "bye", not Ctrl-C) | One-line goodbye ending "Hanging up now." The call closes. Do not say "bye" before this; it ends the call. | State goes to off. | No hang-up in 10 s: Ctrl-C quits the whole phone; rerun step 3 for the next beat. |
-| 3:35 | In a shell: `uv run herd.py send donna "check the quiz page once more"` or let a pending task finish. Look at the screen. | A `say` lands while off the line: the phone RINGS (state "ringing"); press Enter to take it; Donna opens with the result. | Call state: ringing. | No ring: `tail bridge.log`; the `--ring` process may have died; rerun step 3 and use Enter to call. |
-
-Total spoken demo: about 3:50. If time is short, drop the interruption (1:30) and the Maya follow-up question (2:50).
+| # | Presenter says | Donna says / does (verbatim from the runs) | Office shows | Latency | If it misbehaves |
+|---|---|---|---|---|---|
+| 1 | Press Enter. | "Hey, it's Donna. What do you need?" (2/2) | Call: speaking, then listening. | 1.2-1.5 s | Silence after 5 s: say "Hi Donna". Nothing in 10 s: Ctrl-C, rerun setup 5. |
+| 2 | "Let's build a small focus timer web app." | "On it." / "The office is on it." then, about 15 s later, ONE question with the brain's proposal: "Should I make it a one-page focus timer with twenty-five minutes of work and five-minute breaks, and include both light and dark modes?" (2/2) | Donna: "Got it: Build a small focus timer web app", then reading the repo. | ack 0.8-0.9 s; question +14-15 s | She starts building without a question: narrate "she judged it clear" and go on at beat 3 with "Give it a session counter." |
+| 3 | "Yes, and give it a session counter." | Restates the plan, "The office is on it." The brain's note, +5 to +12 s, was "Hiring Leo for the timer page and Mia for the styling" (3/3, same names each time, not guaranteed). The runs predate #73: since #73 the voice says it, one short sentence naming them (unverified). One run sent the "yes" as a second task; the brain answered "Same request; Leo and Mia are on it." | +12 s Leo and Mia "Being briefed" in Donna's room; +23 s "Hired: Builds the timer page and logic" / "Hired: Writes the timer stylesheet"; +35 s actions ("Running a command", "Writing style.css"). | 0.5-0.6 s | No rows in 40 s: look at the brain terminal. The brain asks a second question: answer "Yes, go." |
+| 4 | "How's it going?" | From `task_status`: "Leo is building the timer page and logic, and Mia is handling the stylesheet." (3/3; once only after the new guard dropped "The brain isn't answering right now…", said because the brain was busy with the duplicate task) | Same rows, actions changing. | 1.0-1.2 s | No names: "Who's working on it?" |
+| 4b | "Actually, sorry, one thing: make the break five minutes." (typed in rehearsal, so no barge-in was tested) | Run 2: "Got it. I'll update that to a five-minute break." "Sent off." The voice sent it with `replaces` (a correction), so the brain closed the first task and gave the result on the new one; the brain passed it to Leo ("Passed the five-minute break to Leo"). Run 3: "Got it, five-minute breaks. I'm updating that now." and NOT sent (the proposal already said five-minute breaks); fixed after the run (that claim now forces the call), unverified. | Run 2: Donna "Got it: Make the break five minutes", a third assignment row. | 0.5-0.6 s | Not sent (no "Got it:" row): say it again as "Tell Leo to make the break five minutes." Five is already the default, so ten makes the change visible. |
+| 5 | (wait) | Result 30-60 s after beat 3: "Leo built the focus timer with twenty-five minute sessions, five-minute breaks, and a session counter, and Mia handled the light and dark styling. The code is on its own branch and passes syntax checks, want me to open a pull request?" (run 3; run 2, before the names fix: "The timer's ready with …", no names) | Mia done, then Leo done; Donna "Reviewing", then "Reporting". | spoken 2-3 s after the brain's `say` | No result in 2 min: "How's it going?" |
+| 6a | "Who built the timer?" | "Leo built the timer page and logic." | | 0.6 s | |
+| 6b | "Put me through to Leo." | "The office is on it." then +10 s "One sec, I'll put you through to Leo now." hold cue, then in jake's voice: "Hey, it's Leo." | Leo walks to the phone; "On the line: Leo". | ack 0.9 s; Leo +12 s | Stuck: "Put Donna back on." |
+| 6c | "Why did you pick that interval length?" | Leo answered once from his head first ("…long enough to get into a flow state…"), then the real answer from his own session +20 s: "I didn't actually choose it; the brief specified twenty-five minutes, so I used those. It's the standard Pomodoro length." | | 0.6 s; real answer +21 s | Cut between the two answers, or ask "What did you build?" |
+| 6d | "Put Donna back on." | "Putting Donna back on." then "Hey, it's Donna again." | Leo back to the lounge, Donna on the phone. | 0.5 s; Donna +2.6 s | |
+| 7 | "Open a pull request. Thanks, that's all, bye." | Sends the pull request to the brain, then the call closed. In run 3 it closed on the tool call's response before any goodbye was spoken; fixed after the run (the call closes on the goodbye's response), unverified. Expected: "… Hanging up now." | "Got it: Open a pull request." | | No hang-up in 10 s: say "bye" again. |
+| 7b | (wait; the phone rings, press Enter) | Run 3, no remote: rang +14 s after the hang-up: "I'm calling because I couldn't open the pull request, the project has no GitHub remote to push to. …" With the demo repo's remote the brain pushes and opens it itself (no extra question: "open a pull request" is the yes). "Thanks, bye." → "… Hanging up now." | Call: ringing, speaking. | ring +14 s | No ring in 60 s: Enter to call her, "Is the pull request up?" |
 
 ## 3. What to say to judges (60 seconds)
 - **The gap.** OpenAI's Live API has client delegation: the voice keeps talking while an agent on your machine works, and the result is spoken when it lands. Higgs Realtime has no equivalent. We built it: `higgslive.py` is the layer, same shape as the Live SDK.
@@ -60,7 +70,8 @@ Total spoken demo: about 3:50. If time is short, drop the interruption (1:30) an
 | Technical Execution | 20% | `selftest`/`higgslive.py` checks, headless fake-brain tests, clear setup (section 1), honest limitations. |
 
 ## 5. Fallbacks when the live call fails
-- No mic or audio: `uv run bridge.py --backend session --silent --text "make me a quiz game | yes, do that | who built it | bye"` against the real brain; narrate over the office.
+- No mic or audio: the same lines typed, `uv run tests/rehearse_demo.py OUTDIR` does the whole script against a fresh repo
+  and the real brain (export the key first); narrate over the office.
 - No brain: `--backend fake --silent --text "a | b"` for the layer alone.
 - Everything down: play the recorded demo video (record one during rehearsal).
 

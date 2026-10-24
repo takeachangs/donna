@@ -51,6 +51,8 @@ STATUS = "task_status"   # answered at once by this layer from the herd files; n
 STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the work you sent with {TOOL} is going: the project you're connected to, the agents (workers) "
               "and what each is doing or has finished, running and queued tasks, questions waiting for the user, results not told yet. "
               "Only for the work and the team. It only reports; it does nothing.", "parameters": {"type": "object", "properties": {}}}   # naming files/folders here pulled "what's in my directory" to this tool (2/6 runs)
+HOWS = re.compile(r"\b(how'?s it (going|coming)|how is it (going|coming)|how are (we|they|things) doing|any (update|progress|news)|what'?s the status)\b")   # #12 rehearsal: "How's it going?" got "Still working on that" with no task_status, no names
+STATUS_NUDGE = f"(system) Not played: you answered a question about the work without {STATUS}. Call {STATUS} now and answer from it in one short sentence that names who is on it."
 MECHANICS = f"""## Delegation mechanics
 Rule one: when the user asks for anything to be made, opened, run, checked, found or computed, call {TOOL} immediately in that
 same turn. Never say you can't do it yourself, never offer to delegate, never ask whether to proceed: the user already asked.
@@ -75,7 +77,7 @@ Never narrate state changes nobody asked about: a task starting, being queued or
 NUDGE = f"(system) No task was sent: you did not call {TOOL}. Call {TOOL} now with what the user asked, in their words, then say you've sent it off."
 HIRED = re.compile(r"\s*hir(ing|ed)\b", re.I)   # #73: the brain's note before it spawns ("Hiring Leo to build the timer page"); every other note stays silent
 HIRED_NOTE = "[note] {}. Tell the user in one short sentence, in your own words, who is on it now, by first name."
-RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences]"   # user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
+RESULT_CUE = "[the result above just arrived; tell the user now in one or two sentences, keeping every name in it]"   # #12 rehearsal: "Leo built the timer page and Mia the styling" came out as "The timer's ready". user-role, after the output: without it the model answered an earlier "still working" note instead (Oct 24 call)
 QUIET = 2.5       # seconds of silence from everyone before a result is spoken: Oct 24 call, the voice asked the user a question and 6 s later dropped it to say "Done, your page is open"
 RECENT_USER = 3.0  # ...and the user must not have spoken within this long
 HOLD_MAX = 10     # a result held this long goes out anyway (the user may never answer)
@@ -89,7 +91,7 @@ def open_question(voice: str) -> bool:
     v = voice.strip().lower()
     return v.endswith("?") and not CLOSER.search(v) and len(v.split()) >= 5 and bool(TASK_Q.search(v))
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
-CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching|reaching|connecting|transferring|getting)|should be running|backend result|i'?ll\s+have\s+(the|an|my)\s+agent)")   # the last: "I'll have the agent take a look" (Oct 24 probe)
+CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching|reaching|connecting|transferring|getting|updating|changing|adding|fixing|passing)|should be running|backend result|i'?ll\s+have\s+(the|an|my)\s+agent)")   # the last: "I'll have the agent take a look" (Oct 24 probe)
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat|connect|put|transfer)|let me\s+(creat|mak|check|look|run|open|see)|"
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
                    r"shall i (set|get|start) (that|it|this)|i can (connect|put you through|transfer|have)|(have|get|bring) (him|her|them|\w+) (join|on|in)\b|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
@@ -355,7 +357,7 @@ class Conn:
 
     async def _ask(self, question: str, did):
         text = (f"[note] Before the task you sent off can go on, the user has to decide: {question} Ask them this plainly, in your own words, as your own "
-                f"question (never say an agent is asking); wait for their answer; do not call {TOOL} for it, it is passed back automatically.")
+                f"question, the proposal and its details included (never say an agent is asking); wait for their answer; do not call {TOOL} for it, it is passed back automatically.")
         try:
             while True:
                 while not self._idle(time.monotonic()): await asyncio.sleep(0.1)
@@ -439,6 +441,9 @@ class Conn:
             self._emit("session.output_audio.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.delta": self._emit("session.output_transcript.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.done":
+            if not self._relay and self._pending and not st["guarded"] and st.get("status_at") != st["user_at"] and HOWS.search(st["last_user"].lower()):   # a status question answered from memory: dropped unplayed, retried at response.done
+                log.info("GUARD: %r answered without %s — dropped, nudging", ev["transcript"][:60], STATUS)
+                st.update(guarded=True, status_fix=True, spk_until=0.0); self._emit("session.output_audio.discard"); return
             # a task runs whose result has not come in, none went in this turn, and the claim is not backed by one that came in (#55: _told)
             if not self._relay and self.delegation and self._pending - self._arrived and not st["fresh"] and (fixed := fabricated(ev["transcript"], self._told, PENDING_LINES[min(self._swaps, 2)])):   # a result nobody sent (#32)
                 log.info("fabricated: %r → %r", ev["transcript"], fixed); self._swaps += 1
@@ -464,6 +469,9 @@ class Conn:
                 await self._item("[the task result above arrived during that turn; mention it now in one sentence]"); await self._send({"type": "response.create"})
             calls = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == TOOL and o.get("executor") != "server"][:1]   # server-side tools (web_search, Oct 23) need no output from us. [:1]: 1.0 fires 2-3 near-duplicate calls for one request (9/12, probe/r15/A-tools.md); extras left open cause no error
             status = [o for o in ev["response"].get("output", []) if o.get("type") == "function_call" and o.get("name") == STATUS and o.get("executor") != "server"][:1]
+            if status: st["status_at"] = st["user_at"]
+            if st.pop("status_fix", False) and not calls and not status:
+                st["in_flight"] = True; await self._item(STATUS_NUDGE); await self._send({"type": "response.create"}); return
             if st["fix"] and not calls and not status:
                 st["in_flight"] = True; await self._item(FIX.format(st["fix"])); st["fixed"], st["fix"] = st["fix"], None   # fixed: its reply may say the guard line again
                 await self._send({"type": "response.create"}); return   # no response.done for the consumer: the fixed reply's is the one
@@ -577,6 +585,8 @@ if __name__ == "__main__":   # self-check: no network
     assert not any(fabricated(x) for x in ("Cool, so we're doing that Pomodoro timer as a single-page app. I'm sending that off to the office now to get it built on its own branch.",   # #73, the 12:53 call's swaps
                                            "I hear you, and I'm sorry for the confusion. Let's get that Pomodoro timer built on its own branch. I'll keep you posted on the progress.",
                                            "Fair point, I'll be clearer about who's handling what.", "You got it.", "Alright, we're all set, the office has it."))
+    assert CLAIM.search("got it, five-minute breaks. i'm updating that now.")   # #12 rehearsal: the follow-up was claimed, never sent
+    assert all(HOWS.search(x) for x in ("how's it going?", "how is it coming along", "any update?")) and not any(HOWS.search(x) for x in ("how do i run it?", "what's going on with you?"))   # #12
     assert TOOL in MECHANICS and "[progress" not in MECHANICS and MECHANICS.index("Rule one") < MECHANICS.index(STATUS)
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:   # status_summary: working, idle, done, empty
