@@ -209,8 +209,9 @@ function reportDetail(b: Briefing) {
     el('agency-scene').scrollIntoView({ block: 'center', behavior: 'instant' });
     scene?.replayHandoff(b.id);
   };
-  for (const file of b.artifacts || []) {
-    const open = make('a', 'result-link', t('agency.open_result'));
+  const artifacts = Array.isArray(b.artifacts) ? b.artifacts : [];
+  for (const file of artifacts) {
+    const open = make('a', 'result-link', artifacts.length > 1 ? t('agency.open_result_named', { name: file.title }) : t('agency.open_result'));
     open.href = `/agency-api/results/${encodeURIComponent(file.id)}/${encodeURIComponent(file.file)}`;
     open.target = '_blank';
     open.rel = 'noopener noreferrer';

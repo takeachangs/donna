@@ -21,6 +21,7 @@ def conveys(message, transcript):
 def pending():
     d = herd.root()/'donna'
     meta, status = herd.rj(d/'meta.json'), herd.rj(d/'status.json')
+    if not meta.get('project'): return []
     inbox = herd.tail(d/'inbox.jsonl')
     projects = {m['id']: m.get('project') for m in inbox if 'id' in m and not m.get('in_reply_to')}
     replaced = {m['replaces'] for m in inbox if m.get('replaces')}
@@ -52,10 +53,14 @@ def acknowledge(message):
     d = herd.root()/'donna'
     with herd.worker_lock(d/'.delivery.lock'):
         file = d/'notification-acks.json'
-        keys = set(herd.rj(file).get('keys', []))
+        saved = herd.rj(file)
+        keys, spoken = set(saved.get('keys', [])), set(saved.get('spoken', []))
+        newly_spoken = []
         for receipt in message['receipts']:
             if receipt['key'] in keys: continue
             keys.add(receipt['key'])
-            if receipt['kind'] in ('say','fail'): herd.event('task.spoken', 'donna', id=receipt['id'])
-        herd.write_json(file, {'keys': sorted(keys)})
+            if receipt['kind'] in ('say','fail'):
+                spoken.add(receipt['id']); newly_spoken.append(receipt['id'])
+        herd.write_json(file, {'keys': sorted(keys), 'spoken': sorted(spoken)})
+        for tid in newly_spoken: herd.event('task.spoken', 'donna', id=tid)
     herd.write_office()

@@ -26,7 +26,9 @@ another completion. HTML must be standalone, with embedded styles and scripts.
 `notifications.py` derives pending speech from the saved outbox and task/project state.
 The phone recovers unspoken results after restart instead of starting at EOF. Acknowledgements
 live in `herd/donna/notification-acks.json`; `task.spoken` is emitted only after a response
-containing the result has finished its playback window. A connection failure, interrupted
+conveying the reviewed report has finished its playback window. A greeting alone is not a
+delivery receipt. Recovery callbacks read the saved report rather than merely announcing
+why Donna is calling. A connection failure, interrupted
 speech or speaker failure leaves the result pending for the next restart. Delivery is
 at-least-once across a crash at the acknowledgement boundary. Already resolved questions,
 superseded requests and other projects do not ring; transfers remain live-call commands.

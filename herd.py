@@ -576,6 +576,7 @@ def office(now=None):
     says = [o for o in outbox if o.get("kind") == "say" and (o.get("ts") or 0) >= since][-10:]
     hev, evs = tail(root() / "events.jsonl"), tail(h / "events.jsonl")
     spoken = {e.get("id") for e in hev if e.get("ev") == "task.spoken"}  # bridge.py: the voice delivered it, on the call or as the ring's opener
+    spoken.update(rj(root() / "donna" / "notification-acks.json").get("spoken", []))
     # the brain's session: registered by /call, else the newest brain event fired from the project dir
     sess, real = meta.get("session"), lambda p, c={}: c.get(p) or c.setdefault(p, os.path.realpath(p))
     if not sess and proj:

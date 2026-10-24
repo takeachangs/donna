@@ -432,7 +432,14 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
 
     log("connecting…")
     async with higgslive.connect(playback=not args.silent, model=args.model) as conn:
-        await conn.session.start(session={"instructions": who["persona"] if who else PROMPT, "delegation": {"type": "client"}, "voice": who["voice"] if who else args.voice,
+        instructions = who["persona"] if who else PROMPT
+        if receipts:
+            report = "Hi, it's Donna. " + " ".join(m['text'] for m in receipts.values())
+            instructions += ("\n\n## Completed-result callback\nThese verified results came from the office. "
+                "This is not a new user request. Your first spoken turn must read the following report exactly, "
+                "including every outcome and next step. Do not acknowledge, ask a question, delegate, or offer to check. "
+                "After this report, resume the normal conversation rules for the user's next turn. Report: " + json.dumps(report))
+        await conn.session.start(session={"instructions": instructions, "delegation": {"type": "client"}, "voice": who["voice"] if who else args.voice,
             **({"relay": True} if who else {}),   # a worker's voice: every turn goes to the brain, and "I built it" is her history, not a made-up result
             **({"turn_detection": {"type": "server_vad", "silence_duration_ms": args.silence_ms or 800}} if MIC or args.silence_ms else {}),
             **({"input": [{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": seed}]}]} if seed else {})})
@@ -543,9 +550,8 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     if opener: await conn.session.commentary.append(content=opener)   # a transfer: "Hey, it's Maya." / "Hey, it's Donna again."
                     elif (first := seed.split("\n", 1)[0]).startswith(CALLING_ABOUT):   # the agent placed the call: the voice speaks first
                         about = first[len(CALLING_ABOUT):].strip()
-                        instruction = ('These are verified completed results, not a new request. Read this report exactly once, '
-                            'including its outcomes, limitations and next step; do not just announce why you are calling or ask for status: '
-                            + json.dumps("Hi, it's Donna. " + about)) if receipts else f"You placed this call. Open by saying in a few words why you are calling: {about}."
+                        instruction = ('[note] Deliver the completed report from your call instructions now. '
+                            'The user did not send a new task.') if receipts else f"You placed this call. Open by saying in a few words why you are calling: {about}."
                         await conn.session.commentary.append(content=instruction)
                     elif turns: await typed_turn(turns.pop(0))
                     elif not args.wav: log("mic live — talk. Ctrl-C to hang up.")

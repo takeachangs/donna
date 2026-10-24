@@ -17,7 +17,7 @@ const inside = (base: string, file: string) => {
 export function serveResult(req: IncomingMessage, res: ServerResponse, path: string, home: string, workspace: Workspace) {
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
   const m = /^\/agency-api\/results\/([a-f0-9]{24})\/(result\.([a-z]+))$/.exec(path);
-  if (!m || !mime[m[3]] || !workspace.briefings.some((b) => b.artifacts?.some((a) => a.id === m[1] && a.file === m[2]))) return false;
+  if (!m || !mime[m[3]] || !workspace.briefings.some((b) => Array.isArray(b?.artifacts) && b.artifacts.some((a) => a?.id === m[1] && a?.file === m[2]))) return false;
   let file: string, size: number;
   try {
     const root = realpathSync(home), base = realpathSync(join(root, 'results'));
