@@ -26,6 +26,12 @@ are their current tool calls: writing index.html, running checks. Nothing here i
 hooks firing inside the workers. Each of them works in its own git worktree."
 (Point at the tmux window.) "And this is the brain itself, if you want to watch it think."
 
+## 1:10 A second team, a second room (Seongmin, Jerrold)
+S: "While they're doing that, get a marketing team to work on the branding."
+Donna: "Nova and Sam are on it: brand name and voice, tagline and launch copy." (names vary)
+J: "A new room opens across the hall: Marketing. Two more hires walk in from the entrance. Same brain, same repo, a
+second team working in parallel. Each room reports separately."
+
 ## 1:20 Talk while they work (Seongmin)
 S: "How's it going?"
 Donna: "Leo is building the timer page and logic, and Mia is handling the stylesheet."
@@ -34,8 +40,8 @@ Donna stops the instant he speaks, then picks back up.
 J: "Barge-in is Higgs: she stops mid-word. Nothing was sent, the workers never noticed."
 
 ## 1:50 The result (Donna)
-Donna: "Leo built the focus timer with twenty-five minute sessions, five-minute breaks, and a session counter, and Mia handled the light and dark styling. The code is on its own branch."
-J: "Leo and Mia go to the lounge. The result came to her as a report; she spoke it when there was a gap in the
+Donna: "Leo built the focus timer with twenty-five minute sessions, five-minute breaks, and a session counter, and Mia handled the light and dark styling. The code is on its own branch." A little later: "Marketing is done too: Nova named the brand and Sam wrote the launch copy."
+J: "Leo and Mia go to the lounge, then Nova and Sam. The result came to her as a report; she spoke it when there was a gap in the
 conversation. If Seongmin had hung up, the phone would have rung him."
 
 ## 2:10 Transfer (Seongmin)
