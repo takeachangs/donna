@@ -34,7 +34,7 @@ Shell variables do not carry over between commands, so each command sets its own
    ```
    Then check the hooks, in a separate command after that one:
    ```bash
-   python3 -c 'import json,os; print(json.load(open(os.path.expanduser("~/.higgs/herd/donna/meta.json"))).get("session") or "NO HOOKS")'
+   python3 -c 'import json,os; print(json.load(open(os.path.join(os.environ.get("HIGGS_HOME") or os.path.expanduser("~/.higgs"), "herd/donna/meta.json"))).get("session") or "NO HOOKS")'
    ```
    A session id means the hooks fire: the office shows you and your workers, and a task that lands while you are busy
    shows up after one of your tool calls as "Phone task <id>: …" (note it, finish what you are doing, then do it; the
