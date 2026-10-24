@@ -498,8 +498,10 @@ def office(now=None):
     lid = f"brain-{sess[:8]}" if sess else "brain"
     busy = [name for r, name in vis if stt(r) == "working"]
     ls_ = "waiting" if needs else "working" if lead["t"] > lead["stop"] else "waiting" if busy else "done"  # #65: her workers still out: she waits on them (done when nobody is)
+    review = ls_ == "done" and bool(vis) and meta.get("kind") != "codex" and any(t.get("state") == "in_progress" and (t.get("ts") or 0) >= since for t in (st.get("tasks") or {}).values())  # #70: all workers stopped, the task has no say/fail yet: she reviews, not Ready
+    if review: ls_ = "working"
     last = list(got.values())[-1:]
-    doing = ("Waiting for your answer" if needs else f"Got it: {last[0].get('task') or ''}"[:80] if last else ("Thinking" if not lead["act"] or lead["ask"] > lead["act"].get("ts", 0) else phrase(lead["act"], lead["hires"]))
+    doing = ("Waiting for your answer" if needs else "Reviewing" if review else f"Got it: {last[0].get('task') or ''}"[:80] if last else ("Thinking" if not lead["act"] or lead["ask"] > lead["act"].get("ts", 0) else phrase(lead["act"], lead["hires"]))
              if ls_ == "working" else f"Waiting on {both(busy)}" if busy else "Ready")  # #65: Donna's narrative line
     if meta.get("kind") == "codex" and ls_ == "working": doing = st.get("last_note") or "Thinking"  # #66: a Codex brain narrates with its own notes
     workers = [{"id": lid, "projectId": pid, "name": "Donna", "role": "Brain", "responsibility": "", "characterKey": "char-female-b",
@@ -511,7 +513,7 @@ def office(now=None):
         g = "female" if "female" in key else "male"; seen[g] += 1
         workers.append({"id": r["id"], "projectId": pid, "name": name, "role": r["desc"] or "", "responsibility": "", "characterKey": key,
                         "voice": VOICES[g][(seen[g] - 1) % 3], "status": stt(r), "assignmentId": r["id"],
-                        "currentAction": r.get("cur") or action(r["act"]) or (f"Hired: {r['desc'] or name}" if stt(r) == "working" else "")})  # #65; cur: a codex worker's last note (#66)
+                        "currentAction": (r.get("cur") or action(r["act"]) or f"Hired: {r['desc'] or name}") if stt(r) == "working" else ""})  # #70: blank once done/failed  # #65; cur: a codex worker's last note (#66)
         asg.append({"id": r["id"], "projectId": pid, "workerId": r["id"], "title": r["desc"] or name, "brief": r["prompt"], "acceptance": "", "status": stt(r),
                     "cwd": r["cwd"], **({"summary": r["summary"]} if r["summary"] else {}), "startedAt": iso(r["t0"]), **({"completedAt": iso(r["t1"])} if r["t1"] else {}),
                     "artifacts": [], "dependsOn": [], "revision": 0})
@@ -611,8 +613,8 @@ def _selfcheck_office():
         fire("Stop", last_assistant_message="1", background_tasks=[{"id": B, "status": "running"}])
         o = O()
         assert [w["id"] for w in o["workers"]] == [lid, B] and o["workers"][0] == {
-            "id": lid, "projectId": pid, "name": "Donna", "role": "Brain", "responsibility": "", "characterKey": "char-female-b", "status": "done",
-            "assignmentId": "", "currentAction": "Ready", "lead": True}, o["workers"][0]  # #65: idle, nobody working
+            "id": lid, "projectId": pid, "name": "Donna", "role": "Brain", "responsibility": "", "characterKey": "char-female-b", "status": "working",
+            "assignmentId": "", "currentAction": "Reviewing", "lead": True}, o["workers"][0]  # #70: nobody working, the task has no say yet: reviewing, not Ready
         assert len(o["assignments"]) == 1 and (a := o["assignments"][0]) | {"startedAt": 0, "completedAt": 0} == {
             "id": B, "projectId": pid, "workerId": B, "title": "Count files", "brief": "Run ls", "acceptance": "", "status": "done", "cwd": proj,
             "summary": "Ran ls: 1 file. The answer is 1.", "startedAt": 0, "completedAt": 0, "artifacts": [], "dependsOn": [], "revision": 0}, a
@@ -622,7 +624,9 @@ def _selfcheck_office():
         assert e[3]["input"] == {"name": "Bob", "description": "Count files", "prompt": "Run ls"} and e[3]["agentId"] == B and "result" not in e[3] and "agent" not in e[3]
         assert e[4]["agent"] == B and e[4]["input"] == {"command": "ls", "description": "List files"} and e[8]["input"]["message"].startswith("Ran ls")
 
-        reply("donna", t1, "say", "All done, 1 file."); write_office()  # briefing: the workers that started between the task and the say
+        reply("donna", t1, "say", "All done, 1 file."); write_office()
+        assert O()["workers"][0]["status"] == "done" and O()["workers"][0]["currentAction"] == "Ready"  # #70: the say ends the review
+        # briefing: the workers that started between the task and the say
         assert len(bs := O()["briefings"]) == 1 and bs[0] | {"createdAt": 0} == {
             "id": t1, "assignmentId": B, "projectId": pid, "workerId": B, "deliveryKey": t1, "title": "All done, 1 file.", "summary": "All done, 1 file.", "artifacts": [],
             "verification": [], "status": "queued", "contributors": [{"name": "Bob", "title": "", "summary": ""}], "createdAt": 0}, bs
@@ -631,7 +635,7 @@ def _selfcheck_office():
         fire("SubagentStart", agent_id="fg1", agent_type="general-purpose"); fire("SubagentStop", agent_id="fg1", agent_type="general-purpose")  # foreground Agent: no agentId, the result comes with the PostToolUse
         fire("SubagentStop", agent_id="int1", agent_type="")  # #44: Claude Code's own helper (no Start, no Agent call, also seen mid-turn): no row, so it cannot take fg1's name
         fire("PostToolUse", tool_name="Agent", tool_input={"description": "Fg job", "prompt": "p"}, tool_response={"status": "completed", "content": [{"type": "text", "text": "found it"}]})
-        assert W(O(), B)["currentAction"] == "Running a command"  # done, and the handback did not replace its last action
+        assert W(O(), B)["currentAction"] == ""  # #70: done: blank
         assert (w := W(O(), "fg1"))["name"] == "Fg job" and w["status"] == "done" and w["characterKey"] == KEYS[1]
         assert next(x for x in O()["assignments"] if x["id"] == "fg1")["summary"] == "found it"
         fire("Stop")
@@ -776,7 +780,8 @@ def _selfcheck_office():
         fire("UserPromptSubmit", prompt="x"); assert D() == "Thinking" and [x[1] for x in WS()] == ["done", "done"]
         fire("PostToolUse", tool_name="Bash", tool_input={"command": "cd ../p-donna-landing; npm test"}); assert D() == "Running checks"
         fire("PostToolUse", tool_name="Bash", tool_input={"command": "uv run -q herd.py reply donna t9 say \"Done.\""}); assert D() == "Reporting"
-        fire("Stop"); assert D() == "Ready" and O()["workers"][0]["status"] == "done"
+        fire("Stop"); assert D() == "Reviewing" and O()["workers"][0]["status"] == "working", D()  # #70: workers done, no say yet
+        reply("donna", t9, "say", "Done."); write_office(); assert D() == "Ready" and O()["workers"][0]["status"] == "done", D()
         fire("UserPromptSubmit", prompt="Phone task t10: polish it")
         fire("PostToolUse", tool_name="Agent", tool_input={"name": "Ava", "description": "Polishes the page", "prompt": "p", "run_in_background": True},
              tool_response={"status": "teammate_spawned", "agentId": f"Ava@{team}"})  # a reused name is the same id: hired again, working again
@@ -826,7 +831,7 @@ def selfcheck_codex():  # #66: a Codex brain registers without a hook; a codex w
             assert [(x["kind"], x["text"]) for x in lines(root() / "Ava" / "outbox.jsonl")] == [("take", ""), ("note", "Running ls -la"), ("note", "Running node --test"), ("note", "Editing index.html, a.css"), ("say", "Built the page.")]
             assert rj(root() / "Ava" / "meta.json")["thread"] == "th-1"
             o = office(); w = o["workers"][1]; a = o["assignments"][0]
-            assert (w["name"], w["role"], w["status"], w["currentAction"]) == ("Ava", "Writes the page", "done", "Editing index.html, a.css"), w
+            assert (w["name"], w["role"], w["status"], w["currentAction"]) == ("Ava", "Writes the page", "done", ""), w  # #70
             assert a["summary"] == "Built the page." and a["brief"].startswith("Writes the page")
             w2 = send("Ava", "On the phone with the person: which colour?")  # a second send resumes her thread
             assert until(lambda: capture("Ava")["tasks"][w2]["state"] == "done")
