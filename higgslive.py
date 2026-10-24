@@ -32,6 +32,7 @@ starts talking first it rides in on their turn. kind="ask" appends skip that wai
 import asyncio, base64, json, logging, os, re, time
 from pathlib import Path
 from types import SimpleNamespace
+from time import perf_counter as monotonic  # High-resolution turn timestamps on Windows.
 import websockets
 
 log = logging.getLogger("higgslive")
@@ -261,7 +262,7 @@ class Conn:
         self._said: list = []                             # (sentence, monotonic) the voice said in the last REPEAT_WINDOW s (#36)
         self._instructions = ""
         self._relay = False   # a worker's voice (#28): every user turn is for the agent; see _start
-        self._t0 = time.monotonic()
+        self._t0 = monotonic()
         self._tasks: list[asyncio.Task] = []
         self.delegation = False
         self.session = SimpleNamespace(start=self._start, commentary=_Channel(self._commentary), thinking=_Channel(self._thinking),
@@ -314,7 +315,7 @@ class Conn:
         await self._send({"type": "input_audio_buffer.append", "audio": base64.b64encode(pcm).decode()})
 
     async def _text(self, content: str):
-        self._st.update(guarded=False, turn_delegated=False, last_user=content, question=False, asked=False, user_at=time.monotonic(), fresh=False)
+        self._st.update(guarded=False, turn_delegated=False, last_user=content, question=False, asked=False, user_at=monotonic(), fresh=False)
         held, self._held = self._held, None   # a typed turn counts as speech: the held result goes in just before it
         if held: await self._attach(held, False)
         await self._item(content); await self._send({"type": "response.create"})
@@ -345,7 +346,7 @@ class Conn:
         return [_msg(text)]     # no open call (opener, "still working" note, a second update for the same task): plain text item
 
     def _done(self, did, kind):
-        if kind not in ("dropped", "note"): self._st.update(fresh=True, result_at=time.monotonic())   # the reply that follows may report it
+        if kind not in ("dropped", "note"): self._st.update(fresh=True, result_at=monotonic())   # the reply that follows may report it
         if did: self._pending.discard(did)
         self._emit("session.commentary.appended", delegation_id=did, kind=kind)
 
@@ -365,9 +366,9 @@ class Conn:
                 f"question, the proposal and its details included (never say an agent is asking); wait for their answer; do not call {TOOL} for it, it is passed back automatically.")
         try:
             while True:
-                while not self._idle(time.monotonic()): await asyncio.sleep(0.1)
+                while not self._idle(monotonic()): await asyncio.sleep(0.1)
                 async with self._lock:
-                    if not self._idle(time.monotonic()): continue
+                    if not self._idle(monotonic()): continue
                     self._st.update(question=True, asked=True)   # the voice is about to ask: nothing is spoken over the unanswered question, whatever its wording
                     await self._send_items([_msg(text)])
                     break
@@ -381,17 +382,17 @@ class Conn:
         while True:
             entry = await self._spoken.get()
             text, did, about, kind = entry   # about: the delegation a "still working" note is for
-            self._held, t0, logged = entry, time.monotonic(), False
+            self._held, t0, logged = entry, monotonic(), False
             while self._held is entry:   # _attach (the user spoke or typed) takes it out
                 if about and about in self._arrived: self._held = None; break   # its result came in while the note waited: the result wins (Oct 24 call)
-                now = time.monotonic()
+                now = monotonic()
                 if self._ready(now):
                     quiet = now - max(st["spk_until"], st["voice_at"], st["user_at"])
                     why = ("voice question unanswered" if st["question"] else f"user spoke {now - st['user_at']:.0f} s ago" if now - st["user_at"] < RECENT_USER
                            else f"waiting for {QUIET} s of quiet" if quiet < QUIET else None)
                     if why is None or now - t0 >= HOLD_MAX or (st["question"] and now - t0 >= QUESTION_MAX):
                         async with self._lock:
-                            if self._held is entry and self._ready(time.monotonic()):   # re-check: an ask or an attach may have got in
+                            if self._held is entry and self._ready(monotonic()):   # re-check: an ask or an attach may have got in
                                 self._held = None
                                 await self._send_items(self._items(text, did, cue=True))
                                 log.info("→ commentary %s (%d chars) after %.1f s quiet", did or "(no delegation)", len(text), quiet)
@@ -401,9 +402,9 @@ class Conn:
                 await asyncio.sleep(0.1)
 
     async def _still_working(self, did: str):
-        t0 = time.monotonic(); await asyncio.sleep(STILL_WORKING_AT)
-        if did in self._pending and self._st["user_at"] < t0 and time.monotonic() - self._st.get("still_at", -1e9) >= STILL_WORKING_AT:   # a silent wait only (the user
-            self._st["still_at"] = time.monotonic()   # spoke since: they are not waiting), and one note for all running tasks (#36 probe: three tasks, three identical lines)
+        t0 = monotonic(); await asyncio.sleep(STILL_WORKING_AT)
+        if did in self._pending and self._st["user_at"] < t0 and monotonic() - self._st.get("still_at", -1e9) >= STILL_WORKING_AT:   # a silent wait only (the user
+            self._st["still_at"] = monotonic()   # spoke since: they are not waiting), and one note for all running tasks (#36 probe: three tasks, three identical lines)
             await self._spoken.put(("[note] The task you handed off is still in progress and taking longer than usual; tell the user in a few words.", None, did, "say"))
 
     # ---- event translation -----------------------------------------------------------------------------------------
@@ -437,12 +438,12 @@ class Conn:
             self._emit("session.input_speech_started")
             held, self._held = self._held, None   # the server answers this turn whatever we do (create_response is ignored), so the result goes in before it ends
             if held: await self._attach(held, True)
-        if t == "input_audio_buffer.speech_stopped": st.update(user_speaking=False, user_at=time.monotonic()); self._emit("session.input_speech_stopped")
+        if t == "input_audio_buffer.speech_stopped": st.update(user_speaking=False, user_at=monotonic()); self._emit("session.input_speech_stopped")
         if t == "conversation.item.input_audio_transcription.completed":
             st["last_user"] = ev.get("transcript") or ""; self._emit("session.input_transcript.done", transcript=st["last_user"])
         if t == "response.output_audio.delta":
             if self._playback:   # ponytail: playback end estimated from bytes; add a client hook if it drifts
-                now = time.monotonic(); st["spk_until"] = max(st["spk_until"], now) + len(ev["delta"]) * 3 // 4 / (self._rate * 2)
+                now = monotonic(); st["spk_until"] = max(st["spk_until"], now) + len(ev["delta"]) * 3 // 4 / (self._rate * 2)
             self._emit("session.output_audio.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.delta": self._emit("session.output_transcript.delta", delta=ev["delta"])
         if t == "response.output_audio_transcript.done":
@@ -465,10 +466,11 @@ class Conn:
                 log.info("repeat: %s%s", rep, "" if not drop else " → dropped, retrying" if retry else " → dropped")
                 if drop:
                     st.update(repeat=retry and (ev["transcript"] if whole else guard), guarded=True, spk_until=0.0, last_voice=ev["transcript"], dropped=True); self._emit("session.output_audio.discard"); return   # answered: just dropped
-            st["heard_at"] = time.monotonic()
+            st["heard_at"] = monotonic()
             st["last_voice"], st["question"] = ev["transcript"], st["asked"] or open_question(ev["transcript"]); self._emit("session.output_transcript.done", transcript=ev["transcript"])
         if t == "response.done":
-            st["in_flight"] = False; st["voice_at"] = time.monotonic()
+            if ev["response"].get("usage"): log.info("usage: %s", json.dumps(ev["response"]["usage"]))
+            st["in_flight"] = False; st["voice_at"] = monotonic()
             if st["late"]:   # no await on _speak_loop here: in_flight clears in this very function
                 st["late"] = False   # ponytail: a second response.create if this same response also delegated; rare, accepted
                 await self._item("[the task result above arrived during that turn; mention it now in one sentence]"); await self._send({"type": "response.create"})
@@ -488,7 +490,7 @@ class Conn:
             self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})   # before the status answer: a status call in
             self._open.update(c["call_id"] for c in calls)   # the same response must see this task running, or it reads "idle" and says "done"
             for c in status:   # synchronous: answered now, never enters _pending/_open
-                text = status_summary(self._t0 - time.monotonic() + time.time(), [(t, ts, d not in self._open, self._notes.get(d)) for d, (t, ts) in self._sent.items()])
+                text = status_summary(self._t0 - monotonic() + time.time(), [(t, ts, d not in self._open, self._notes.get(d)) for d, (t, ts) in self._sent.items()])
                 await self._send({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": c["call_id"], "output": text}})
                 log.info("%s → %s", STATUS, text)
             through = not self._relay and not st["turn_delegated"] and not st["guarded"] and for_brain(st["last_user"])   # #61: never answered from task_status
@@ -512,14 +514,14 @@ class Conn:
                 st["turn_delegated"] = True; self._pending.add(did)
                 if not spoke: await self._send({"type": "response.create"})   # 1.5 speaks a preamble in the call response itself; a second ack would make it talk twice. No output yet: the call stays open and the model acknowledges. Bare: a body with instructions/tool_choice makes it greet from scratch
                 self._tasks.append(asyncio.create_task(self._still_working(did)))
-                self._emit("session.delegation.created", delegation={"id": did, "task": task, "replaces": old}, offset_ms=int((time.monotonic() - self._t0) * 1000))
+                self._emit("session.delegation.created", delegation={"id": did, "task": task, "replaces": old}, offset_ms=int((monotonic() - self._t0) * 1000))
             self._emit("response.done", calls=len(calls), pending=len(self._pending))
         if "delta" not in t: self._emit("raw", raw_type=t)   # for DEBUG logging; consumers ignore it
 
     def _repeats(self, voice: str, fixed: str = "") -> tuple[list, bool]:
         """Sentences of `voice` already said in the last REPEAT_WINDOW s (guard lines: in the whole call, #73) and whether
         that is all of it; records them (#36). fixed: the FIX text this reply was told to say verbatim, not checked."""
-        now, mine = time.monotonic(), set(sentences(fixed))
+        now, mine = monotonic(), set(sentences(fixed))
         self._said = [(s, t) for s, t in self._said if now - t < REPEAT_WINDOW or s in GUARD_SENTS]
         said, new = {s for s, _ in self._said}, [s for s in sentences(voice) if len(s.split()) >= REPEAT_MIN_WORDS]
         self._said += [(s, now) for s in new]
@@ -669,7 +671,7 @@ if __name__ == "__main__":   # self-check: no network
     async def two(): await asyncio.gather(c._still_working("d1"), c._still_working("d2"))
     asyncio.run(two()); assert c._spoken.qsize() == 1
     c = Conn(None, 24000); c._pending = {"d3"}   # the user spoke while it waited: no note (they are not waiting in silence)
-    async def spoke(): t = asyncio.create_task(c._still_working("d3")); await asyncio.sleep(0.01); c._st["user_at"] = time.monotonic(); await t
+    async def spoke(): t = asyncio.create_task(c._still_working("d3")); await asyncio.sleep(0.01); c._st["user_at"] = monotonic(); await t
     asyncio.run(spoke()); assert c._spoken.empty()
     with tempfile.TemporaryDirectory() as tmp:   # per-task records: in progress, queued, needs_you, failed; ring mode's duplicate `sent` is skipped
         os.environ["HIGGS_HOME"], h = tmp, Path(tmp) / "herd"
@@ -702,7 +704,7 @@ if __name__ == "__main__":   # self-check: no network
         async def rec(ev):
             sent.append(ev)
             if ev["type"] == "conversation.item.create": [x.set() for x in (c._st["added"], c._st["att"]) if x]
-        c._send, c._open, now = rec, {"d1"}, time.monotonic()
+        c._send, c._open, now = rec, {"d1"}, monotonic()
         return c, sent, now
     kinds = lambda sent: [e.get("item", {}).get("type") or e["type"] for e in sent]
     async def hold():   # a voice question is open: the result is held, then rides in before the user's typed answer
@@ -781,7 +783,7 @@ if __name__ == "__main__":   # self-check: no network
         c, sent, now = mk(); c.delegation, c._pending = True, {"d1"}
         outs = lambda: [e.type for e in (c._out.get_nowait() for _ in range(c._out.qsize())) if e.type != "raw"]
         async def reply(text, user):
-            if user: c._st.update(user_at=time.monotonic(), guarded=False, fresh=False)
+            if user: c._st.update(user_at=monotonic(), guarded=False, fresh=False)
             await c._handle({"type": "response.output_audio_transcript.done", "transcript": text}); await c._handle({"type": "response.done", "response": {"output": []}})
             return outs()
         assert await reply("Still working on that website for you.", True) == ["session.output_transcript.done", "response.done"] and sent == []
@@ -792,7 +794,7 @@ if __name__ == "__main__":   # self-check: no network
         sent.clear(); assert await reply("Still working on that website for you.", False) == ["session.output_audio.discard", "response.done"] and sent == []   # already answered this turn: dropped, no retry
         c._st.update(last_user="also compile a plan for the team"); await reply("I'm on it.", True)   # "I'm on it." again to a new request: GUARD's nudge, which gets the call made
         assert await reply("I'm on it.", True) == ["session.output_audio.discard"] and sent[-2]["item"]["content"][0]["text"] == NUDGE, sent
-        c._st.update(last_user=""); await reply("Still just me on this one.", True); c._st.update(user_at=time.monotonic(), guarded=True)   # next turn: a task_status answer runs guarded
+        c._st.update(last_user=""); await reply("Still just me on this one.", True); c._st.update(user_at=monotonic(), guarded=True)   # next turn: a task_status answer runs guarded
         assert await reply("Still just me on this one.", False) == ["session.output_audio.discard"] and sent[-2]["item"]["content"][0]["text"] == REPEAT.format("Still just me on this one."), sent
         c._st.update(guarded=False, last_user=""); sent.clear()
         c._st["fixed"] = PENDING_LINE; assert await reply(PENDING_LINE, True) == ["session.output_transcript.done", "response.done"] and sent == []   # FIX's reply says it verbatim
@@ -815,13 +817,13 @@ if __name__ == "__main__":   # self-check: no network
         c, sent, now = mk(); c.delegation, c._pending = True, {"d1"}
         outs = lambda: [e.type for e in (c._out.get_nowait() for _ in range(c._out.qsize())) if e.type != "raw"]
         await c._handle({"type": "response.output_audio_transcript.done", "transcript": "On it."}); await c._handle({"type": "response.done", "response": {"output": []}}); outs()
-        c._st.update(user_at=time.monotonic(), guarded=False, fresh=False, last_user="can you come up with a script to present it?"); sent.clear()
+        c._st.update(user_at=monotonic(), guarded=False, fresh=False, last_user="can you come up with a script to present it?"); sent.clear()
         await c._handle({"type": "response.output_audio_transcript.done", "transcript": "On it."})
         await c._handle({"type": "response.done", "response": {"output": [{"type": "message", "content": [{"transcript": "On it."}]},
                                                                            {"type": "function_call", "name": TOOL, "call_id": "d2", "arguments": '{"task": "come up with a script"}'}]}})
         assert outs() == ["session.output_audio.discard", "session.delegation.created", "response.done"] and kinds(sent) == ["response.create"], sent
         await c._handle({"type": "response.output_audio_transcript.done", "transcript": "On it."}); assert outs() == ["session.output_transcript.done"]   # the fresh ack is played, even word for word
-        c._st.update(user_at=time.monotonic(), guarded=False, turn_delegated=False, last_user="can you come up with a script to present it?"); sent.clear()   # the 13:29 case: "On it." again and no call
+        c._st.update(user_at=monotonic(), guarded=False, turn_delegated=False, last_user="can you come up with a script to present it?"); sent.clear()   # the 13:29 case: "On it." again and no call
         await c._handle({"type": "response.output_audio_transcript.done", "transcript": "On it."}); await c._handle({"type": "response.done", "response": {"output": []}})
         assert sent[-2]["item"]["content"][0]["text"] == NUDGE, sent   # GUARD's nudge, not REPEAT's: the call gets made
     async def told():   # #55: the result for "music" went in, then the user's "Thanks, bye": the goodbye may report it, not the running "notes"
@@ -829,7 +831,7 @@ if __name__ == "__main__":   # self-check: no network
         c._sent = {"d1": ("Also zip the music folder.", time.time()), "d2": ("And make a backup of the notes folder.", time.time())}
         outs = lambda: [(e.type, getattr(e, "transcript", "")) for e in (c._out.get_nowait() for _ in range(c._out.qsize())) if e.type != "raw"]
         say = lambda v: c._handle({"type": "response.output_audio_transcript.done", "transcript": v})
-        c._st["heard_at"] = time.monotonic(); await c.session.commentary.append(content="Done.", delegation_id="d1")
+        c._st["heard_at"] = monotonic(); await c.session.commentary.append(content="Done.", delegation_id="d1")
         text, did, _, kind = c._spoken.get_nowait(); items = c._items(text, did, cue=True); c._done(did, kind); outs()
         assert items[0] == {"type": "function_call_output", "call_id": "d1", "output": 'Result for "Also zip the music folder.": Done.'} and len(items) == 2, items
         await c.input_text.append("Thanks, bye"); assert not c._st["fresh"]   # the user's turn: before #55 the guard swapped a true claim here
@@ -850,5 +852,5 @@ if __name__ == "__main__":   # self-check: no network
         assert c._open == {"d1"} and not c._st["fresh"]
     async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer(), stale(), fab(), rep(), callrep(), told(), hire()); await cap()   # cap flips globals: not alongside the others
     STILL_WORKING_AT = 25   # stale() opens a delegation: no "still working" note inside the test
-    t0 = time.monotonic(); asyncio.run(policy()); assert time.monotonic() - t0 < 3
+    t0 = monotonic(); asyncio.run(policy()); assert monotonic() - t0 < 3
     print("ok")

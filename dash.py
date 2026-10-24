@@ -5,7 +5,7 @@
   python3 dash.py --once     one plain-text frame to stdout (also writes ~/.higgs/board.json + board.log.jsonl; --no-log skips)
   python3 dash.py --selftest parser checks on inline samples
 """
-import argparse, curses, json, locale, os, re, shutil, subprocess, textwrap, threading, time
+import argparse, json, locale, os, re, shutil, subprocess, textwrap, threading, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -647,6 +647,8 @@ def main():
             print("".join(t for t, _ in row).rstrip())
         return
     locale.setlocale(locale.LC_ALL, "")
+    global curses
+    import curses  # Only the terminal UI needs curses; the office's transcript parser works on Windows.
     curses.wrapper(ui, args, root)
 
 
