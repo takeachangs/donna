@@ -70,7 +70,10 @@ it('keeps follow-up text intact, refreshes state separately and links inputs to 
  }
  const messages=socket.sent.filter((e:any)=>e.type==='conversation.item.create');
  expect(messages.map((e:any)=>e.item.content[0].text)).toEqual(['Write an opening.','The agency, not hardware.']);
- expect(socket.sent.filter((e:any)=>e.type==='session.update').at(-1).session.instructions).toContain('Revise opening');
+ // context goes out once at connect; only an explicit refresh re-sends it
+ expect(socket.sent.filter((e:any)=>e.type==='session.update')).toHaveLength(1);
+ voice.refresh();expect(socket.sent.filter((e:any)=>e.type==='session.update')).toHaveLength(2);
+ expect(socket.sent.at(-1).session.instructions).toContain('Revise opening');expect(socket.sent.at(-1).session.instructions).toContain('snapshot');
  const inputs=readFileSync(join(dir,'inputs.jsonl'),'utf8').trim().split('\n').map(s=>JSON.parse(s));
  const rows=readFileSync(join(dir,'calls.jsonl'),'utf8').trim().split('\n').map(s=>JSON.parse(s));
  expect(inputs).toHaveLength(2);expect(rows[1].input.text).toBe('The agency, not hardware.');expect(rows[1].jobId).toBe(inputs[1].jobId);
@@ -164,10 +167,13 @@ it('retries a transient provider failure once without surfacing an error',async(
  expect(events.some(e=>e.type==='turn_done')).toBe(true);expect(voice.busy).toBe(false);voice.close();
 });
 
-it('gives up after the second transient failure with a spoken apology and no error',async()=>{
- const events:any[]=[];const {voice,socket,creates}=await startTurn(events);
- failTurn(socket,'r1');await wait(520);expect(creates()).toBe(2);
- failTurn(socket,'r2');await wait(520);expect(creates()).toBe(2);
+it('gives up with a spoken apology and no error when the second failure has nothing to replay',async()=>{
+ vi.stubEnv('BOSON_API_KEY','offline-fixture');
+ const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);const events:any[]=[];
+ const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,e=>events.push(e),()=>({committed:true}),()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({checkpoint:'Draft'}),tools:secretaryTools,voice:'eleanor'});
+ await voice.connect();const socket=transport.sockets[0],creates=()=>socket.sent.filter((e:any)=>e.type==='response.create').length;
+ socket.receive({type:'input_audio_buffer.speech_stopped'});failTurn(socket,'r1');await wait(520);expect(creates()).toBe(1);
+ failTurn(socket,'r2');await wait(520);expect(transport.sockets).toHaveLength(1);
  expect(events.find(e=>e.type==='speech_text')?.delta).toBe('Sorry, say that again?');
  expect(events.some(e=>e.type==='notice')).toBe(true);expect(events.find(e=>e.type==='turn_done')).toMatchObject({cancelled:false,hasAudio:false});
  expect(events.some(e=>e.type==='error')).toBe(false);expect(voice.busy).toBe(false);voice.close();
@@ -216,4 +222,71 @@ it('gives the voice open_pull_request: confirm optional, selected room by defaul
  expect(t.parameters.properties.project_id.default).toBe('selected');expect(secretaryInstructions).toContain('open_pull_request');
  expect(resolveProjectTarget('open_pull_request',{project_id:'selected'},'',[]).project_id).toBeUndefined();
  expect(()=>resolveProjectTarget('open_pull_request',{project_id:'09410879-ca31-495f-8746-025f15b85d30'},'',[])).toThrow('Unknown project target');
+});
+
+const types=(socket:any)=>socket.sent.map((e:any)=>e.type);
+const audioDelta=(id:string)=>({type:'response.output_audio.delta',response_id:id,item_id:'item-'+id,delta:Buffer.alloc(480).toString('base64')});
+const until=async(f:()=>boolean)=>{for(let i=0;i<100&&!f();i++)await wait(10);};
+
+it('sends no response.cancel, truncate or session.update when the user barges in',async()=>{
+ const events:any[]=[];const {voice,socket}=await startTurn(events);
+ socket.receive({type:'response.created',response:{id:'r1'}});socket.receive(audioDelta('r1'));
+ socket.receive({type:'input_audio_buffer.speech_started'});
+ expect(events.some(e=>e.type==='speech_started')).toBe(true);
+ expect(types(socket).filter((t:string)=>t==='response.cancel'||t==='conversation.item.truncate')).toEqual([]);expect(types(socket).filter((t:string)=>t==='session.update')).toHaveLength(1);voice.close();
+});
+
+it('cancels over a busy turn only once it has produced audio',async()=>{
+ for(const audio of [false,true]){
+  const events:any[]=[];const {voice,socket}=await startTurn(events);
+  socket.receive({type:'response.created',response:{id:'r1'}});if(audio)socket.receive(audioDelta('r1'));
+  const next=voice.ask('Hold on');await wait(40);
+  expect(types(socket).filter((t:string)=>t==='response.cancel')).toHaveLength(audio?1:0);
+  socket.receive({type:'response.done',response:{id:'r1',status:audio?'cancelled':'completed',output:[],usage:null}});await next;
+  voice.close();transport.sockets=[];
+ }
+});
+
+it('sends the instructions once at connect across asks and tool rounds, and again only on an explicit refresh',async()=>{
+ const events:any[]=[];const {voice,socket,creates}=await startTurn(events);
+ socket.receive({type:'response.created',response:{id:'r1'}});
+ socket.receive({type:'response.done',response:{id:'r1',status:'completed',output:[{type:'function_call',call_id:'c1',name:'read_workspace',arguments:'{}'}],usage:null}});
+ expect(creates()).toBe(2);socket.receive({type:'response.created',response:{id:'r2'}});socket.receive({type:'response.done',response:{id:'r2',status:'completed',output:[],usage:null}});
+ const job=await voice.ask('Again');socket.receive({type:'conversation.item.created',item:{id:job.input!.itemId}});
+ expect(types(socket).filter((t:string)=>t==='session.update')).toHaveLength(1);
+ voice.refresh();expect(types(socket).filter((t:string)=>t==='session.update')).toHaveLength(2);voice.close();
+});
+
+it('rotates the session on the second upstream_error and replays the user text once, with one apology at most',async()=>{
+ const events:any[]=[],lines:string[]=[],spy=vi.spyOn(console,'log').mockImplementation((m:string)=>{lines.push(String(m))});
+ try{
+  const {voice,socket,creates}=await startTurn(events);
+  failTurn(socket,'r1');await wait(520);expect(creates()).toBe(2);expect(transport.sockets).toHaveLength(1);
+  failTurn(socket,'r2');
+  await until(()=>transport.sockets[1]?.sent.some((e:any)=>e.type==='conversation.item.create'));
+  const next=transport.sockets[1],item=next.sent.find((e:any)=>e.type==='conversation.item.create');
+  expect(item.item.content[0].text).toBe('Hello');expect(next.sent[0].session.instructions).not.toContain('User: Hello');
+  expect(lines.some(l=>/\[voice\] rotated session after repeated upstream_error/.test(l))).toBe(true);
+  const states=events.filter(e=>e.type==='voice_state').map(e=>e.state);expect(states).toEqual(['reconnecting','ready']);
+  expect(events.some(e=>e.type==='notice'||(e.type==='speech_text'&&/Sorry/.test(e.delta)))).toBe(false);
+  // the replay is the one rotation of this turn: failing twice again ends in the single apology
+  next.receive({type:'conversation.item.created',item:{id:item.item.id}});failTurn(next,'x1');await wait(520);failTurn(next,'x2');await wait(50);
+  expect(transport.sockets).toHaveLength(2);expect(events.filter(e=>e.type==='speech_text'&&/Sorry/.test(e.delta))).toHaveLength(1);expect(voice.busy).toBe(false);voice.close();
+ }finally{spy.mockRestore();}
+});
+
+it('rotates on a 400 "No user input" and replays the last spoken line',async()=>{
+ const events:any[]=[];vi.spyOn(console,'log').mockImplementation(()=>{});
+ try{
+  vi.stubEnv('BOSON_API_KEY','offline-fixture');
+  const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);
+  const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,e=>events.push(e),()=>({committed:true}),()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({}),tools:secretaryTools,voice:'eleanor'});
+  await voice.connect();const socket=transport.sockets[0];
+  socket.receive({type:'input_audio_buffer.speech_started'});socket.receive({type:'input_audio_buffer.speech_stopped'});
+  socket.receive({type:'conversation.item.input_audio_transcription.completed',item_id:'i1',transcript:'What time is it'});
+  socket.receive({type:'error',error:{type:'invalid_request_error',code:'invalid_request',message:'No user input found'}});
+  await until(()=>transport.sockets[1]?.sent.some((e:any)=>e.type==='conversation.item.create'));
+  expect(transport.sockets[1].sent.find((e:any)=>e.type==='conversation.item.create').item.content[0].text).toBe('What time is it');
+  expect(events.some(e=>e.type==='error')).toBe(false);expect(events.filter(e=>e.type==='voice_state').map(e=>e.state)).toEqual(['reconnecting','ready']);voice.close();
+ }finally{vi.restoreAllMocks();}
 });

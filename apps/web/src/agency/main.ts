@@ -76,7 +76,7 @@ function empty(text:string){return make('p','empty',text)}
 // Text readers may already have read the full caption while speech is playing.
 // The text request cancels generation server-side; do not truncate its visible
 // conversation history to the audio playhead when they type a follow-up.
-function command(text:string){if(!ready||!text.trim())return;audio?.stop(false);firstTurnAt=performance.now();currentResponse='';el('caption').textContent='';send({type:'text',text,agentId:'mara'});status(t('agency.thinking'))}
+function command(text:string){if(!ready||!text.trim())return;audio?.stop();firstTurnAt=performance.now();currentResponse='';el('caption').textContent='';send({type:'text',text,agentId:'mara'});status(t('agency.thinking'))}
 function assignmentCard(a:Assignment){
  const worker=workspace?.workers.find(w=>w.id===a.workerId),row=make('article','work-item');row.dataset.assignmentId=a.id
  row.append(make('h3','item-title',a.title))
@@ -107,7 +107,7 @@ function openWork(id:string){
  if(a.sessionId){const label=make('label','',t('agency.native_session')),input=make('input','session-command') as HTMLInputElement;input.readOnly=true;input.value=a.provider==='claude'?`claude --resume ${a.sessionId}`:`codex resume ${a.sessionId}`;input.setAttribute('aria-label',t('agency.native_session'));input.onclick=()=>input.select();details.append(label,input,make('p','agency-note',t('agency.native_session_hint')))}
  if(a.tokens)details.append(make('p','agency-note',t('agency.native_tokens_note')),make('pre','token-usage',JSON.stringify(a.tokens,null,2)));body.append(details);const dialog=el<HTMLDialogElement>('work-dialog');dialog.showModal();dialog.scrollTop=0
 }
-function presentBriefing(id?:string){if(!ready)return;setView('secretary');audio?.stop(false);firstTurnAt=performance.now();currentResponse='';el('caption').textContent='';send({type:'present_briefing',briefingId:id});status(t('agency.thinking'))}
+function presentBriefing(id?:string){if(!ready)return;setView('secretary');audio?.stop();firstTurnAt=performance.now();currentResponse='';el('caption').textContent='';send({type:'present_briefing',briefingId:id});status(t('agency.thinking'))}
 const when=(iso:string)=>{const d=new Date(iso);return Number.isNaN(d.valueOf())?'':new Intl.DateTimeFormat('en',d.toDateString()===new Date().toDateString()?{hour:'numeric',minute:'2-digit'}:{month:'short',day:'numeric'}).format(d)}
 const byWho=(b:Briefing)=>b.contributors.map(c=>c.name).join(', ')||name(b.workerId)
 function showReport(id:string){pane='report';openReport=id;setDrawer(true);renderDrawer();drawerTop()}
@@ -201,7 +201,7 @@ function onEvent(e:any){
  if(e.type==='audio'){audio?.play(e);scene?.activity('mara','talking')}
  if(e.type==='speech_text'){if(currentResponse!==e.responseId){currentResponse=e.responseId;el('caption').textContent=''}el('caption').textContent+=e.delta}
  if(e.type==='speech_started'){audio?.stop();firstTurnAt=performance.now();status(t('agency.listening'));currentResponse='';el('caption').textContent=''}
- if(e.type==='interrupted'){audio?.stop(false);status(t('agency.interrupted'))}
+ if(e.type==='interrupted'){audio?.stop();status(t('agency.interrupted'))}
  if(e.type==='await_playback')audio?.done(e.jobId)
  if(e.type==='turn_done'){if(!e.cancelled){status(t(paintCall().idle));if(ready&&askAfterGreeting){const q=askAfterGreeting;askAfterGreeting=undefined;command(q)}}scene?.activity('mara','idle');void loadWorkspace().catch(fail)}
  if(e.type==='error'||e.type==='colleague_disconnected'){toast(e.message||t('agency.connection_lost'));status(t('agency.error'));if(switching){switching=false;controls(connected)}}
@@ -209,7 +209,7 @@ function onEvent(e:any){
 function rememberRoom(){localStorage.setItem(roomKey,selectedProject);const u=new URL(location.href);if(selectedProject)u.searchParams.set('room',selectedProject);else u.searchParams.delete('room');history.replaceState({},'',u)}
 function clearRedial(){window.clearTimeout(redialTimer);redialTimer=undefined;redialing=false;redialAttempt=0}
 /** Everything a finished call leaves behind, whether the user hung up or the line was lost for good. */
-function endCall(){el('caption').textContent='';currentResponse='';ring(undefined);clearRedial();listenWhenReady=undefined;askAfterGreeting=undefined;audio?.stop(false);mic=false;connected=false;voiceDown=false;controls(false);paintCall();void audio?.mic(false);el<HTMLButtonElement>('connect').disabled=false;status(t('agency.disconnected'))}
+function endCall(){el('caption').textContent='';currentResponse='';ring(undefined);clearRedial();listenWhenReady=undefined;askAfterGreeting=undefined;audio?.stop();mic=false;connected=false;voiceDown=false;controls(false);paintCall();void audio?.mic(false);el<HTMLButtonElement>('connect').disabled=false;status(t('agency.disconnected'))}
 function hangUp(){hungUp=true;const ws=socket;if(ws){send({type:'stop'});socket=undefined;ws.close()}endCall()}
 const dialFailed=(err:unknown)=>{el<HTMLButtonElement>('connect').disabled=false;fail(err)}
 async function dial(o:{resume?:boolean}={}){
@@ -225,7 +225,7 @@ async function dial(o:{resume?:boolean}={}){
  ws.onmessage=e=>{try{onEvent(JSON.parse(e.data))}catch(err){fail(err)}}
  ws.onclose=e=>{
   if(socket!==ws)return
-  socket=undefined;connected=false;controls(false);micWasLive=mic;void audio?.mic(false);mic=false;audio?.stop(false);connect.disabled=false
+  socket=undefined;connected=false;controls(false);micWasLive=mic;void audio?.mic(false);mic=false;audio?.stop();connect.disabled=false
   const wait=redials(e,hungUp)?backoff(redialAttempt++):undefined
   if(wait!==undefined){redialing=true;status(t('agency.reconnecting'));paintCall();redialTimer=window.setTimeout(()=>{redialTimer=undefined;void dial({resume:true}).catch(dialFailed)},wait);return}
   const lost=redials(e,hungUp);endCall();if(lost)toast(t('agency.call_lost'))

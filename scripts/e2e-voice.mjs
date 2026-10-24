@@ -17,7 +17,7 @@ if(process.platform!=='darwin')die('needs macOS (say, afconvert)');
 if(port===3003||port===5183)die(`port ${port} is reserved for the live office`);
 const log=m=>console.log(m),sleep=ms=>new Promise(r=>setTimeout(r,ms)),now=()=>performance.now(),sh=(t,n=60)=>t.length>n?t.slice(0,n)+'…':t;
 const T0=Date.now(),stamp=new Date().toISOString().replace(/[:.]/g,'-'),outDir=join(root,'artifacts','e2e'),base=`http://127.0.0.1:${port}`;
-const T={a1:'What is the capital of France? Just the city, please.',a2:['Okay, so I have a quick question about baking bread at home.','How long does a simple loaf of sourdough usually take,','from mixing the dough to taking it out of the oven?'],a3:'Can you count slowly from one to twenty for me?',a3b:'Wait, hold on a second.',a4:'Are you still there?',b1:'Hey Donna.',b2:'Build me a landing page with a contact form.',b3:"How's it going?",b4:'Hello.',b6:'Yes.',b7:'Okay, thanks. Bye.'};
+const T={a1:'What is the capital of France? Just the city, please.',a2:['Okay, so I have a quick question about baking bread at home.','How long does a simple loaf of sourdough usually take,','from mixing the dough to taking it out of the oven?'],a3:'Can you count slowly from one to twenty for me?',a3b:'Wait, hold on a second.',a4:'Are you still there?',a5:'Hey, one second.',a5q1:'What is two plus two?',a5q2:'What colour is the sky on a clear day?',a5q3:'What is the largest planet in our solar system?',b1:'Hey Donna.',b2:'Build me a landing page with a contact form.',b3:"How's it going?",b4:'Hello.',b6:'Yes.',b7:'Okay, thanks. Bye.'};
 mkdirSync(outDir,{recursive:true});
 const clip={};for(const [k,v] of Object.entries(T))if(only.includes(k[0]))clip[k]=speech(v); // before the server: fail fast
 const dir=mkdtempSync(join(tmpdir(),'chamber-e2e-')),evPath=join(outDir,stamp+'-events.jsonl'),logPath=join(outDir,stamp+'-server.log');
@@ -58,9 +58,8 @@ function session(L,startMsg){
   const w=e=>{if(match(e)){clearTimeout(t);waiters.delete(w);res(e)}},t=setTimeout(()=>{waiters.delete(w);rej(Error(`${L}: timed out after ${ms/1000} s waiting for ${what}`))},ms);
   waiters.add(w);
  });
- function stop(notify){ // Audio.ts stop()
+ function stop(){ // Audio.ts stop(): flush local playback only; the server's VAD cancels the response (no interrupt, no truncate)
   const t=now();
-  if(notify&&playing)send({type:'interrupt',agentId:'mara',itemId:playing.itemId,audioEndMs:Math.max(0,Math.min(t,playing.end)-playing.start)});
   if(playing)playing.end=Math.min(playing.end,t);
   for(const id of open)cancelled.add(id);
   for(const x of pend.values())clearTimeout(x);
@@ -76,8 +75,8 @@ function session(L,startMsg){
  ws.on('message',raw=>{
   let e;try{e=JSON.parse(raw)}catch{return}
   if(e.type==='audio')play(e);
-  else if(e.type==='speech_started')stop(true);
-  else if(e.type==='interrupted')stop(false);
+  else if(e.type==='speech_started')stop();
+  else if(e.type==='interrupted')stop();
   else if(e.type==='await_playback'&&!cancelled.has(e.jobId))pend.set(e.jobId,setTimeout(()=>{pend.delete(e.jobId);open.delete(e.jobId);send({type:'played',jobId:e.jobId})},Math.max(0,(jobEnd[e.jobId]||0)+30-now())));
   else if(e.type==='usage'){nResp++;if(e.row.usageMissing)missing++;usd+=e.row.estimatedUSD||0}
   push(e);
@@ -113,7 +112,7 @@ const crewOf=(w,p)=>(w?.workers||[]).filter(k=>k.projectId===p&&!k.lead&&k.name)
 const called=(tools,re)=>tools.find(t=>re.test(t.name)&&!t.result?.error),CREATE=/^(create_project|delegate_work)$/;
 try{
  child=spawn(process.execPath,['--import','tsx','apps/server/src/agency/server.ts'],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe'],
-  env:{...process.env,AGENCY_PORT:String(port),AGENCY_DATA_DIR:dir,AGENCY_DEFAULT_PROVIDER:provider,...(only.includes('a')?{AGENCY_TEST_UPSTREAM_ERROR_ONCE:'1',AGENCY_TEST_IDLE_CLOSE_MS:'15000'}:{})}});
+  env:{...process.env,AGENCY_PORT:String(port),AGENCY_DATA_DIR:dir,AGENCY_DEFAULT_PROVIDER:provider,...(only.includes('a')?{AGENCY_TEST_UPSTREAM_ERROR_TWICE:'1',AGENCY_TEST_IDLE_CLOSE_MS:'15000'}:{})}});
  exited=new Promise(r=>child.once('exit',()=>r()));
  const slog=createWriteStream(logPath);
  await new Promise((res,rej)=>{
@@ -127,9 +126,10 @@ try{
 
  if(only.includes('a')){
   const A=session('A',{type:'start',view:'secretary',resume:true});dead=await A.start().then(()=>'',e=>'skipped: no ready: '+e.message);
-  await step('A1 upstream_error → silent retry',async()=>{
-   await A.settle();const x=await A.say(clip.a1),ev=x.r.ev,failed=ev.find(e=>e.type==='usage'&&e.row.status==='failed'&&/upstream|injected/i.test(e.row.error)),bad=ev.find(e=>e.type==='notice'||e.type==='error'),cap=x.r.caption;
-   return {ok:!!failed&&!!cap&&!/say that again/i.test(cap)&&!bad,latency:x.lat,note:`${failed?'failed row seen':'no failed usage row'}${bad?`, ${bad.type}: ${bad.message}`:''}; "${sh(cap)}"`};
+  await step('A1 two upstream_errors → rotation → answer',async()=>{
+   await A.settle();const x=await A.say(clip.a1),ev=x.r.ev,fails=ev.filter(e=>e.type==='usage'&&e.row.status==='failed'&&/upstream|injected/i.test(e.row.error)),bad=ev.find(e=>e.type==='notice'||e.type==='error'),cap=x.r.caption;
+   const rc=ev.findIndex(e=>e.type==='voice_state'&&e.state==='reconnecting'),rd=ev.findIndex(e=>e.type==='voice_state'&&e.state==='ready');
+   return {ok:fails.length>=2&&rc>=0&&rd>rc&&!!cap&&!/say that again/i.test(cap)&&!bad,latency:x.lat,note:`${fails.length} failed row(s), ${rc<0?'no reconnecting':rd>rc?'reconnecting → ready':'never ready again'}${bad?`, ${bad.type}: ${bad.message}`:''}; "${sh(cap)}"`};
   });
   await step('A2 10 s request, two 700 ms pauses → one turn',async()=>{
    await A.settle();const x=await A.say(clip.a2),ev=x.r.ev,n=ev.filter(e=>e.type==='speech_started').length,th=ev.filter(e=>e.type==='thinking').length,canc=ev.some(e=>e.type==='turn_done'&&e.cancelled);
@@ -154,6 +154,17 @@ try{
    return {ok:!!x.r.caption&&x.lat!==undefined&&x.lat<=2500&&!err,latency:x.lat,note:`reconnect ${ms} ms (${sh(rc.reason||'',40)})${err?', error: '+err.message:''}; "${sh(x.r.caption,40)}"`};
   });
   await A.quit();
+  // A5 is the user's failing call: a barge-in on the pickup greeting must not wedge the session
+  const P=session('P',{type:'start',view:'secretary'});dead=await P.start().then(()=>'',e=>'skipped: no ready: '+e.message);
+  await step('A5 barge-in on the greeting → three normal turns still answer',async()=>{
+   const rs=await P.waitFor(e=>e.type==='response_started',30000,'greeting response_started');await sleep(300);
+   const from=P.seen.length;await P.speak(clip.a5);await P.reply(from,30000).catch(()=>{});
+   const mark=P.seen.length;let worst=0,n=0;
+   for(const k of ['a5q1','a5q2','a5q3']){await P.settle();const x=await P.say(clip[k]);worst=Math.max(worst,x.lat??Infinity);if(x.r.caption&&!/say that again/i.test(x.r.caption))n++}
+   const ev=P.seen.slice(mark),fails=ev.filter(e=>e.type==='usage'&&e.row.status==='failed'),bad=ev.find(e=>e.type==='notice'||e.type==='error');
+   return {ok:n===3&&!fails.length&&!bad,latency:worst,note:`${n}/3 answered, ${fails.length} failed row(s)${bad?`, ${bad.type}: ${bad.message}`:''}; barged ${(P.seen.find(e=>e.type==='speech_started')?.at-rs.at).toFixed(0)} ms after the greeting began`};
+  });
+  await P.quit();
  }
 
  if(only.includes('b')){
@@ -172,7 +183,7 @@ try{
    if(!proj)throw Error('no project from B2');
    await B.settle();const x=await B.say(clip.b3),w=await getWs(),plan=w.assignments.filter(a=>a.projectId===proj&&a.kind==='plan').at(-1),crew=w.assignments.filter(a=>plan&&a.agent?.brainId===plan.id),cap=x.r.caption;
    // the brain stays `working` while its subagents run; with no subagent yet it is still planning the team
-   const lies=/\b(done|finished|ready|complete)\b/i.test(cap)&&plan?.status!=='review'&&!w.briefings.some(b=>b.projectId===proj&&b.status==='queued'),vague=['queued','working'].includes(plan?.status)&&!crew.length&&!/plan|team/i.test(cap);
+   const lies=/\b(done|finished|complete)\b|\b(is|it.s|are) ready\b/i.test(cap)&&plan?.status!=='review'&&!w.briefings.some(b=>b.projectId===proj&&b.status==='queued'),vague=['queued','working'].includes(plan?.status)&&!crew.length&&!/plan|team/i.test(cap);
    return {ok:!lies&&!vague,latency:x.lat,note:`plan ${plan?.status}, ${crew.length} worker(s) ${crew.map(c=>c.status).join('/')}${lies?'; claims done':''}${vague?'; never mentions the plan':''}; "${sh(cap,80)}"`};
   });
   await step("B4 'hello' → plain greeting",async()=>{

@@ -153,11 +153,11 @@ wss.on('connection',(client,req)=>{
   if(e.type==='text'){floor.userAt=Date.now();floor.question=false;}
   if(e.type==='present_briefing')pending=pending.filter(p=>p.id!==e.briefingId);
   if(e.type==='present_briefing'){if(!ready)throw Error('Secretary is connecting');const b=workspace.briefing(e.briefingId);emit({type:'interrupted'});await voice.ask(`Use read_briefing with briefing_id ${b.id}. Give me the short version in two or three spoken sentences: what was made, who made it, and anything I need to do. Never say file paths, IDs, URLs or check lists aloud. Do not accept the work or start new work.`);return;}
-  if(e.type==='switch_project'){if(!projects.list().some(p=>p.id===e.roomId))throw Error('Unknown project');await voice.cancel();voice.clearInput();selected=e.roomId;view='project';emit({type:'interrupted'});emit({type:'state',state:room()});emit({type:'project_ready'});return;}
+  if(e.type==='switch_project'){if(!projects.list().some(p=>p.id===e.roomId))throw Error('Unknown project');await voice.cancel();voice.clearInput();selected=e.roomId;view='project';voice.refresh();emit({type:'interrupted'});emit({type:'state',state:room()});emit({type:'project_ready'});return;}
   if(e.type==='set_view'){if(!['secretary','command','project'].includes(e.view))throw Error('Unknown view');view=e.view;return;}
   if(e.type==='text'){if(!ready)throw Error('Secretary is connecting');if(typeof e.text!=='string'||!e.text.trim()||e.text.length>5000)throw Error('Invalid text');emit({type:'interrupted'});emit({type:'user_transcript',text:e.text});await voice.ask(e.text);return;}
   if(e.type==='audio'){if(typeof e.audio!=='string'||e.audio.length>16000||!/^[A-Za-z0-9+/]+=*$/.test(e.audio))throw Error('Invalid PCM frame');voice.audio(e.audio);return;}
-  if(e.type==='interrupt'){if(typeof e.itemId==='string'&&Number.isFinite(e.audioEndMs))voice.truncate(e.itemId,e.audioEndMs);await voice.cancel();emit({type:'interrupted'});return;}
+  if(e.type==='interrupt'){await voice.cancel();emit({type:'interrupted'});return;}
   if(e.type==='focus'){emit({type:'focus',agentId:'mara'});return;}
   if(e.type==='played'){heard(String(e.jobId));floor.playing=false;floor.voiceAt=Date.now();const id=completedBriefing(presentation,e.jobId);if(id){presentation=undefined;workspace.presentBriefing(id);}return;}
   if(e.type==='stop'){voice.close();client.close();return;}

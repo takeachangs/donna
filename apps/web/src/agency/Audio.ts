@@ -2,7 +2,7 @@ export class OfficeAudio {
  context=new AudioContext({sampleRate:24000})
  private sources=new Set<AudioBufferSourceNode>()
  private next=0
- private playing?:{agentId:string;itemId:string;start:number;end:number}
+ private playing?:string
  private stream?:MediaStream
  private input?:AudioWorkletNode
  private inputSource?:MediaStreamAudioSourceNode
@@ -20,14 +20,13 @@ export class OfficeAudio {
   const b=this.context.createBuffer(1,raw.length/2,24000),f=b.getChannelData(0);for(let i=0;i<f.length;i++)f[i]=view.getInt16(i*2,true)/32768
   const s=this.context.createBufferSource();s.buffer=b;s.connect(this.context.destination)
   const at=Math.max(this.context.currentTime+.06,this.next);this.next=at+b.duration
-  if(this.playing?.itemId!==e.itemId){this.playing={agentId:e.agentId,itemId:e.itemId,start:at,end:this.next};this.audible(e,(at-this.context.currentTime)*1000)}
-  if(this.playing)this.playing.end=this.next;
+  if(this.playing!==e.itemId){this.playing=e.itemId;this.audible(e,(at-this.context.currentTime)*1000)}
   s.start(at);this.sources.add(s);this.jobEnds.set(e.jobId,this.next);s.onended=()=>{this.sources.delete(s);this.flush()}
  }
  done(jobId:string){this.finishedJobs.add(jobId);this.flush()}
  private flush(){for(const id of this.finishedJobs){if(this.context.currentTime<(this.jobEnds.get(id)||0)+.03)continue;this.finishedJobs.delete(id);this.jobEnds.delete(id);this.send({type:'played',jobId:id})}}
- stop(notify=true){
-  if(notify&&this.playing){const p=this.playing;this.send({type:'interrupt',agentId:p.agentId,itemId:p.itemId,audioEndMs:Math.max(0,(Math.min(this.context.currentTime,p.end)-p.start)*1000)})}
+ /** Flush local playback only; the server's VAD cancels the response itself (a client response.cancel/truncate wedges Higgs sessions). */
+ stop(){
   for(const id of this.jobEnds.keys())this.cancelled.add(id)
   for(const s of this.sources)try{s.stop()}catch{}
   this.sources.clear();this.finishedJobs.clear();this.jobEnds.clear();this.playing=undefined;this.next=this.context.currentTime
@@ -40,7 +39,7 @@ export class OfficeAudio {
   this.inputSource.connect(this.input).connect(this.mute).connect(this.context.destination)
   this.input.port.onmessage=e=>{if(e.data instanceof ArrayBuffer){const b=new Uint8Array(e.data);let raw='';for(const value of b)raw+=String.fromCharCode(value);this.send({type:'audio',audio:btoa(raw)})}}
  }
- async close(){clearInterval(this.timer);this.stop(false);await this.mic(false);await this.context.close()}
+ async close(){clearInterval(this.timer);this.stop();await this.mic(false);await this.context.close()}
 }
 
 export function chime(){try{if(navigator.userActivation&&!navigator.userActivation.hasBeenActive)return;const c=new AudioContext(),t0=c.currentTime;for(const [f,at] of [[880,0],[1175,.18]]){const o=c.createOscillator(),g=c.createGain();o.frequency.value=f;g.gain.setValueAtTime(0,t0+at);g.gain.linearRampToValueAtTime(.12,t0+at+.02);g.gain.exponentialRampToValueAtTime(.001,t0+at+.3);o.connect(g).connect(c.destination);o.start(t0+at);o.stop(t0+at+.3)}setTimeout(()=>void c.close().catch(()=>{}),700)}catch{}}
