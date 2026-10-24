@@ -1,0 +1,96 @@
+# Chamber
+
+**Your personal office for AI work.** Each project has a room on a shared floor; Donna keeps work moving and holds completed results for your next briefing.
+
+A local personal office: speak to a Higgs secretary, delegate real work to local Codex or Claude Code sessions, and review actual deliverables in project rooms. The Office floor brings all projects and decisions together. Workers name themselves; Donna's brain chooses the team.
+
+## Run
+
+**Prerequisites:** Node.js 22.12+ and npm; Codex CLI and/or Claude Code installed and signed in (workers use your local sign-in; no credentials ship with this repository).
+
+```sh
+npm ci
+cp .env.example .env     # set BOSON_API_KEY
+npm run doctor
+```
+
+`npm run doctor` runs the same boot checks as `npm start`, prints one plain line per problem and a summary. `FATAL:` lines (Node older than 22.12, data directory not writable) mean the server will refuse to start. `warn:` lines (no `BOSON_API_KEY`, default worker engine not signed in, Donna's brain unavailable) mean the server starts but that feature will not work.
+
+**Demo machine (production):**
+
+```sh
+npm run build
+npm start
+```
+
+Open **http://127.0.0.1:3003/**. One process serves the UI, API and WebSocket; keep it running while native tasks are in progress. Set `AGENCY_PORT` to use another port; if `npm run dev` is running, stop it first or pick another port. Check it is healthy:
+
+```sh
+curl -s http://127.0.0.1:3003/agency-api/health
+```
+
+If the voice drops (Higgs idle timeout, network, session rotation), do nothing: Donna reconnects on your next action and carries the conversation over. If a reply fails twice she says "Sorry, say that again?"; just repeat yourself.
+
+**Development:** `npm run dev` serves the UI at **http://127.0.0.1:5183/** with the API on loopback port 3003. The UI and project board can be inspected without paid voice. Choose **Talk to secretary**: the call connects with the microphone live and Donna picks up first ("Hey, it's Donna. What do you need?"). On a call the controls are **Hang up**, **Hold on** and **Mute**; **Type instead** opens the text box. If the browser blocks the microphone, the button reads **Enable microphone** and the status line says so. Existing `/agency.html` bookmarks still work.
+
+**Environment** (`.env` or shell): `BOSON_API_KEY` (required for voice), `AGENCY_PORT` (default 3003), `AGENCY_DATA_DIR` (default `artifacts/agency`). `AGENCY_DEFAULT_PROVIDER` (`codex` or `claude`) picks the worker engine when the plan does not name one; unset, the server uses Codex when signed in, otherwise Claude Code, and logs which and why. `AGENCY_BRAIN_MODEL` (default `opus`) is the model for Donna's brain. `AGENCY_CODEX_BIN` and `AGENCY_CLAUDE_BIN` are needed only if the executable is not on PATH; `AGENCY_CLAUDE_MODEL` defaults to `sonnet`. `AGENCY_VAD_SILENCE_MS` (default 800) is the silence before Higgs ends your turn. Claude Code workers use your claude.ai sign-in; the server removes `ANTHROPIC_API_KEY` from their environment so a shell API key is never billed.
+
+## How the office works
+
+- **Donna's voice** (Higgs) takes your goal and nothing more. **Donna's brain** is a persistent Claude Code orchestrator per project: it reads the project, spawns 1–4 Sonnet workers as its own parallel subagents (small tasks normally need one), forwards your messages to them, then reviews their files and writes one briefing. Ask "what is Mika doing" or tell a worker something and Donna uses `worker_status` / `message_worker`; a status question always fetches fresh status first, and it says what work waits on ("queued behind the game build, one job ahead", "waiting for your answer on the company name"). Each room's brain runs on its own, so two rooms work in parallel; "do the site first", "pause the game" and "resume the game" reorder, pause and resume a room (`set_priority`). When the brain needs a fact only you know, it stops and asks one question; Donna asks it out loud (or it waits under **Questions** between calls) and your answer goes back to the brain as its next turn. Before the briefing the brain runs the checks itself, and the report lists the commands it ran with their real output. Workers never talk to you.
+- The screen is a phone and an office. The **call bar** on top has Donna's pill (Available, Ringing, On call, Reconnecting), one button that reads **Call Donna**, **Answer** or **Hang up**, **Mute**, **Hold on**, a one-line live caption and a **Type instead** fallback. The office fills the rest; **Floor plan** resets the view.
+- Click a room to open it in the drawer: its stage, its **Work** (with **Details** and **Pause**) and its reports. **Room settings** there renames the room or moves it to **Recently deleted** (in the ⚙ menu, next to **New room** and the engine status), which restores the same room, files, reports and sessions. Deleting pauses active work; restoring keeps it paused.
+- **Details** on a piece of work shows the full report, checks and the command to resume its Codex or Claude Code session.
+- **Office floor** is the global view. Project rooms expand along a shared hall, with Donna's suite at the entrance. Workers stay at their desks; a completed workflow triggers a short delivery trip to Donna and back.
+- **Reports** (the drawer on the right) lists every report newest first, Unread or Read. Open one for its text and files; on a call **Ask Donna to read it**, off a call **Mark as read**. Open **Questions** appear between calls with **Call Donna to answer**. When a result lands, Donna tells you if you are connected (at a natural pause), or the office rings: click **Answer** and she opens with that report ("The bakery page is done, Ellis and Miles finished it. Want the short version?"); say yes to hear it. Interrupted speech leaves the report queued. Presentation and acceptance are separate: a result remains **Ready for review** until you accept it in its project room.
+- Existing results migrate into the queue without replaying old animations on every reload. **Replay handoff** previews a delivery route without changing the queue. Reduced-motion preferences skip delivery animation.
+- **Hold on** interrupts Donna's voice. Saying bye or talk later, or **Hang up**, ends the call; results that land afterwards ring again. During a call the room's Pause/Resume/Accept buttons and the Questions list are hidden and Donna asks decisions out loud; they return when the call ends. On a call, Space mutes or unmutes and Esc is Hold on. A dropped connection redials with backoff while the pill reads Reconnecting; errors show as short toasts. **Pause work** pauses native execution. Closing the browser or changing rooms does not cancel background work.
+- Codex owns detailed conversation history. Resume the exact session using the command shown under execution details; the office keeps concise memory and references.
+
+Default Codex execution is **GPT-6.1 Sol / low**; the brain can choose medium for a specific worker, and brain steps (plan, review) run at medium effort. Rooms run in parallel; only Codex workers share one native writer. Project working directories are isolated. The secretary provides the spoken interaction; workers return files, and in a repository room a branch. Mail, calendar, deployment and independent worker voices are not implemented.
+
+Claude Code runs Donna's brain and its workers (`apps/server/src/agency/claude.ts`). The brain is an orchestrator session with Agent, SendMessage, Skill, file tools and sandboxed Bash, confined to the project directory by the sandbox and scoped allow rules (not `--restricted` or `--safe-mode`, which disable skills). Its Sonnet subagents are the workers, shown from its stream-json output; a user message reaches a running worker through the brain's stdin. Its prompts live in two skills, `skills/donna-brain` and `skills/donna-worker`, installed once into `<data>/office/.claude/skills` and loaded with `--add-dir`, so nothing is written into a room's folder. `--setting-sources project` keeps your global `~/.claude/CLAUDE.md` out of the brain and its workers while the repository's own `CLAUDE.md` loads. When you ask for Codex, the brain returns a JSON plan and the old one-writer Codex queue runs it; `AGENCY_DEFAULT_PROVIDER` still applies there. The status check runs `claude auth status`, never inference; offline tests use a fake CLI. Verified live on 2026-10-24 (Claude Code 2.1.309, Opus brain): "build a landing page with a contact form" ran two Sonnet workers in parallel, a mid-run "tell Theo to use a blue palette" reached the brain through its stdin and was acknowledged in the one briefing, in 70 s.
+
+## Your own repositories
+
+Ask Donna to attach a folder ("attach /Users/me/projects/app"), or pass `path` to `POST /agency-api/projects`. The path must be absolute, exist, and not be inside Chamber's data folder; a subfolder of a repository attaches the repository root, and attaching the same repository again returns its room with its memory. A folder that is not a git repository is attached only after you agree to work in it directly (`allow_non_git`); it then works like a private workspace, without branches.
+
+In a repository room your checkout and branch are never touched. The server does every git write; models only edit files:
+
+- **Job branch**: a goal starts `donna/<slug>` from your current HEAD, checked out as a git worktree under `<data>/worktrees/<room>/job`, where the brain runs. Follow-up goals continue the same branch until its pull request is opened; the next goal then starts a fresh branch.
+- **Worker branches**: each worker the brain spawns gets its own worktree `<data>/worktrees/<room>/<Name>` on `donna/<slug>-<name>` (git cannot hold `donna/<slug>` and `donna/<slug>/<name>` at once), so parallel workers never collide. When a worker reports, the server commits its checkout (`<Name>: <task>`) and merges it into the job branch. A conflict is aborted, the brain is told, and you get a question ("Use Theo's version, or keep the current version?"); your answer is applied and the brain re-checks.
+- **Report**: the briefing carries the branch, `git diff --stat`, the commit list, the checks the brain ran and its summary. Ask Donna to open the pull request: she asks first, and only a yes you say after her question pushes the branch (`git push origin`, never `-u` or `--force`) and runs `gh pr create` with the briefing as the body; she then says "the pull request is up". `AGENCY_GH_BIN` points at another `gh`.
+- **Safety**: the brain's sandbox (shared by its workers) can write only the workers' checkouts: the job checkout and the repository's `.git` are denied, so a worker cannot write outside its own checkout and no model can commit, reset, delete a branch or push. The brain reviews and runs the repository's checks read-only in the job checkout, has no network, and denies reads of top-level secret files (`.env*`, keys, `.npmrc`); `git push`, `rm -rf`, `git reset --hard`, `git branch -D` and `git clean` are denied as commands too. A needed package install comes back as a question; on a yes the next brain turn alone may reach package registries. Briefing text and pull request bodies are scrubbed of token-shaped strings. A gitignored `node_modules` is symlinked into each worktree.
+
+## Source and private data
+
+```text
+apps/web/                 Office UI, audio and a small Three.js scene
+apps/server/src/agency/   Secretary, workspace, persistence and native adapters
+tests/                    Offline regression tests
+scripts/                  Dev launcher, explicit live test, source packaging
+skills/                   donna-brain and donna-worker prompts for Claude Code
+docs/                     Architecture, upstream provenance and cleanup report
+licenses/                 Retained third-party licenses
+```
+
+`artifacts/agency/` holds your projects, workspaces, delivery snapshots, audio and usage logs. It is created locally and excluded from Git and source packages. Existing data remains readable, including earlier drafts. Back it up separately; native workspace paths may be absolute, so moving an existing installation needs a path migration.
+
+See [architecture](docs/ARCHITECTURE.md), [upstream comparison](docs/UPSTREAM.md) and [third-party notices](THIRD_PARTY_NOTICES.md). This is an independent application using a small attributed rendering subset of Agentshire. It does not need a separate Agentshire checkout, editor or server.
+
+## Verify and package
+
+```sh
+npm test
+npm run build
+npm run check:repo
+npm run package:source
+```
+
+Packaging requires a committed, clean Git tree. It creates a source ZIP and SHA-256 file in ignored `releases/`; it never publishes a remote repository. Original application code is private/`UNLICENSED`; third-party MIT and CC0 terms are retained separately.
+
+`npm run test:live` is a separate **paid Higgs + authenticated Codex integration test**. It creates a project and actual files. Run it deliberately, not as part of routine tests or CI. Offline tests use controlled executors/transports and do not establish live model quality or latency.
+
+Usage evidence stays in `artifacts/agency/calls.jsonl` and `executions.jsonl`. Higgs dollar figures are token-rate estimates, not a credit-balance reconciliation. Codex token counters may be cumulative per native session; do not sum resumed-job totals as new usage.
+
+For a focused **paid, read-only Higgs conversation diagnostic**, run `node --import tsx scripts/secretary-conversation-live.ts regression`. It uses the existing pitch project's saved context, retains inputs, replies and audio under `artifacts/agency/donna-debug/`, and does not launch Codex. Review the actual replies; a completed script alone is not a semantic PASS. Normal typed requests now have private input traces linked to their response rows, so clarification loops can be inspected without guessing what was submitted.

@@ -1,0 +1,237 @@
+{
+  "upstream": "https://github.com/Agentshire/Agentshire",
+  "commit": "f54a798ac94d5138fd8d0ed94c48a1c7e494987c",
+  "code": [
+    {
+      "path": "apps/web/src/vendor/agentshire/World.ts",
+      "upstreamPath": "town-frontend/src/engine/World.ts",
+      "upstreamSha256": "e63e8ebb8e2f239aa71db5ef5200ba8abb7386eaaf780ea5fb4a2b148186b76c"
+    },
+    {
+      "path": "apps/web/src/vendor/agentshire/NPC.ts",
+      "upstreamPath": "town-frontend/src/npc/NPC.ts",
+      "upstreamSha256": "29764b17315b3ba8d495d2b7058f5af99a4a0e8c65b2446b81c7dfbb74ccde37"
+    },
+    {
+      "path": "apps/web/src/vendor/agentshire/NPCManager.ts",
+      "upstreamPath": "town-frontend/src/npc/NPCManager.ts",
+      "upstreamSha256": "87d5c11926433055ad8bff3a1cc3af6eec17742f2c173b097cdf693d2ae452ef"
+    },
+    {
+      "path": "apps/web/src/vendor/agentshire/StatusIndicator.ts",
+      "upstreamPath": "town-frontend/src/npc/StatusIndicator.ts",
+      "upstreamSha256": "1ffd1ac6e8a29af879cc4b7ce51bd0e24bbd40c87ca6a826ba70eeaab078980d"
+    },
+    {
+      "path": "apps/web/src/vendor/agentshire/AssetLoader.ts",
+      "upstreamPath": "town-frontend/src/game/visual/AssetLoader.ts",
+      "upstreamSha256": "fa2944073327a3def88e3eb29a46b7654409a85a6838b8a642fa708c4571d639"
+    },
+    {
+      "path": "apps/web/src/render/Engine.ts",
+      "upstreamPath": "town-frontend/src/engine/Engine.ts",
+      "changes": "Office-only render lifecycle; removed town input, screen controller, unused effects and utility APIs."
+    }
+  ],
+  "assets": [
+    {
+      "path": "apps/web/public/assets/models/characters/character-male-a.glb",
+      "upstreamPath": "town-frontend/public/assets/models/characters/character-male-a.glb",
+      "bytes": 246916,
+      "sha256": "77572792bfe2773b715b8cd8e18644b52b3e1f155fe10450254b50f9c364382a",
+      "creator": "Kenney",
+      "license": "CC0-1.0",
+      "officialArchiveMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/characters/Textures/colormap.png",
+      "upstreamPath": "town-frontend/public/assets/models/characters/Textures/colormap.png",
+      "bytes": 8706,
+      "sha256": "0d4947d34ff32acf4a359c7f22ca784e057e7e72f622170a9a77b6fc88fdb70e",
+      "officialArchiveMatch": true,
+      "creator": "Kenney",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "apps/web/public/assets/models/characters/character-male-b.glb",
+      "upstreamPath": "town-frontend/public/assets/models/characters/character-male-b.glb",
+      "bytes": 247332,
+      "sha256": "791fc0c203924c175c0a3d5b60d030daf36797b039506689cf7cd01ef5253b3c",
+      "creator": "Kenney",
+      "license": "CC0-1.0",
+      "officialArchiveMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/characters/character-male-d.glb",
+      "upstreamPath": "town-frontend/public/assets/models/characters/character-male-d.glb",
+      "bytes": 245184,
+      "sha256": "dd12b2e75ffb1cdb45aaec3916c3d6e732929ccb4a8b89b946f69baaabfa64da",
+      "creator": "Kenney",
+      "license": "CC0-1.0",
+      "officialArchiveMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/characters/character-female-b.glb",
+      "upstreamPath": "town-frontend/public/assets/models/characters/character-female-b.glb",
+      "bytes": 252140,
+      "sha256": "2288438e7baf9acc91a870c82dc00d66710bb486592cfc3474ef8ed93a03863a",
+      "creator": "Kenney",
+      "license": "CC0-1.0",
+      "officialArchiveMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/characters/character-female-d.glb",
+      "upstreamPath": "town-frontend/public/assets/models/characters/character-female-d.glb",
+      "bytes": 258760,
+      "sha256": "67f61708743bd34f91a4c2ba8160b61bf2e7d4ec2ca6647dfe99873422561410",
+      "creator": "Kenney",
+      "license": "CC0-1.0",
+      "officialArchiveMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/characters/character-female-e.glb",
+      "upstreamPath": "town-frontend/public/assets/models/characters/character-female-e.glb",
+      "bytes": 248012,
+      "sha256": "3ee3939f80d718945fcb9199f909a92c39669e38aeec7f544536b5dce6e79f98",
+      "creator": "Kenney",
+      "license": "CC0-1.0",
+      "officialArchiveMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/table_medium.gltf",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/table_medium.gltf",
+      "bytes": 3109,
+      "sha256": "0288bd5858e7fe19a31b3aefe67bd460557e95cf83be4e1335621878b3ea71b3",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": false,
+      "officialStructureMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/table_medium.bin",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/table_medium.bin",
+      "bytes": 9328,
+      "sha256": "0e6ba8fd006f673d946979e45487067f4e274be9bbd07816fd371578d2a37518",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/furniturebits_texture.png",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/furniturebits_texture.png",
+      "bytes": 15605,
+      "sha256": "de62db37a80d1801c3d9eb674890ae04b04469e0c149481a51fa250562c628dc",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/chair_B.gltf",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/chair_B.gltf",
+      "bytes": 3185,
+      "sha256": "48c6c22795cabf7ec37f3b9839ebd02f665210543315fa2162a77798caaab41e",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": false,
+      "officialStructureMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/chair_B.bin",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/chair_B.bin",
+      "bytes": 18240,
+      "sha256": "1862f8c8392a67e39219e480ba2aafd19e67bbbfe7c6d3b459f082dea041a1fa",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/shelf_B_small_decorated.gltf",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/shelf_B_small_decorated.gltf",
+      "bytes": 3207,
+      "sha256": "a63dc19995688b7870a49eb24373b6e1af96c85a0899123d67cbfdc1ff040c13",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": false,
+      "officialStructureMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/shelf_B_small_decorated.bin",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/shelf_B_small_decorated.bin",
+      "bytes": 23416,
+      "sha256": "de3efcfcdc9572dfb1f82d22f99017d56e0b7c1451ce9bbe12fe1d828f8c677f",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/cactus_medium_A.gltf",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/cactus_medium_A.gltf",
+      "bytes": 3208,
+      "sha256": "4f1be775c981c9053b7ddd151981852b78ffa1a529d7e8f1847700c0cf07eb93",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": false,
+      "officialStructureMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/cactus_medium_A.bin",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/cactus_medium_A.bin",
+      "bytes": 17536,
+      "sha256": "be9378a1328b82751ac651de9387d7b20db4ffbb5e1c087b0e634a00ebf7cc0f",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/lamp_standing.gltf",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/lamp_standing.gltf",
+      "bytes": 3170,
+      "sha256": "4711a1bc0e3b6008724ae69bd08e52f104fddca19333db727c5b3a0e4ef31ec1",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": false,
+      "officialStructureMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/lamp_standing.bin",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/lamp_standing.bin",
+      "bytes": 11648,
+      "sha256": "ee58a9e2776406071c8ac60714f1b4dd7ad83a11848ee24aec77b297c9d535d9",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/rug_rectangle_A.gltf",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/rug_rectangle_A.gltf",
+      "bytes": 3107,
+      "sha256": "6a8ab620fe014d62fc521dc6dd4f6b23db9c7fa67a5b2a15975dd123153b7545",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": false,
+      "officialStructureMatch": true
+    },
+    {
+      "path": "apps/web/public/assets/models/furniture/rug_rectangle_A.bin",
+      "upstreamPath": "town-frontend/public/assets/models/furniture/rug_rectangle_A.bin",
+      "bytes": 1800,
+      "sha256": "10eb71fc2b20b056b6186526d451ee0a560c425495402d7818f4413795aba506",
+      "creator": "Kay Lousberg",
+      "license": "CC0-1.0",
+      "officialSource": "https://github.com/KayKit-Game-Assets/KayKit-Furniture-Bits-1.0/tree/96d5930a8dbdb363409bbc2d3341718b00e17c9c",
+      "officialBlobMatch": true
+    }
+  ]
+}

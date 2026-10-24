@@ -1,0 +1,178 @@
+import 'dotenv/config';
+import {randomUUID} from 'node:crypto';
+import {createServer} from 'node:http';
+import {WebSocketServer,WebSocket} from 'ws';
+import {existsSync,readFileSync,appendFileSync,statSync} from 'node:fs';
+import {resolve,basename} from 'node:path';
+import {OfficeStore} from './state.js';
+import {HiggsColleague,type Job} from './higgs.js';
+import {Projects} from './projects.js';
+import {AgencyExecutors} from './executors.js';
+import {AgencyWorkspace,type Workspace,type Decision} from './workspace.js';
+import {secretaryInstructions,secretaryTools,resolveProjectTarget,hangsUp,pickUpNotice} from './secretary.js';
+import {serveWeb} from './static.js';
+import {log} from './log.js';
+import {doctor,dataDir,version} from './doctor.js';
+import {completedBriefing,holdReason,openQuestion,resultNotice,questionNotice,hold,type Briefing,type Presentation} from './briefings.js';
+
+const executors=new AgencyExecutors(),boot=await doctor(executors);
+for(const p of boot.problems)log('boot')(`${p.fatal?'FATAL':'warn'}: ${p.message}`);
+if(boot.problems.some(p=>p.fatal)){executors.close();process.exit(1);}
+const store=new OfficeStore(dataDir()),root=store.root,projects=new Projects(store),codex=executors.codex;
+const defaultProvider=await executors.defaultProvider();
+const clients=new Set<WebSocket>();
+const broadcast=(event:unknown)=>{for(const ws of clients)if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(event));};
+const landed=new Set<(w:Workspace)=>void>();
+const workspace=new AgencyWorkspace(store,projects,codex,w=>{broadcast({type:'workspace',workspace:w});for(const f of landed)f(w);},{claude:executors.claude,brain:executors.brain,defaultProvider});
+const voices=new Set<HiggsColleague>(),seenStatus=new Map(workspace.snapshot().assignments.map(a=>[a.id,a.status]));
+landed.add(w=>{for(const a of w.assignments){const prev=seenStatus.get(a.id);if(prev===a.status)continue;seenStatus.set(a.id,a.status);const k=w.workers.find(k=>k.id===a.workerId);log(a.kind?'brain':'worker')(`${k?.name||k?.role||'unknown'}: ${a.title.slice(0,60)} ${prev??'new'} → ${a.status}`);}});
+const local=(origin:string|undefined)=>!origin||/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(origin);
+const json=(res:any,data:any,status=200)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));};
+async function body(req:any){let text='';for await(const b of req){text+=b;if(text.length>60000)throw Error('Request too large');}return JSON.parse(text||'{}');}
+function calls(){const p=resolve(root,'calls.jsonl');return existsSync(p)?readFileSync(p,'utf8').trim().split('\n').filter(Boolean).flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}}):[];}
+const server=createServer(async(req,res)=>{
+ if(!local(req.headers.origin))return json(res,{error:'Local origins only'},403);
+ const u=new URL(req.url||'/','http://localhost'),parts=u.pathname.split('/').filter(Boolean);
+ try{
+  if(u.pathname==='/agency-api/workspace')return json(res,workspace.snapshot());
+  if(parts[0]==='agency-api'&&parts[1]==='briefings'&&parts[2]&&parts[3]==='presented'&&req.method==='POST'){await body(req);return json(res,workspace.presentBriefing(parts[2]));}
+  if(u.pathname==='/agency-api/projects/register'&&req.method==='POST'){const p=projects.register(await body(req));workspace.syncProjects();return json(res,p);}
+  if(u.pathname==='/agency-api/projects'){if(req.method==='POST'){const p=projects.create(await body(req));workspace.syncProjects();return json(res,p,(p as any).existing?200:201);}return json(res,projects.list());}
+  if(parts[0]==='agency-api'&&parts[1]==='projects'&&parts[2]&&req.method==='POST'){const value=await body(req);if(parts[3]==='rename')return json(res,workspace.renameProject(parts[2],value));if(parts[3]==='delete')return json(res,workspace.deleteProject(parts[2]));if(parts[3]==='restore')return json(res,workspace.restoreProject(parts[2]));if(parts[3]==='pull-request')return json(res,workspace.openPullRequest(parts[2]));}
+  if(u.pathname==='/agency-api/health'){const st=[...voices].map(v=>v.state);return json(res,{ok:!boot.problems.length,version,available:!!process.env.BOSON_API_KEY?.trim(),engines:boot.engines,voice:{state:st.includes('reconnecting')?'reconnecting':st.includes('ready')?'ready':st.includes('connecting')?'connecting':'none',sessions:voices.size},problems:boot.problems.map(p=>p.message)});}
+  if(u.pathname==='/agency-api/status'){const providers=await executors.status();return json(res,{available:!!process.env.BOSON_API_KEY,assistants:[workspace.snapshot().secretary],model:'higgs-realtime',codex:providers.codex,providers,execution:`local-${providers.defaultProvider}`,maxWorkersPerPlan:4});}
+  if(parts[0]==='agency-api'&&parts[1]==='assignments'&&parts[2]){
+   const id=parts[2];
+   if(req.method==='POST'){await body(req);if(parts[3]==='pause')return json(res,workspace.pause(id));if(parts[3]==='resume')return json(res,workspace.resume(id));if(parts[3]==='accept')return json(res,workspace.accept(id));}
+   if(req.method==='GET'&&parts[3]==='files'){const path=u.searchParams.get('path')||'',file=workspace.artifact(id,path,u.searchParams.get('version')||undefined);res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Content-Length':statSync(file).size,'Content-Disposition':`inline; filename*=UTF-8''${encodeURIComponent(basename(file))}`,'X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; sandbox",'Cache-Control':'no-store'});res.end(readFileSync(file));return;}
+  }
+  if(parts[0]==='agency-api'&&parts[1]==='decisions'&&parts[2]&&req.method==='POST'){const v=await body(req),d=workspace.snapshot().decisions.find(d=>d.id===parts[2]);if(!d)throw Error('Unknown decision');return json(res,workspace.decide({id:d.id,project_id:d.projectId,status:'decided',decision:v.decision,reason:v.reason}));}
+  if(parts[0]==='agency-api'&&parts[1]==='rooms'&&parts[2]){
+   const s=store.load(parts[2]);
+   if(parts[3]==='calls')return json(res,calls().filter(r=>r.roomId===s.id));
+   if(parts[3]==='documents'&&parts[4]){const id=parts[4].replace(/\.md$/,''),d=s.documents.find(d=>d.id===id);if(!d)return json(res,{error:'Document not found'},404);res.writeHead(200,{'Content-Type':'text/markdown; charset=utf-8','Cache-Control':'no-store'});res.end(`# ${d.title}\n\n${d.body}`);return;}
+   return json(res,s);
+  }
+  if(parts[0]==='agency-api'&&parts[1]==='audio'&&parts[2]&&/^[a-f0-9-]{36}\.wav$/.test(parts[2])){const p=resolve(root,'audio',parts[2]);if(!existsSync(p))return json(res,{error:'Not found'},404);res.writeHead(200,{'Content-Type':'audio/wav','Cache-Control':'private, max-age=3600'});res.end(readFileSync(p));return;}
+  if(u.pathname==='/agency-api/measurement'&&req.method==='POST'){const data=await body(req);appendFileSync(resolve(root,'browser.jsonl'),JSON.stringify({...data,at:new Date().toISOString()})+'\n');return json(res,{ok:true});}
+  if(parts[0]!=='agency-api'&&serveWeb(req,res,u.pathname))return;
+  return json(res,{error:'Not found'},404);
+ }catch(err){return json(res,{error:String(err)},400);}
+});
+// ponytail: mirrors workspace.ts's private norm (not exported, to stay out of #21's file).
+const norm=(s:string)=>String(s??'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const wss=new WebSocketServer({server,path:'/agency-ws',maxPayload:24000});
+wss.on('connection',(client,req)=>{
+ if(!local(req.headers.origin)){client.close(1008);return;}
+ clients.add(client);log('ws')(`client connected (${clients.size} open)`);let selected=projects.list()[0]?.id||'',view='secretary',started=false,ready=false,voice:HiggsColleague|undefined,closed=false;
+ let presentation:Presentation|undefined;
+ let walks:{callId:string;projectId?:string;workerId?:string;job:string}[]=[];
+ const floor={userAt:0,voiceAt:0,userSpeaking:false,playing:false,question:false};let asked='',said='',saidFor='',pending:{id:string;since:number;q?:true}[]=[],seen=new Set<string>(),announceJob:Job|undefined,heldWhy='',timer:ReturnType<typeof setInterval>|undefined,bye=false,pickup:string|undefined;
+ const watch=(e:any)=>{const t=Date.now();
+  if(e.type==='speech_started'){floor.userSpeaking=true;floor.userAt=t;floor.question=false;floor.playing=false;}
+  else if(e.type==='thinking'&&floor.userSpeaking){floor.userSpeaking=false;floor.userAt=t;}
+  else if(e.type==='speech_text'){if(e.responseId!==saidFor){saidFor=e.responseId;said='';}said+=e.delta;}
+  else if(e.type==='turn_done'){floor.voiceAt=t;floor.question=!e.cancelled&&(openQuestion(said)||e.jobId===asked);}
+  else if(e.type==='await_playback')floor.playing=true;
+  else if(e.type==='interrupted')floor.playing=false;
+  else if(e.type==='user_transcript')bye=hangsUp(String(e.text||''));
+  if(e.type==='interrupted'||(e.type==='turn_done'&&(e.cancelled||!e.hasAudio)))heard();
+ };
+ /** The call a walk covers is over once its answer has been heard (`played`), or its turn ended without audio, or was interrupted. Copy-then-clear: emit re-enters watch. */
+ const heard=(job?:string)=>{const done=walks.filter(w=>!job||w.job===job);walks=walks.filter(w=>job&&w.job!==job);for(const {job:_,...w} of done)emit({type:'tool_finished',...w});};
+ const emit=(event:any)=>{watch(event);if(!closed&&client.readyState===WebSocket.OPEN)client.send(JSON.stringify(event));};
+ const room=()=>selected?store.load(selected):undefined;
+ // Keep old prose out of every turn. Full preserved drafts remain available on
+ // an explicit read; current project memory describes the ongoing work.
+ const progress=()=>Object.fromEntries(workspace.rooms().flatMap(p=>{const t=workspace.progress(p.id);return t?[[p.name,t]]:[];}));
+ const current=()=>({selected_project_id:projects.list().some(p=>p.id===selected)?selected:null,...(workspace.parallel()?{parallel:workspace.parallel()}:{}),...(projects.list().length?{}:{note:'No projects yet; the office is only you. A room is created when the user asks for work.'}),progress:progress(),view,workspace:workspace.snapshot(),legacy:selected?{documents:room()!.documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
+ const read=(id?:string)=>id?{...current(),project:workspace.snapshot().projects.find(p=>p.id===id),legacy:store.load(id)}:current();
+ function run(name:string,args:any,job:Job):any{
+  if(name==='read_briefing'&&job===announceJob)throw Error('Only announce the result and ask whether the user wants it now; read it after they say yes.');
+  args=resolveProjectTarget(name,args,selected,projects.list().map(p=>p.id));
+  if(name==='read_workspace')return {committed:false,...read(args.project_id)};
+  if(name==='read_briefing'){const b=workspace.briefing(args.briefing_id);presentation={briefingId:b.id,job,audioComplete:false};view='secretary';emit({type:'view',view});return {committed:false,briefing:{title:b.title,project:workspace.snapshot().projects.find(p=>p.id===b.projectId)?.name,summary:b.summary,files:b.artifacts.map(f=>f.path),verification:b.verification,contributors:b.contributors,...(b.git&&{git:{branch:b.git.branch,changes:b.git.diffStat?.split('\n').at(-1)?.trim(),commits:b.git.commits?.length,pullRequest:b.git.prUrl?'open':'not opened yet'}})},note:'Give the short version in two or three spoken sentences: what was made, who made it, and anything the user must do. Never say file paths, ids, check lists or markdown aloud. Playback completion records presentation; it does not accept the work.'+(b.git&&!b.git.prUrl?' The work is on its own branch; end by offering to open a pull request.':'')};}
+  if(name==='set_secretary_identity')return workspace.setSecretary(args);
+  if(name==='create_project'||name==='delegate_work'){const result=name==='create_project'?workspace.createProject(args):workspace.delegate(args);if('project' in result){selected=result.project.id;emit({type:'state',state:room()});}return result;}
+  if(name==='open_pull_request')return workspace.pullRequest({project_id:args.project_id,confirm:args.confirm},floor.userAt);
+  if(name==='update_project')return workspace.updateProject(args);
+  if(name==='revise_assignment')return workspace.revise(args);
+  if(name==='control_assignment'){if(args.action==='pause')return workspace.pause(args.assignment_id);if(args.action==='resume')return workspace.resume(args.assignment_id);if(args.action==='accept')return workspace.accept(args.assignment_id);throw Error('Unknown control action');}
+  if(name==='record_decision')return workspace.decide(args);
+  if(name==='worker_status')return workspace.workerStatus(args.worker,projects.list().some(p=>p.id===selected)?selected:undefined);
+  if(name==='set_priority')return workspace.setPriority(args,projects.list().some(p=>p.id===selected)?selected:undefined);
+  if(name==='message_worker')return workspace.message({project_id:projects.list().some(p=>p.id===selected)?selected:undefined,worker:args.worker,text:args.text});
+  if(name==='prepare_command_room'){view='command';emit({type:'view',view:'command'});return {committed:true,...read(args.project_id)};}
+  throw Error('Unknown secretary tool');
+ }
+ // Tools are synchronous (0 ms), so tool_started follows the call with resolved ids, and tool_finished waits until her answer has been heard: the walk covers the real wait. The server never waits for the scene.
+ function tool(name:string,args:any,job:Job):any{
+  const r=run(name,args,job);
+  try{const target=walkTarget(name,args,r);if(target){const w={callId:randomUUID(),...target};walks.push({...w,job:job.id});emit({type:'tool_started',name,...w});}}catch{}
+  return r;
+ }
+ function walkTarget(name:string,args:any,r:any):{projectId?:string;workerId?:string}|undefined{
+  const here=projects.list().some(p=>p.id===selected)?selected:undefined,ws=workspace.snapshot();
+  if(name==='worker_status'||name==='message_worker'){
+   if(norm(args.worker)==='all')return here?{projectId:here}:undefined;
+   const n=norm(r?.worker||args.worker),w=ws.workers.filter(w=>!w.lead&&w.name&&norm(w.name)===n&&ws.projects.some(p=>p.id===w.projectId&&!p.deletedAt)).sort((a,b)=>Number(b.projectId===here)-Number(a.projectId===here))[0];
+   return w?{projectId:w.projectId,workerId:w.id}:undefined;
+  }
+  if(name==='set_priority')return r?.projectId?{projectId:r.projectId}:undefined;
+  if(name==='read_briefing'){const b=ws.briefings.find(b=>b.id===presentation?.briefingId);return b?{projectId:b.projectId}:undefined;}
+  if(name==='read_workspace'||name==='delegate_work'||name==='create_project'){const id=r?.project?.id||(args.project_id&&args.project_id!=='selected'?args.project_id:here);return id?{projectId:id}:undefined;}
+ }
+ const onLanded=(w:Workspace)=>{for(const b of w.briefings)if(b.status==='queued'&&!seen.has(b.id)){seen.add(b.id);pending.push({id:b.id,since:Date.now()});console.log(`[ring] landed ${b.id} for ${w.projects.find(p=>p.id===b.projectId)?.name||'a project'}`);}
+  for(const d of w.decisions)if(d.status==='open'&&d.action&&!seen.has(d.id)){seen.add(d.id);pending.push({id:d.id,since:Date.now(),q:true});console.log(`[ring] question ${d.id} (${d.action.kind}) for ${w.projects.find(p=>p.id===d.projectId)?.name||'a project'}`);}};
+ async function announce(){
+  if(!ready||!voice||closed)return;
+  const ws=workspace.snapshot(),names=ws.projects,nm=(id:string)=>names.find(p=>p.id===id)?.name||'a project',bs:Briefing[]=[],qs:Decision[]=[];
+  pending=pending.filter(p=>{
+   if(p.q){const d=ws.decisions.find(d=>d.id===p.id);if(d?.status!=='open'){console.log(`[ring] dropped ${p.id}: question no longer open`);return false;}qs.push(d);return true;}
+   try{const b=workspace.briefing(p.id);if(b.id===presentation?.briefingId){console.log(`[ring] dropped ${p.id}: presented by user`);return false;}bs.push(b);return true;}catch{console.log(`[ring] dropped ${p.id}: no longer queued`);return false;}});
+  // Briefings first; otherwise the oldest open question, one per tick. ponytail: no re-ask within a call, and a question can land mid-conversation once the floor is quiet.
+  const take=bs.length?pending.filter(p=>!p.q):pending.slice(0,1);if(!take.length)return;
+  const q=bs.length?undefined:qs[0],label=q?`question "${q.title.slice(0,60)}" for ${nm(q.projectId)}`:bs.map(b=>`"${b.title}" for ${nm(b.projectId)} (briefing_id ${b.id})`).join('; '),now=Date.now(),why=holdReason({now,heldSince:take[0].since,voiceBusy:voice.busy,...floor});
+  if(why){if(why!==heldWhy)console.log(`[ring] holding ${label}: ${why}`);heldWhy=why;return;}
+  heldWhy='';const since=take[0].since;pending=pending.filter(p=>!take.includes(p));console.log(`[ring] ${q?'asking':'announcing'} ${label} after ${((now-since)/1000).toFixed(1)} s`);
+  for(const b of bs)emit({type:'ring',briefingId:b.id});
+  const who=pickup;pickup=undefined;
+  try{announceJob=await voice.ask(q?questionNotice({id:q.id,question:q.action?.kind==='ask'?q.title:`${q.title}. ${q.context}`.slice(0,400),project:nm(q.projectId),options:q.options},who):resultNotice(bs.map(b=>({id:b.id,title:b.title,project:names.find(p=>p.id===b.projectId)?.name||'the project',names:b.contributors.map(c=>c.name)})),who));if(q)asked=announceJob.id;}catch(err){emit({type:'error',message:String(err)});}
+ }
+ client.on('message',raw=>{void(async()=>{try{
+  const e=JSON.parse(raw.toString());
+  if(e.type==='start'){
+   if(started)throw Error('Already started');started=true;
+   seen=new Set(workspace.snapshot().briefings.filter(b=>b.status==='queued').map(b=>b.id));landed.add(onLanded);onLanded(workspace.snapshot());
+   if(e.roomId){if(!projects.list().some(p=>p.id===e.roomId))throw Error('Select a registered project');selected=e.roomId;}
+   if(['secretary','command','project'].includes(e.view))view=e.view;
+   if(selected)emit({type:'state',state:room()});emit({type:'workspace',workspace:workspace.snapshot()});emit({type:'focus',agentId:'mara'});
+   voice=new HiggsColleague('mara',()=>selected,root,emit,tool,(_id,job,hasAudio)=>{if(presentation?.job===job)presentation.audioComplete=!job.cancelled&&hasAudio;if(!job.cancelled&&hasAudio)emit({type:'await_playback',jobId:job.id});},()=>{presentation=undefined;emit({type:'interrupted'});},{instructions:()=>secretaryInstructions,context:current,tools:secretaryTools,voice:'eleanor'});
+   voices.add(voice);
+   for(let attempt=0;;attempt++){try{await voice.connect();break;}catch(err){voice.close();if(closed||attempt>=2||!String(err).includes('429'))throw err;emit({type:'connection_retry',attempt:attempt+1});await new Promise(r=>setTimeout(r,4000*(attempt+1)));}}
+   if(closed){voice.close();return;}ready=true;timer=setInterval(()=>{if(bye&&voice&&!voice.busy&&!floor.userSpeaking&&!floor.playing&&floor.voiceAt>floor.userAt){bye=false;console.log('[call] goodbye played; hanging up');voice.close();client.close();return;}void announce();},250);emit({type:'ready',model:'higgs-realtime'});
+   const me=workspace.snapshot().secretary.name||'Donna';let answer:string|undefined;try{if(typeof e.answer==='string')answer=workspace.briefing(e.answer).id;}catch{}
+   if(answer){pickup=me;pending.push({id:answer,since:Date.now()-hold.maxMs});console.log(`[ring] answered ${answer}`);}else if(!e.resume)await voice.ask(pickUpNotice(me));
+   return;
+  }
+  if(!started||!voice)throw Error('Connect to the secretary first');
+  if(['text','interrupt','switch_project','present_briefing','stop'].includes(e.type))presentation=undefined;
+  if(e.type==='text'){floor.userAt=Date.now();floor.question=false;}
+  if(e.type==='present_briefing')pending=pending.filter(p=>p.id!==e.briefingId);
+  if(e.type==='present_briefing'){if(!ready)throw Error('Secretary is connecting');const b=workspace.briefing(e.briefingId);emit({type:'interrupted'});await voice.ask(`Use read_briefing with briefing_id ${b.id}. Give me the short version in two or three spoken sentences: what was made, who made it, and anything I need to do. Never say file paths, IDs, URLs or check lists aloud. Do not accept the work or start new work.`);return;}
+  if(e.type==='switch_project'){if(!projects.list().some(p=>p.id===e.roomId))throw Error('Unknown project');await voice.cancel();voice.clearInput();selected=e.roomId;view='project';voice.refresh();emit({type:'interrupted'});emit({type:'state',state:room()});emit({type:'project_ready'});return;}
+  if(e.type==='set_view'){if(!['secretary','command','project'].includes(e.view))throw Error('Unknown view');view=e.view;return;}
+  if(e.type==='text'){if(!ready)throw Error('Secretary is connecting');if(typeof e.text!=='string'||!e.text.trim()||e.text.length>5000)throw Error('Invalid text');emit({type:'interrupted'});emit({type:'user_transcript',text:e.text});await voice.ask(e.text);return;}
+  if(e.type==='audio'){if(typeof e.audio!=='string'||e.audio.length>16000||!/^[A-Za-z0-9+/]+=*$/.test(e.audio))throw Error('Invalid PCM frame');voice.audio(e.audio);return;}
+  if(e.type==='interrupt'){await voice.cancel();emit({type:'interrupted'});return;}
+  if(e.type==='focus'){emit({type:'focus',agentId:'mara'});return;}
+  if(e.type==='played'){heard(String(e.jobId));floor.playing=false;floor.voiceAt=Date.now();const id=completedBriefing(presentation,e.jobId);if(id){presentation=undefined;workspace.presentBriefing(id);}return;}
+  if(e.type==='stop'){voice.close();client.close();return;}
+ }catch(err){log('ws')(`error: ${String(err)}`);emit({type:'error',message:String(err)});}})();});
+ client.on('close',()=>{closed=true;clearInterval(timer);landed.delete(onLanded);clients.delete(client);if(voice)voices.delete(voice);voice?.close();log('ws')(`client closed (${clients.size} open)`);});
+});
+void workspace.recover();
+// ws re-emits the http server's listen error on wss, ahead of any server listener.
+wss.on('error',(err:NodeJS.ErrnoException)=>{if(err.code!=='EADDRINUSE')throw err;console.error(`Port ${process.env.AGENCY_PORT||3003} is in use; stop the other Chamber server or set AGENCY_PORT.`);process.exit(1);});
+server.listen(Number(process.env.AGENCY_PORT||3003),'127.0.0.1',()=>{const address=server.address();console.log('Personal Agency API: http://127.0.0.1:'+(typeof address==='object'&&address?address.port:process.env.AGENCY_PORT||3003));});
+for(const signal of ['SIGINT','SIGTERM'] as const)process.once(signal,()=>{workspace.close();for(const ws of clients)ws.close();server.close();setTimeout(()=>process.exit(0),500).unref();});
