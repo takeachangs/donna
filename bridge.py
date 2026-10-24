@@ -191,7 +191,7 @@ DEAF_AFTER = 20   # seconds with no take before the voice tells the user the bra
 DEAF = "[note] Nobody on the computer has picked up the task you sent. Tell the user in one sentence that the brain is not answering and that typing anything in its window wakes it."
 
 T0 = time.monotonic()
-LOGF = open(os.path.join(HERE, "bridge.log"), "a")
+LOGF = open(os.path.join(HERE, "bridge.log"), "a", encoding="utf-8")
 LOGF.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(sys.argv[1:])}\n")
 def log(*a):
     line = f"[{time.monotonic()-T0:6.2f}s] " + " ".join(str(x) for x in a)
@@ -649,6 +649,16 @@ async def run():
 
 def start_brain(repo):   # #38: the brain in tmux, so herd.send can wake it (herd.wake) and the user can attach and watch
     import subprocess
+    if args.brain_engine == "codex" and os.name == "nt":
+        # The same CLI-backed orchestration, resumed by herd when requests or worker results arrive.
+        meta = herd.rj(herd.root() / "donna" / "meta.json")
+        if meta.get("project") != os.path.realpath(repo) or meta.get("kind") != "codex":
+            herd.new("donna", kind="codex", project=repo, register_session=False)
+            meta = herd.rj(herd.root() / "donna" / "meta.json")
+        herd.write_json(herd.root() / "donna" / "meta.json", {**meta, "native_brain": True})
+        herd.write_office()
+        log(f"brain: native Codex is on duty in {repo}; requests resume its own session")
+        return
     name = herd.tmux_name(); t = f"={name}:"
     tm = lambda *a: subprocess.run(["tmux", *a], capture_output=True, text=True)
     if tm("has-session", "-t", t).returncode == 0: log(f"brain: tmux session {name} is running already"); return
@@ -669,7 +679,7 @@ def start_brain(repo):   # #38: the brain in tmux, so herd.send can wake it (her
         f" herd.py and bridge.py are in {HERE}: use that path wherever the skill says ~/projects/higgs-hackathon." if codex else ""))
     log(f"brain: started in tmux session {name} ({repo}); watch it with: tmux attach -t {name}")
 
-if args.brain: start_brain(os.path.abspath(os.path.expanduser(args.brain)))
+BRAIN = start_brain(os.path.abspath(os.path.expanduser(args.brain))) if args.brain else None
 try: asyncio.run(run())
 except KeyboardInterrupt: log("hung up (Ctrl-C)")
 finally:   # `off` last (Mike's contract), and the office sees it at once

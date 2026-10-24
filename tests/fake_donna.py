@@ -21,6 +21,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))   # import herd, higgslive from the repo root
 answers: dict = {}
+ENGINE = sys.argv[sys.argv.index('--engine') + 1] if '--engine' in sys.argv else 'claude'
+if ENGINE not in ('claude', 'codex'): raise SystemExit('--engine must be claude or codex')
 QUIET = threading.Event()  # --fast-take: take at once, then nothing for 25 s (a missed take would look like a deaf brain)
 ORDER, TAKEN = threading.Event(), threading.Barrier(3)  # --order: all three taken, then "Done." for notes, photos, music (#55)
 RACE, GO = threading.Event(), threading.Event()  # --bye-race: the music backup's "Done." when the driver sets GO; the notes backup never ends
@@ -56,6 +58,15 @@ def work(herd, line):
         return
     said = (task + " " + " ".join(t for _, t in line.get("transcript") or [])).lower()
     if line.get("with") == "Maya":  # put through: the brain forwards to Maya (SendMessage) and says her answer
+        if ENGINE == 'codex':
+            say(herd, tid, 'take', '')
+            request = herd.send('Maya', 'On the phone with the person: ' + task)
+            until = time.monotonic() + 90
+            while time.monotonic() < until:
+                result = next((m for m in herd.lines(herd.root()/'Maya/outbox.jsonl') if m['id']==request and m['kind'] in ('say','fail')), None)
+                if result: say(herd, tid, result['kind'], result['text']); return
+                time.sleep(.2)
+            say(herd, tid, 'fail', 'Maya did not answer in time.'); return
         say(herd, tid, "take", ""); time.sleep(1.0)
         if "why" in task.lower(): say(herd, tid, "say", "I picked thirty seconds so nobody waits long on one question."); return  # #82
         say(herd, tid, "say", MAYA if "timer" in said or "question" in said else "That's not mine; Donna will know."); return
@@ -80,10 +91,17 @@ def work(herd, line):
 
 def agent():
     import herd
-    herd.new("donna", project=os.getcwd())
+    herd.new("donna", kind='codex' if ENGINE == 'codex' else 'session', project=os.getcwd())
     hook = lambda ev, **k: herd.hook(ev, {"session_id": "fake-brain", "cwd": os.getcwd(), "hook_event_name": ev, **k})  # the office's workers come from hooks
-    hook("PostToolUse", tool_name="Bash", tool_input={"command": "uv run herd.py new donna"}, tool_response={})  # registers this "session" as the brain
+    if ENGINE == 'claude': hook("PostToolUse", tool_name="Bash", tool_input={"command": "uv run herd.py new donna"}, tool_response={})  # registers this "session" as the brain
     for aid, name, role in (("ben1", "Ben", "Writes the server"), ("maya1", "Maya", "Builds the quiz")):  # Ben: a male look, Maya: the first female look (chloe)
+        if ENGINE == 'codex':
+            project = Path(os.environ['HIGGS_HOME'])/name
+            project.mkdir()
+            (project/'WORKER.md').write_text(MAYA if name=='Maya' else role, encoding='utf-8')
+            herd.new(name, kind='codex', project=str(project))
+            herd.send(name, 'Read WORKER.md. That records your actual assignment. Confirm it briefly in first person; do not change files.')
+            continue
         hook("SubagentStart", agent_id=aid, agent_type="general-purpose")
         hook("PostToolUse", tool_name="Agent", tool_input={"name": name, "description": role, "prompt": role}, tool_response={"status": "async_launched", "agentId": aid})
     inbox = herd.root() / "donna" / "inbox.jsonl"
@@ -268,7 +286,7 @@ def demo(flow):
     import herd
     logf = REPO / "bridge.log"
     start = logf.stat().st_size if logf.exists() else 0
-    bridge = subprocess.Popen(["uv", "run", "-q", "bridge.py", "--ring", "--silent", "--backend", "session", "--voice", "nora", "--max-seconds", "90"],
+    bridge = subprocess.Popen([sys.executable, "-X", "utf8", "bridge.py", "--ring", "--silent", "--backend", "session", "--voice", "nora", "--max-seconds", "90"],
                               cwd=REPO, stdin=subprocess.PIPE, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=os.environ.copy(),
                               start_new_session=True)  # its own process group: the teardown kills this bridge (uv and its python), never a real phone
     pos = start
@@ -299,9 +317,12 @@ def demo(flow):
     except Exception as e:
         print(f"FAILED: {e!r}")
     finally:
-        os.killpg(bridge.pid, signal.SIGTERM)
+        if os.name == 'nt': bridge.terminate()
+        else: os.killpg(bridge.pid, signal.SIGTERM)
         try: bridge.wait(10)
-        except subprocess.TimeoutExpired: os.killpg(bridge.pid, signal.SIGKILL)
+        except subprocess.TimeoutExpired:
+            if os.name == 'nt': bridge.kill()
+            else: os.killpg(bridge.pid, signal.SIGKILL)
         print(tail())
     sys.exit(0 if ok else 1)
 
