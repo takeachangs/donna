@@ -31,13 +31,14 @@ Shape = the office's existing `Workspace` type (`office/apps/web/src/agency/type
 Status words (`WorkStatus`): queued | working | waiting | review | done | paused | failed. A worker is `working` from its
 `SubagentStart` (or its Agent `PostToolUse`) until its `SubagentHandback` report or `SubagentStop` (a teammate: its own `Stop`); `done` after.
 A background Agent call starts the row over (`working`, no summary), also for a name used before (#65). A worker's `currentAction` is
-"Hired: <description>" until its first tool, then that tool ("Write index.html").
+"Hired: <description>" until its first tool, then that tool in words, at most 40 chars ("Writing index.html", "Running checks",
+"Running a command", "Committing the work", "Searching the code").
 Who is drawn (#44): agents started in this duty period (`since`, below) whose Agent call gave a `name` (the row's name) or a
 `description` (its first 3 words), minus unnamed `Explore`/`Plan` helpers. A `SubagentStop` for an agent with no
 `SubagentStart` and no Agent call makes no row: Claude Code's own helpers fire one (`agent_type` "") after the brain's turns. Hooks
 carry no failure signal, so `failed` comes only from the transcript fallback. The brain row is `lead: true`: `waiting`
 while a herd `ask` is open, `working` while its turn runs (last `UserPromptSubmit`/`PostToolUse` after the last `Stop`),
-else `done`. Its `currentAction` is Donna's narrative (#65; the office shows it as "Donna: …" under the call pill and on her desk):
+`waiting` while its workers are still out (#65), else `done`. Its `currentAction` is Donna's narrative (#65; the office shows it as "Donna: …" under the call pill and on her desk):
 "Thinking" (a prompt and no tool since), from her last tool "Reading the repo" (Read/Glob/Grep), "Setting up a workspace" (git worktree),
 "Hiring Ava for: <description>" / "Hiring Ava and Ben" (her trailing Agent calls), "Running checks", "Reporting" (herd note/say/fail),
 "Asking you" (ask), "Talking to <to>" (SendMessage), else "Working on it"; when her turn is over "Waiting on Ava and Ben" (workers still
@@ -113,3 +114,14 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
   known ids keep their desk or lounge seat; on page load everyone present counts as seen. Desk screens show the worker's
   `currentAction` while `working` (else the role), Donna's screen her narrative; both repaint in place (no NPC rebuild).
 - The skill gives every new task new first names (a teammate's id is its name, so a reused name is the same row).
+- Earlier signals (#65 follow-up): a task the voice sent and the brain has not taken (`status.json` state `queued`, < 10 min) is a
+  `queued` assignment (`workerId` = the lead) and Donna's line reads "Got it: <task>"; `take` makes it "Reading the repo".
+  A first name (allow-list `herd.FIRST`) in the brain's `note`/`ask` that is not a row yet is a provisional worker
+  `{"id": "brief-<Name>", "status": "queued", "currentAction": "Being briefed", "role": ""}` for up to 10 min; the scene stands it
+  in Donna's suite (no desk, no lounge) until the spawn's row (same name, new id) replaces it and walks to a desk. The skill sends
+  that note just before the Agent calls. The voice's status tool leaves `queued` workers out.
+- The sync is tested end to end offline: `uv run tests/office_sync.py` replays a recorded brain run (`tests/fixtures/office_run.jsonl`:
+  delegate, take, hiring note, 2 background workers, their tools and stops, say, spoken) through herd's own send/reply/hook and
+  checks the office.json timeline; `--snapshots office/tests/fixtures/office-sync.json` feeds `office/tests/office-sync.test.ts`
+  (seats, briefing spots, desk captions, labels, `adapt()`). Re-record: `uv run tests/record_office_events.py run <out>` (headless
+  Sonnet, ~1 min) or, on a live brain, `settings > ~/.higgs/rec-settings.json`, `claude --settings ~/.higgs/rec-settings.json`, then `export`.

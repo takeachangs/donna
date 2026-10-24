@@ -1,8 +1,11 @@
 import { expect, it } from 'vitest';
 import {
+  briefSpot,
+  briefed,
   deskCaption,
   donnaLine,
   entranceRoute,
+  hired,
   projectRoom,
   secretaryRoom,
   deliveryRoute,
@@ -73,4 +76,23 @@ it('captions a desk with the action while the worker works, else its role', () =
   expect(deskCaption({ ...w, status: 'done' })).toBe('Builder');
   expect(deskCaption({ ...w, currentAction: undefined })).toBe('Builder');
   expect(deskCaption({ ...w, currentAction: ' ' })).toBe('Builder');
+});
+it('stands queued workers by Donna, each on its own spot inside her suite', () => {
+  expect(briefed({ status: 'queued' })).toBe(true);
+  for (const w of [{ status: 'queued', lead: true }, { status: 'working' }, { status: 'done' }])
+    expect(briefed(w)).toBe(false);
+  const spots = [0, 1, 2, 3].map(briefSpot);
+  expect(new Set(spots.map((p) => `${p.x},${p.z}`)).size).toBe(4);
+  for (const p of spots) {
+    expect(p.x).toBeGreaterThan(secretaryRoom.x);
+    expect(p.x).toBeLessThan(secretaryRoom.x + secretaryRoom.width);
+    expect(p.z).toBeGreaterThan(secretaryRoom.z);
+    expect(p.z).toBeLessThan(secretaryRoom.z + secretaryRoom.depth);
+  }
+});
+it('badges a worker only while its action is the producer’s "Hired: …"', () => {
+  expect(hired({ status: 'working', currentAction: 'Hired: Builds the page' })).toBe(true);
+  expect(hired({ status: 'working', currentAction: 'Write index.html' })).toBe(false);
+  expect(hired({ status: 'done', currentAction: 'Hired: Builds the page' })).toBe(false);
+  expect(hired({ status: 'working' })).toBe(false);
 });

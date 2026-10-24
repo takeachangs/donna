@@ -140,7 +140,7 @@ def office_status(home: Path) -> tuple[list, set]:
     try: o = json.loads((home / "office.json").read_text())
     except (OSError, ValueError): return [], set()
     if not isinstance(o, dict): return [], set()
-    ws = [w for w in o.get("workers") or [] if isinstance(w, dict) and not w.get("lead") and w.get("name")]
+    ws = [w for w in o.get("workers") or [] if isinstance(w, dict) and not w.get("lead") and w.get("name") and w.get("status") != "queued"]  # queued: named, not spawned yet (#65)
     run = [w["name"] + (f" ({w['role']})" if w.get("role") else "") for w in ws if w.get("status") == "working"]
     rest = [w["name"] for w in ws if w.get("status") != "working"]
     new = [b for b in o.get("briefings") or [] if isinstance(b, dict) and b.get("status") == "queued" and b.get("summary")]
@@ -618,7 +618,7 @@ if __name__ == "__main__":   # self-check: no network
         assert "ann has been working on build x for 2 minutes." in s and "2 tasks waiting in ann's queue: task two, task three." in s, s
         assert "bob is waiting for your answer on pick a theme: light or dark?" in s and "cy could not finish zip it: disk full" in s, s
         assert "cy is idle." in s and "old" not in s and s.count("build x") == 1 and "open the page, has been running" in s, s
-        (Path(tmp) / "office.json").write_text(json.dumps({"workers": [{"name": "Donna", "status": "done", "lead": True}, {"name": "Ava", "role": "Writes the page", "status": "working"},
+        (Path(tmp) / "office.json").write_text(json.dumps({"workers": [{"name": "Donna", "status": "done", "lead": True}, {"name": "Ava", "role": "Writes the page", "status": "working"}, {"name": "Noah", "status": "queued", "currentAction": "Being briefed"},
             {"name": "Bob", "status": "done"}, {"name": "Cy", "status": "failed"}], "briefings": [{"id": "t6", "summary": "Zipped.", "status": "queued"}, {"id": "t9", "summary": "Old news.", "status": "presented"}]}))
         with open(h / "events.jsonl", "a") as f: f.write(json.dumps({"ts": now - 5, "ev": "task.done", "agent": "cy", "id": "t6", "text": "Zipped."}) + "\n")
         s = status_summary(now - 30, (), now)   # #43: the office first (workers by status, results not heard), and a told result is not "finished" again

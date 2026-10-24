@@ -113,7 +113,8 @@ Shell variables do not carry over between commands, so each command sets its own
      <worktree>; never checkout or switch branches in <project dir>." Every brief also says: "If the person is put through
      to you (a message starting 'On the phone with the person:'), answer in first person, briefly, about your own work;
      raise anything else to the lead." Separable parts go out as several workers in one message.
-   - **The moment they are out**, `R <id> note "Ava is writing the page"`, naming every worker. The voice names nobody
+   - **Just before the Agent calls**, `R <id> note "Hiring Ava for the page and Noah for the styling"`, naming every worker by
+     the first name you give it (the office shows them being briefed in Donna's suite until they spawn). The voice names nobody
      until a note does (it reads notes through its status tool); before that it says the office has the job. Then wait
      for their notifications; do not poll, and keep the wait loop of step 2 running.
    - Codex (no Agent tool): hire through herd, the same rules (a first name, fresh per task; a complete brief; the task's

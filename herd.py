@@ -254,6 +254,9 @@ def reply(name, tid, kind, text):  # take|note|ask|say|fail|transfer (text: the 
 
 TAIL = 1 << 20  # ponytail: office() reads only the last 1 MB of each events file (~3000 hook events). $HIGGS_HOME/events.jsonl is shared by EVERY Claude Code session with the hook installed, so a busy fleet can push a running agent's SubagentStart out of the window and its row vanishes. Upgrade: filter at log time by the registered session, or one file per session
 KEYS = ["char-male-b", "char-female-d", "char-male-a", "char-female-e", "char-male-d"]  # worker looks, by order of first appearance
+FIRST = set("Ava Ben Noah Mia Maya Zoe Leo Eli Ivy Sam Max Lily Owen Ruby Theo Emma Liam Olivia Lucas Ella Jack Ethan Isla Finn Nina Omar Priya Ravi "
+             "Sara Sarah Tom Tara Uma Vera Wes Yara Zane Kai Jade Iris Hugo Gina Felix Dan Cleo Bea Alex Adam Anna Jonas Kate Luna Milo Nate Oscar Paul Quinn "
+             "Rosa Sofia Bob Cy Zed Mara Lena Ian Ada Aria Elena Leah Levi Jonah Ezra Hana Kira Rex Tess Joel Ana Ines Mateo".split())  # #65: first names Donna gives workers; ponytail: an allow-list, so "Done." or "Reading" never becomes a worker
 VOICES = {"female": ["chloe", "eleanor", "nora"], "male": ["jake", "marcus", "oliver"]}  # #28: by the look's gender, round-robin; nora last: Donna is nora
 
 
@@ -294,12 +297,19 @@ def trim(tool, inp):  # scalars only, strings cut: an Agent call keeps name/desc
             for k in (("name", "description", "prompt") if tool == "Agent" else inp) if isinstance(v := inp.get(k), (str, int, float, bool))}
 
 
-def action(e):  # a PostToolUse event (or None) -> "Read dash.py", "Bash ls"
+CHECKS = re.compile(r"\b(tests?|pytest|vitest|selftest|typecheck|tsc|npm|lint)\b")
+
+
+def action(e):  # a worker's last PostToolUse event (or None), in words, at most 40 chars (#65): "Writing index.html", "Running checks"
     if not e: return ""
     tool, inp = e.get("tool"), e.get("input") or {}
-    arg = os.path.basename(inp["file_path"]) if tool in ("Read", "Write", "Edit") and inp.get("file_path") else \
-        next((" ".join(str(inp[k]).split()) for k in ("command", "pattern", "path", "description", "url") if inp.get(k)), "")
-    return f"{tool} {arg[:50]}".strip()
+    f, c = os.path.basename(str(inp.get("file_path") or inp.get("notebook_path") or "")), str(inp.get("command") or "")
+    s = (f"{'Reading' if tool == 'Read' else 'Writing' if tool == 'Write' else 'Editing'} {f}" if f and tool in ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit")
+         else "Searching the code" if tool in ("Read", "Grep", "Glob", "LS")
+         else ("Running checks" if CHECKS.search(c) else "Committing the work" if "git commit" in c else "Running a command") if tool == "Bash"
+         else "Looking it up" if tool in ("WebFetch", "WebSearch")
+         else f"Messaging {inp['to']}" if tool == "SendMessage" and inp.get("to") else "Hiring help" if tool == "Agent" else f"Using {tool}")
+    return s[:40]
 
 
 def both(ns):  # "Ava", "Ava and Ben", "Ava, Ben and Cy"
@@ -318,9 +328,9 @@ def phrase(e, hires=()):  # #65: what Donna is doing, in words, from her last to
     if tool == "SendMessage": return f"Talking to {inp['to']}" if inp.get("to") else "Messaging the team"
     if tool in ("WebFetch", "WebSearch"): return "Looking it up"
     if tool != "Bash": return "Working on it"
-    if m := re.search(r"herd\.py\S* reply donna \S+ (\w+)", c): return {"ask": "Asking you", "take": "Thinking", "transfer": "Putting you through"}.get(m[1], "Reporting")
+    if m := re.search(r"herd\.py\S* reply donna \S+ (\w+)", c): return {"ask": "Asking you", "take": "Reading the repo", "transfer": "Putting you through"}.get(m[1], "Reporting")
     if "git worktree" in c: return "Setting up a workspace"
-    if re.search(r"\b(tests?|pytest|vitest|selftest|typecheck|tsc|npm|lint)\b", c): return "Running checks"
+    if CHECKS.search(c): return "Running checks"
     return "Working on it"
 
 
@@ -447,7 +457,7 @@ def office(now=None):
         elif ev == "PostToolUse":
             if a:
                 r = row(a, e)
-                if tool == "SubagentHandback": r["summary"] = inp.get("message"); r["t1"] = r["t1"] or ts  # the report, not an action: Bob stays "Bash ls"
+                if tool == "SubagentHandback": r["summary"] = inp.get("message"); r["t1"] = r["t1"] or ts  # the report, not an action: Bob stays "Running a command"
                 else: r["act"] = e
             else:
                 lead.update(t=ts, act=e, hires=lead["hires"] + [inp] if tool == "Agent" else [])
@@ -484,10 +494,12 @@ def office(now=None):
     label = lambda r: r["name"] or r["type"] not in ("Explore", "Plan") and " ".join((r["desc"] or "").split()[:3]) or None  # #44: else the description's first 3 words; Explore/Plan helpers and agents with neither are not workers
     vis = [(r, label(r)) for r in rows.values() if r["t0"] >= since and label(r)]  # this duty period's workers only (#31, #44)
     needs = {k: t for k, t in (st.get("tasks") or {}).items() if t.get("state") == "needs_you" and (t.get("ts") or 0) >= since}
+    got = {k: t for k, t in (st.get("tasks") or {}).items() if t.get("state") == "queued" and since <= (t.get("ts") or 0) and now - t["ts"] < 600}  # #65: sent by the voice, not taken yet
     lid = f"brain-{sess[:8]}" if sess else "brain"
-    ls_ = "waiting" if needs else "working" if lead["t"] > lead["stop"] else "done"
     busy = [name for r, name in vis if stt(r) == "working"]
-    doing = ("Waiting for your answer" if ls_ == "waiting" else ("Thinking" if not lead["act"] or lead["ask"] > lead["act"].get("ts", 0) else phrase(lead["act"], lead["hires"]))
+    ls_ = "waiting" if needs else "working" if lead["t"] > lead["stop"] else "waiting" if busy else "done"  # #65: her workers still out: she waits on them (done when nobody is)
+    last = list(got.values())[-1:]
+    doing = ("Waiting for your answer" if needs else f"Got it: {last[0].get('task') or ''}"[:80] if last else ("Thinking" if not lead["act"] or lead["ask"] > lead["act"].get("ts", 0) else phrase(lead["act"], lead["hires"]))
              if ls_ == "working" else f"Waiting on {both(busy)}" if busy else "Ready")  # #65: Donna's narrative line
     if meta.get("kind") == "codex" and ls_ == "working": doing = st.get("last_note") or "Thinking"  # #66: a Codex brain narrates with its own notes
     workers = [{"id": lid, "projectId": pid, "name": "Donna", "role": "Brain", "responsibility": "", "characterKey": "char-female-b",
@@ -503,6 +515,16 @@ def office(now=None):
         asg.append({"id": r["id"], "projectId": pid, "workerId": r["id"], "title": r["desc"] or name, "brief": r["prompt"], "acceptance": "", "status": stt(r),
                     "cwd": r["cwd"], **({"summary": r["summary"]} if r["summary"] else {}), "startedAt": iso(r["t0"]), **({"completedAt": iso(r["t1"])} if r["t1"] else {}),
                     "artifacts": [], "dependsOn": [], "revision": 0})
+    asg += [{"id": k, "projectId": pid, "workerId": lid, "title": (t.get("task") or "")[:60], "brief": t.get("task") or "", "acceptance": "", "status": "queued",
+             "cwd": proj, "startedAt": iso(t["ts"]), "artifacts": [], "dependsOn": [], "revision": 0} for k, t in got.items()]  # #65: the office moves the moment the voice delegates
+    named = {w["name"].lower() for w in workers}
+    for o in outbox:  # #65: a worker Donna names before the spawn (skill: note "Hiring Noah for the styling") stands with her, being briefed, until the spawn or for 10 min. Not a say: it names finished work
+        if o.get("kind") not in ("note", "ask") or not since <= (o.get("ts") or 0) or now - o["ts"] > 600: continue
+        for n in re.findall(r"\b[A-Z][a-z]+\b", o.get("text") or ""):
+            if n not in FIRST or n.lower() in named: continue
+            named.add(n.lower()); key = KEYS[(len(workers) - 1) % len(KEYS)]; g = "female" if "female" in key else "male"; seen[g] += 1
+            workers.append({"id": f"brief-{n}", "projectId": pid, "name": n, "role": "", "responsibility": "", "characterKey": key,
+                            "voice": VOICES[g][(seen[g] - 1) % 3], "status": "queued", "assignmentId": "", "currentAction": "Being briefed"})
     sent = {e["id"]: e.get("ts") or 0 for e in hev if e.get("ev") == "task.sent" and "id" in e}
     briefings = []
     for o in says:  # contributors: the workers that started between the task and its say; workerId the first of them (the office walks that desk to Donna), else the lead
@@ -521,7 +543,7 @@ def office(now=None):
         call = sj.get("state") or "off"
     except (OSError, ValueError, AttributeError): call, sj = "off", {}
     on = (sj.get("with") or "").lower()  # #28: who the person is talking to, by name (bridge.py); the office gets that worker's id, else "donna"
-    with_ = next((w["id"] for w in workers[1:] if w["name"].lower() == on), "donna") if call != "off" and on else None
+    with_ = next((w["id"] for w in workers[1:] if w["name"].lower() == on and w["status"] != "queued"), "donna") if call != "off" and on else None  # a briefed name has no desk yet (#65)
     prev = rj(h / "office.json").get("revision")
     return {"revision": prev + 1 if isinstance(prev, int) else 0, "call": {"state": call, **({"with": with_} if with_ else {})},
             "secretary": {"id": "mara", "name": "Donna", "role": "Secretary", "voice": "nora", "characterKey": "char-female-b"},
@@ -548,6 +570,9 @@ def selfcheck_office():  # the brain-side hook and office.json, replayed from a 
 def _selfcheck_office():
     global parent_args
     import contextlib, io, tempfile
+    assert [action({"tool": t, "input": i}) for t, i in [("Bash", {"command": "cd /private/tmp/x && uv run pytest -q"}), ("Bash", {"command": "cd /private/tmp/x"}),
+            ("Read", {"file_path": "/a/b.py"}), ("Grep", {"pattern": "x"})]] == ["Running checks", "Running a command", "Reading b.py", "Searching the code"]
+    assert len(action({"tool": "Write", "input": {"file_path": "/a/" + "x" * 60}})) == 40  # #65: worker actions in words, at most 40 chars
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["HIGGS_HOME"] = tmp
         H, proj, S, B = Path(tmp), tmp + "/proj", "sess-0123-brain", "a1b2c3bob"
@@ -576,7 +601,7 @@ def _selfcheck_office():
              tool_response={"isAsync": True, "status": "async_launched", "agentId": B})
         fire("PostToolUse", agent_id=B, agent_type="general-purpose", tool_name="Bash", tool_input={"command": "ls", "description": "List files"}, tool_response={"stdout": "a.txt"})
         assert (w := W(O(), B)) | {"characterKey": 0} == {"id": B, "projectId": pid, "name": "Bob", "role": "Count files", "responsibility": "", "characterKey": 0,
-                                                          "voice": "jake", "status": "working", "assignmentId": B, "currentAction": "Bash ls"}, w
+                                                          "voice": "jake", "status": "working", "assignmentId": B, "currentAction": "Running a command"}, w
         assert w["characterKey"] == KEYS[0]
         fire("SubagentStart", sess="other", agent_id="zzz", agent_type="x"); fire("PostToolUse", sess="other", tool_name="Read", tool_input={"file_path": "/a/b.py"})
         fire("Stop", sess="other")  # another session fires the hook from the same dir: its events count for nothing
@@ -592,7 +617,7 @@ def _selfcheck_office():
             "id": B, "projectId": pid, "workerId": B, "title": "Count files", "brief": "Run ls", "acceptance": "", "status": "done", "cwd": proj,
             "summary": "Ran ls: 1 file. The answer is 1.", "startedAt": 0, "completedAt": 0, "artifacts": [], "dependsOn": [], "revision": 0}, a
         assert a["startedAt"] <= a["completedAt"] and a["startedAt"].endswith("+00:00")
-        assert o["secretary"]["characterKey"] == "char-female-b" and o["call"] == {"state": "off"} and o["projects"][0]["goal"] == "build the page"
+        assert o["secretary"]["characterKey"] == "char-female-b" and o["call"] == {"state": "off"} and o["projects"][0]["goal"] == "build the page", (o["call"], o["projects"])
         e = evs()
         assert e[3]["input"] == {"name": "Bob", "description": "Count files", "prompt": "Run ls"} and e[3]["agentId"] == B and "result" not in e[3] and "agent" not in e[3]
         assert e[4]["agent"] == B and e[4]["input"] == {"command": "ls", "description": "List files"} and e[8]["input"]["message"].startswith("Ran ls")
@@ -606,7 +631,7 @@ def _selfcheck_office():
         fire("SubagentStart", agent_id="fg1", agent_type="general-purpose"); fire("SubagentStop", agent_id="fg1", agent_type="general-purpose")  # foreground Agent: no agentId, the result comes with the PostToolUse
         fire("SubagentStop", agent_id="int1", agent_type="")  # #44: Claude Code's own helper (no Start, no Agent call, also seen mid-turn): no row, so it cannot take fg1's name
         fire("PostToolUse", tool_name="Agent", tool_input={"description": "Fg job", "prompt": "p"}, tool_response={"status": "completed", "content": [{"type": "text", "text": "found it"}]})
-        assert W(O(), B)["currentAction"] == "Bash ls"  # done, and the handback did not replace its last action
+        assert W(O(), B)["currentAction"] == "Running a command"  # done, and the handback did not replace its last action
         assert (w := W(O(), "fg1"))["name"] == "Fg job" and w["status"] == "done" and w["characterKey"] == KEYS[1]
         assert next(x for x in O()["assignments"] if x["id"] == "fg1")["summary"] == "found it"
         fire("Stop")
@@ -621,7 +646,7 @@ def _selfcheck_office():
         assert O()["decisions"] == [{"id": t2, "projectId": pid, "title": "blue or green?", "context": "pick a colour", "status": "open",
                                      "createdAt": O()["decisions"][0]["createdAt"], "updatedAt": O()["decisions"][0]["createdAt"]}] and O()["workers"][0]["status"] == "waiting"
         send("donna", "blue", reply_to=t2); write_office()
-        assert O()["decisions"] == [] and O()["workers"][0]["status"] == "done"
+        assert O()["decisions"] == [] and O()["workers"][0]["status"] == "waiting"  # #65: gp1 (Fix the login) is still out
 
         sp = H / "state.json"; sp.write_text('{"state": "speaking"}')  # bridge.py's state file: fresh counts, stale (crashed bridge) is "off"
         assert office()["call"] == {"state": "speaking"}
@@ -708,34 +733,44 @@ def _selfcheck_office():
         # agentId "<name>@session-<brain's first 8>"; the teammate's hooks carry its own session_id and no agent_id (its --agent-id names it)
         new("donna", project=proj); write_json(mp, {**rj(mp), "session": S}); team = "session-" + S[:8]
         D = lambda: O()["workers"][0]["currentAction"]
-        fire("UserPromptSubmit", prompt="Phone task t9: create a team to work on making the landing page"); assert D() == "Thinking", D()
+        fire("Stop")  # the brain idles in its wait loop
+        t9 = send("donna", "create a team to work on making the landing page"); write_office()  # the voice's delegate_task: the office moves at once
+        assert D() == "Got it: create a team to work on making the landing page" and [(a["id"], a["status"], a["workerId"]) for a in O()["assignments"]] == [(t9, "queued", lid)], O()["assignments"]
+        assert office(now=time.time() + 601)["workers"][0]["currentAction"] == "Ready"  # never taken: gone after 10 min
+        fire("UserPromptSubmit", prompt=f"Phone task {t9}: create a team to work on making the landing page"); assert D().startswith("Got it: ")
+        reply("donna", t9, "take", ""); fire("UserPromptSubmit", prompt="x"); assert D() == "Thinking" and O()["assignments"] == [], D()
         fire("PostToolUse", tool_name="Bash", tool_input={"command": "cd ~/p; git branch --list 'donna/*'; ls docs"}); assert D() == "Working on it"
-        fire("PostToolUse", tool_name="Bash", tool_input={"command": "uv run -q herd.py reply donna t9 take \"\"; git log --oneline main..donna/landing"}); assert D() == "Thinking"
+        fire("PostToolUse", tool_name="Bash", tool_input={"command": "uv run -q herd.py reply donna t9 take \"\"; git log --oneline main..donna/landing"}); assert D() == "Reading the repo"
         fire("PostToolUse", tool_name="Bash", tool_input={"command": "git worktree add ../p-donna-landing -b donna/landing main"}); assert D() == "Setting up a workspace"
+        reply("donna", t9, "note", "Hiring Ava for the page and Ben for the diagram. Done soon."); write_office()  # skill: the note goes out before the spawn
+        WS = lambda: [(w["name"], w["status"], w["currentAction"]) for w in O()["workers"][1:]]
+        assert WS() == [("Ava", "queued", "Being briefed"), ("Ben", "queued", "Being briefed")] and W(O(), "brief-Ava")["characterKey"] == KEYS[0], WS()  # "Done" is no name
         fire("PostToolUse", tool_name="Agent", tool_input={"name": "Ava", "description": "Builds the landing page", "prompt": "p", "model": "sonnet", "run_in_background": True},
              tool_response={"status": "teammate_spawned", "prompt": "p", "agentId": f"Ava@{team}"})
         assert D() == "Hiring Ava for: Builds the landing page", D()
+        assert [(w["id"], w["status"]) for w in O()["workers"][1:]] == [(f"Ava@{team}", "working"), ("brief-Ben", "queued")], O()["workers"]
+        reply("donna", "zz", "note", "Maybe Noah next."); assert [w["id"] for w in office(now=time.time() + 601)["workers"][1:]] == [f"Ava@{team}"]  # never spawned: gone after 10 min
         fire("PostToolUse", tool_name="Agent", tool_input={"name": "Ben", "description": "Draws the architecture diagram", "prompt": "p", "model": "sonnet", "run_in_background": True},
              tool_response={"status": "teammate_spawned", "prompt": "p", "agentId": f"Ben@{team}"})
         assert "result" not in evs()[-1] and D() == "Hiring Ava and Ben", D()
-        WS = lambda: [(w["name"], w["status"], w["currentAction"]) for w in O()["workers"][1:]]
+        assert WS()[2] == ("Noah", "queued", "Being briefed"); WS_ = WS; WS = lambda: WS_()[:2]
         assert WS() == [("Ava", "working", "Hired: Builds the landing page"), ("Ben", "working", "Hired: Draws the architecture diagram")], WS()
         assert [a["status"] for a in O()["assignments"]] == ["working", "working"]
         fire("PostToolUse", tool_name="Bash", tool_input={"command": "uv run -q herd.py reply donna t9 note \"Ava is building the page and Ben is drawing\""}); assert D() == "Reporting"
         fire("Stop", last_assistant_message="I've started the landing page team.", background_tasks=[{"id": "x1", "type": "teammate", "status": "running"}])
         fire("SubagentStop", agent_id="a9b30125acf0f7387", agent_type="")  # Claude Code's own helper, ~2 s after the brain's Stop: nobody is done
-        assert D() == "Waiting on Ava and Ben" and [x[1] for x in WS()] == ["working", "working"], (D(), WS())
+        assert D() == "Waiting on Ava and Ben" and O()["workers"][0]["status"] == "waiting" and [x[1] for x in WS()] == ["working", "working"], (D(), WS())
         mate = lambda n: f"/opt/homebrew/Caskroom/claude-code@latest/2.1.309/claude --agent-id {n}@{team} --agent-name {n} --team-name {team} --agent-color green --parent-session-id {S} --permission-mode auto --settings hooks/office.json --model sonnet"
         parent_args = lambda: mate("Ben")  # Ben's own hooks: his session, no agent_id
         assert fire("PostToolUse", sess="7d74b2e5-ben", tool_name="Write", tool_input={"file_path": "/w/landing/architecture.svg", "content": "<svg/>"}) == ""  # a teammate never consumes the inbox
         assert evs()[-1]["agent"] == f"Ben@{team}" and evs()[-1]["session"] == S
-        assert WS()[1] == ("Ben", "working", "Write architecture.svg"), WS()
+        assert WS()[1] == ("Ben", "working", "Writing architecture.svg"), WS()
         fire("Stop", sess="7d74b2e5-ben", last_assistant_message="I wrote landing/architecture.svg.")  # idle: done
         assert WS()[1][:2] == ("Ben", "done") and WS()[0][1] == "working" and D() == "Waiting on Ava", (WS(), D())
         assert O()["assignments"][1]["summary"] == "I wrote landing/architecture.svg." and "completedAt" in O()["assignments"][1]
         parent_args = lambda: mate("Ava")
         fire("PostToolUse", sess="825c942f-ava", tool_name="Bash", tool_input={"command": "git commit -qm 'landing: page'"})
-        assert WS()[0] == ("Ava", "working", "Bash git commit -qm 'landing: page'"), WS()
+        assert WS()[0] == ("Ava", "working", "Committing the work"), WS()
         fire("Stop", sess="825c942f-ava")
         parent_args = lambda: "claude --settings hooks/office.json"
         fire("UserPromptSubmit", prompt="x"); assert D() == "Thinking" and [x[1] for x in WS()] == ["done", "done"]
@@ -757,7 +792,7 @@ def _selfcheck_office():
             hm = os.environ.get("HOME"); os.environ["HOME"] = tmp
             try: o = office()
             finally: os.environ["HOME"] = hm
-            assert [w["id"] for w in o["workers"]] == ["brain-sid12345", "tu1"] and o["workers"][1]["name"] == "Zed" and o["workers"][1]["role"] == "Old job"
+            assert [w["id"] for w in o["workers"] if w["status"] != "queued"] == ["brain-sid12345", "tu1"] and o["workers"][1]["name"] == "Zed" and o["workers"][1]["role"] == "Old job"
             assert o["workers"][1]["status"] == "working" and o["assignments"][0]["title"] == "Old job"
 
 
