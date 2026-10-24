@@ -21,6 +21,9 @@ server-side `_delegate` is a stub; 1.5's version is a thinking-only background m
   `~/.higgs/context.txt` seeds the call; first line `Calling about: …` makes the voice speak first. Log: `bridge.log`.
 - `/call` skill: `.claude/skills/call/SKILL.md`, symlinked at `.agents/skills/call` for Codex; `AGENTS.md` points Codex at it.
 - `probe/` — old POC (`poc_v1.py`, `poc_v1.log`) and probe scripts. `sandbox/` — where headless backends write.
+- `office/` — Donna's office (from Jerrold's Chamber), a display only: Three.js scene + Node server that draws `~/.higgs/office.json`.
+  The file's shape is the one contract between brain and view: `docs/office-state.md`. Nothing in `office/` writes state, calls a model or runs git.
+  Run: `cd office && npm install && npm run dev` → http://127.0.0.1:5183/ (API 3003; `HIGGS_HOME` picks another folder).
 
 ## Facts that cost time to learn
 - Higgs tool calls are **asynchronous**: a function call can stay open across turns and its output be returned later. The layer leaves the call open and returns the backend's answer as the real `function_call_output`. Docs don't say this.
