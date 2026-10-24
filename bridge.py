@@ -14,6 +14,7 @@
   uv run bridge.py --ring --silent        # headless Donna phone: each stdin line is Enter (no call open) or a typed turn (on a call)
   uv run bridge.py --ring --backend session --brain ~/projects/app   # also start the brain: Claude Code on /call in tmux `donna`
                                           # (tmux attach -t donna to watch or type); each new task is typed into it, waking it
+  uv run bridge.py … --brain ~/projects/app --brain-engine codex   # the brain on Codex (#66): workers are herd.py codex agents
   uv run bridge.py selftest               # offline checks (idle policy, sign-off, prompt size), no API call
 
 Transfer (#28): the brain answers "get me Maya on the line" with `herd.py reply donna ID transfer Maya`; the bridge ends that
@@ -163,7 +164,8 @@ ap.add_argument("--project", help="directory the claude backend works in (defaul
 ap.add_argument("--ring", action="store_true", help="no session until Donna's outbox gets a `say` (or you press Enter); one call at a time, then wait again")
 ap.add_argument("--silence-ms", type=int, help="server VAD silence (ms) that ends a user turn; default 800 on a live mic, server default (500) otherwise")
 ap.add_argument("--brain", metavar="REPO", help="start Donna's brain first (Claude Code on the /call skill, working in REPO) in tmux session `donna`, unless it runs already")
-ap.add_argument("--brain-model", metavar="MODEL", help="the brain's model, passed to claude --model (e.g. sonnet, opus); default: claude's own default")
+ap.add_argument("--brain-model", metavar="MODEL", help="the brain's model, passed to claude --model (e.g. sonnet, opus) or codex -m; default: the CLI's own default")
+ap.add_argument("--brain-engine", choices=["claude", "codex"], default="claude", help="#66: the CLI --brain runs: Claude Code (default) or Codex (workers through herd.py, no hooks)")
 args = ap.parse_args()
 if args.ring and args.text: ap.error("--ring cannot be combined with --text")
 CONTEXT = os.path.join(DONNA if args.ring or args.backend == "session" else HIGGS_DIR, "context.txt")   # Donna's seed (the skill writes it)
@@ -619,17 +621,21 @@ def start_brain(repo):   # #38: the brain in tmux, so herd.send can wake it (her
     name = herd.tmux_name(); t = f"={name}:"
     tm = lambda *a: subprocess.run(["tmux", *a], capture_output=True, text=True)
     if tm("has-session", "-t", t).returncode == 0: log(f"brain: tmux session {name} is running already"); return
-    tm("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", repo, "-e", f"HIGGS_HOME={HIGGS_DIR}",
-       "env", "-u", "ANTHROPIC_API_KEY", "claude", "--settings", os.path.join(HERE, "hooks", "office.json"), *(["--model", args.brain_model] if args.brain_model else []))   # the claude.ai login, not the low-credit key
+    codex = args.brain_engine == "codex"
+    cli = (["codex", "-s", "danger-full-access", "-a", "never", "-c", 'model_reasoning_effort="medium"', *(["-m", args.brain_model] if args.brain_model else [])] if codex else   # #66: full access: herd writes $HIGGS_HOME and hires codex workers (a nested sandbox cannot); ponytail: medium effort, the account default xhigh is too slow for a phone
+           ["env", "-u", "ANTHROPIC_API_KEY", "claude", "--settings", os.path.join(HERE, "hooks", "office.json"), *(["--model", args.brain_model] if args.brain_model else [])])   # the claude.ai login, not the low-credit key
+    tm("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", repo, "-e", f"HIGGS_HOME={HIGGS_DIR}", *cli)
     told = False
-    for _ in range(90):   # wait for the prompt; a folder Claude Code has not seen asks for trust first, and that answer is the user's
+    for _ in range(90):   # wait for the prompt; a folder Claude Code (or Codex) has not seen asks for trust first, and that answer is the user's
         pane = tm("capture-pane", "-p", "-t", t).stdout
         if "trust" in pane.lower():
-            if not told: log(f"brain: Claude Code asks whether to trust {repo}; answer it in: tmux attach -t {name}"); told = True
-        elif "❯" in pane: break
+            if not told: log(f"brain: {'Codex' if codex else 'Claude Code'} asks whether to trust {repo}; answer it in: tmux attach -t {name}"); told = True
+        elif ("›" if codex else "❯") in pane: break
         time.sleep(1)
     else: log(f"brain: no prompt in 90 s; see: tmux attach -t {name}"); return
-    herd.wake(f"Read {HERE}/.claude/skills/call/SKILL.md and follow it: you are Donna's brain.")
+    herd.wake(f"Read {HERE}/.claude/skills/call/SKILL.md and follow it: you are Donna's brain." + (
+        f" You run on Codex in tmux: register with --kind codex, skip the wait loop, hire workers with herd.py; tasks and worker results are typed into this window."
+        f" herd.py and bridge.py are in {HERE}: use that path wherever the skill says ~/projects/higgs-hackathon." if codex else ""))
     log(f"brain: started in tmux session {name} ({repo}); watch it with: tmux attach -t {name}")
 
 if args.brain: start_brain(os.path.abspath(os.path.expanduser(args.brain)))

@@ -13,6 +13,7 @@ macOS, [uv](https://docs.astral.sh/uv/), tmux, Claude Code, wired EarPods, and a
 ```bash
 export BOSON_API_KEY=…
 uv run bridge.py --ring --backend session --voice nora --out EarPods --brain <repo>   # the phone + the brain (tmux attach -t donna)
+uv run bridge.py … --brain <repo> --brain-engine codex                                 # Codex edition: brain and workers on Codex CLI (signed in)
 cd office && npm install && npm run dev                                                # the office: http://127.0.0.1:5183/
 ```
 
