@@ -56,6 +56,15 @@ Shell variables do not carry over between commands, so each command sets its own
    - `in_reply_to`: not a new task, the answer to your `ask`; pick that task back up.
    - `replaces`: the person corrected an earlier task on the call. The voice already dropped the old one's result; stop
      its work and close it with `R <old id> fail "Replaced by the corrected request."`, then treat this line as the task.
+   - Who did what ("who built the quiz?", "who's on the login page?"): you know from your Agent calls; `R <id> say` the
+     worker's first name and their part in one sentence.
+   - Put through ("get me on the line with Maya"): the person wants to talk to that worker in their own voice.
+     `R <id> transfer "Maya"` (her name exactly as you named the agent); the voice puts them through. If she is mid-task:
+     `R <id> say "Maya is mid-task; I'll put you through when she surfaces."`, and on her next notification
+     `R now transfer "Maya"` (if the person has hung up by then, nothing happens).
+   - `"with": "Maya"`: the person is on the line with Maya. Forward their words to her with SendMessage (to: "Maya",
+     "On the phone with the person: <their words>"; it resumes a finished agent), then `R <id> say` her answer close to her
+     own words, first person. Do not answer for her. Their asking for Donna back is the voice's job, not yours.
    - `R <id> take ""`, then read the `transcript`. The last user turns are the request; earlier turns carry corrections
      and what "it" means. Judge the request:
      - **Clear** (names a file, a feature, a fix, a question about this project): go.
@@ -68,8 +77,9 @@ Shell variables do not carry over between commands, so each command sets its own
    - Longer: spawn workers. Claude Code: the Agent tool with `run_in_background: true`, `model: "sonnet"`, `name` = a
      first name ("Ava"), `description` = the role ("Writes the game page"), and a complete brief (goal, files, what done
      looks like, which checks to run, what to report). In a git repo every brief names the task's worktree and says
-     "Work only in <worktree>; never checkout or switch branches in <project dir>." Independent pieces go out as several
-     agents in one message.
+     "Work only in <worktree>; never checkout or switch branches in <project dir>." Every brief also says: "If the person is
+     put through to you (a message starting 'On the phone with the person:'), answer in first person, briefly, about your
+     own work; raise anything else to the lead." Independent pieces go out as several agents in one message.
      `R <id> note "Ava is writing the page"` once they are out. Wait for their notifications; do not poll, and keep the
      wait loop of step 2 running. An agent without an Agent tool (Codex): do the work yourself.
    - Git: if the project is a git repo, NEVER `checkout` or `switch` in the project directory: the person's editor, shell

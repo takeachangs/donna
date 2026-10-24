@@ -1,5 +1,13 @@
 import { expect, it } from 'vitest';
-import { projectRoom, secretaryRoom, deliveryRoute } from '../apps/web/src/agency/floor';
+import {
+  projectRoom,
+  secretaryRoom,
+  deliveryRoute,
+  loungeSpots,
+  onTheLine,
+  phoneRoute,
+  phoneSpot,
+} from '../apps/web/src/agency/floor';
 it('grows project rooms outward without overlaps or moving existing doorways', () => {
   const rooms = Array.from({ length: 20 }, (_, i) => projectRoom(i, i % 3 === 0 ? 12 : 2));
   for (let i = 0; i < rooms.length; i++)
@@ -19,4 +27,24 @@ it('routes both wings through their door and common corridor into Donna’s room
     expect(route[2]).toEqual({ x: 0, z: room.z + 5 });
     expect(route.at(-1)).toEqual({ x: 1.5, z: 17.5 });
   }
+});
+it('puts the call through to a worker with a desk only, and walks them to the phone from the desk or the lounge', () => {
+  const ws = [{ id: 'a' }, { id: 'brain', lead: true }];
+  expect(onTheLine({ state: 'speaking', with: 'a' }, ws)).toBe('a');
+  for (const call of [
+    { state: 'off', with: 'a' },
+    { state: 'speaking', with: 'donna' },
+    { state: 'speaking' },
+    { state: 'speaking', with: 'brain' },
+    undefined,
+  ])
+    expect(onTheLine(call, ws)).toBeUndefined();
+  const room = projectRoom(0),
+    home = { x: room.x + 4, z: room.z + 3.75 };
+  for (const route of [phoneRoute(room, home), phoneRoute(room, home, loungeSpots[0])]) {
+    expect(route.at(-1)).toEqual(phoneSpot);
+    expect(route.at(-2)).toEqual({ x: 0, z: 13 });
+  }
+  expect(phoneRoute(room, home)[0].z).toBe(home.z);
+  expect(phoneRoute(room, home, loungeSpots[0])[0]).toEqual({ x: loungeSpots[0].x, z: loungeSpots[0].z - 1 });
 });

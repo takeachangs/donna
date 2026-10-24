@@ -14,11 +14,12 @@ Shape = the office's existing `Workspace` type (`office/apps/web/src/agency/type
 {
   "revision": 42,                       // increases on every write
   "call": {"state": "off"},             // off | ringing | listening | thinking | speaking  (from bridge.py's state file)
+                                        // + "with": "<worker id>" | "donna" while a call is on: who the person talks to (#28)
   "secretary": {"id":"mara","name":"Donna","role":"Secretary","voice":"nora","characterKey":"char-female-b"},
   "projects": [{"id":"<cwd slug>","name":"<repo dir name>","goal":"<first task>","memory":{"outcome":"","checkpoint":"","latest":"<last say>","nextStep":"","updatedAt":"<iso>"}}],
   "workers": [
     {"id":"brain-<session>","projectId":"<cwd slug>","name":"Donna","role":"Brain","responsibility":"","characterKey":"char-female-b","status":"working","currentAction":"Read dash.py","lead":true},
-    {"id":"<agentId>","projectId":"<cwd slug>","name":"<Agent name>","role":"<Agent description>","responsibility":"","characterKey":"char-male-b","status":"working","currentAction":"Edit herd.py"}
+    {"id":"<agentId>","projectId":"<cwd slug>","name":"<Agent name>","role":"<Agent description>","responsibility":"","characterKey":"char-male-b","voice":"jake","status":"working","currentAction":"Edit herd.py"}
   ],
   "assignments": [{"id":"<agentId>","projectId":"<cwd slug>","workerId":"<agentId>","title":"<Agent description>","brief":"<Agent prompt>","acceptance":"","status":"working","cwd":"<cwd>","summary":"<final report, when done>","startedAt":"<iso>","completedAt":"<iso>"}],
   "decisions": [{"id":"<task id>","projectId":"<cwd slug>","title":"<ask text>","context":"","status":"open","createdAt":"<iso>"}],
@@ -63,6 +64,11 @@ Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed b
   walks only `queued` ones. Decisions are the period's open asks; activity is the period's last 20 herd events.
 - Call state: `bridge.py` writes `~/.higgs/state.json` `{"state": "off|ringing|listening|thinking|speaking"}` every
   250 ms, `off` last (Mike's contract); the producer reads a file older than 3 s as `off` (a crashed bridge).
+- Transfer (#28): the state file also carries `"with": "<name>"` while a call is on ("donna", or the worker the person was
+  put through to). The producer gives `call.with` the id of the worker with that name (else "donna"); the scene walks that
+  worker to the phone in Donna's suite for the duration and back after, and the call pill reads "On the line: <name>".
+  `workers[].voice` is the Higgs voice a worker speaks in when put through: by the look's gender, round-robin in order of
+  appearance (female chloe, eleanor, nora; male jake, marcus, oliver; nora last because Donna is nora).
 
 ## Contracts that must not drift (change every side in the same commit)
 - `office.json` shape above; `WorkStatus` words; `call.state` words.

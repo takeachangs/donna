@@ -19,7 +19,7 @@ Matrix. Decisions below are from Oct 23 ~23:00 and replace the earlier multi-voi
   something, hangs up when the conversation is over. The Twilio design (`probe/r15/E-twilio.md`) swaps the audio
   device for a phone line later; nothing above it changes.
 - **One voice.** Donna's. (The six Higgs presets and the per-leader voices from the earlier draft are dropped; a
-  `transfer` tool is not needed.)
+  `transfer` tool is not needed.) (Oct 24, #28: the user can still be put through to a worker in that worker's own voice; see §6.)
 
 ## 2. What we take from remuda / butler
 
@@ -66,7 +66,7 @@ user ⇄ speaker+mic (later: Twilio) ⇄ Higgs voice "Donna" ⇄ bridge.py ⇄ D
   <worker>/                      # kind: claude (headless, --resume'd per task; pre-warmed at new)
     meta.json                    # {name, kind, project, parent: "donna", created, since}   since: the last `new` (a duty period)
     inbox.jsonl                  # {id, task, context, from, ts} (+ transcript, in_reply_to, replaces: §6)
-    outbox.jsonl                 # {id, kind: note|say, text, ts}
+    outbox.jsonl                 # {id, kind: take|note|ask|say|fail|transfer, text, ts}
     status.json                  # {state, task_id, task, last_note, started, unread}
 ```
 `state ∈ {starting, idle, working, needs_you, done, dead}`; Donna additionally has `speaking` (set by the bridge while the
@@ -87,6 +87,8 @@ task with `state ∈ {queued, in_progress, needs_you, done, failed}` (§8): read
 {"ts":…, "ev":"agent.state",    "agent":"reviewer", "state":"idle"}
 {"ts":…, "ev":"call.ring",      "agent":"donna", "about":"review finished"}     # Donna walks to the phone
 {"ts":…, "ev":"call.answered",  "agent":"donna"}   /  {"ev":"call.ended", …}
+{"ts":…, "ev":"call.transfer",  "agent":"donna", "to":"Maya"}   # put through to a worker's voice; "to":"donna" when Donna is back (#28)
+{"ts":…, "ev":"task.transfer",  "agent":"donna", "id":"c7…", "text":"Maya"}   # the brain's answer to "get me Maya on the line"
 {"ts":…, "ev":"voice.speaking", "agent":"donna"}   /  {"ev":"voice.user"}        # who is talking right now
 {"ts":…, "ev":"agent.close",    "agent":"reviewer"}
 ```
@@ -144,6 +146,13 @@ when there is one (`donna` for `~/.higgs`, `donna-<dir>` for another `HIGGS_HOME
 session (Claude Code with the office hooks, then the skill). With no take 20 s after a task, the bridge logs it and the voice
 tells the user the brain is not answering.
 
+Oct 24 (#28), transfer: "get me on the line with Maya" is a delegation like any other; the brain answers `transfer "Maya"`.
+The bridge has the voice say it is putting them through, ends that Higgs session, plays a hold cue and starts a fresh one
+(never `session.update` mid-call) in Maya's voice (`office.json` `workers[].voice`) with `bridge.worker_prompt` (who she is,
+what she worked on, the last 6 turns). Every question there is a delegation with `"with": "Maya"`; the brain forwards it to
+the Maya subagent (SendMessage) and `say`s her answer. Her voice ends with "Putting Donna back on." (or 60 s of quiet does)
+and a fresh Donna session opens with a two-line summary and "Hey, it's Donna again."; "bye" hangs up from either.
+
 Not Saturday: approvals, context %, more than one level, several voices, real remuda as a backend.
 
 ## 7. The pitch sentence
@@ -172,7 +181,7 @@ send ──▶ queued ──take──▶ in_progress ──say──▶ done
                               ▼   │
                             needs_you
 ```
-`herd.py reply NAME ID KIND TEXT`, `KIND ∈ take | note | ask | say | fail`:
+`herd.py reply NAME ID KIND TEXT`, `KIND ∈ take | note | ask | say | fail | transfer`:
 
 | reply | from | to | event | agent state |
 |---|---|---|---|---|
@@ -184,6 +193,7 @@ send ──▶ queued ──take──▶ in_progress ──say──▶ done
 | `send --reply-to ID` | needs_you | `in_progress` | `task.sent` with `in_reply_to` | `working` |
 | `say` | queued, in_progress, needs_you | `done` | `task.done` | derived |
 | `fail` | queued, in_progress, needs_you | `failed` | `task.failed` | derived |
+| `transfer` | queued, in_progress, needs_you | `done` (text = the worker's name) | `task.transfer` | derived |
 | any but `note` | done, failed | **refused** (nothing written) | – | – |
 
 `take`, `ask`, `say` and `fail` on an unknown id are accepted (they create the record): `reply donna now say "…"` is how

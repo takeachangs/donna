@@ -18,6 +18,9 @@ import {
   errand,
   turnBack,
   nextCall,
+  onTheLine,
+  phoneFace,
+  phoneRoute,
   type ToolCall,
   type Footprint,
   type Point,
@@ -33,6 +36,7 @@ type Trip = {
   moving: boolean;
   hold?: boolean;
   report?: boolean;
+  phone?: boolean;
   call?: string;
   face?: Point;
 };
@@ -433,6 +437,7 @@ export class AgencyScene implements GameScene {
       this.mood = mood;
       if (this.activities.get('mara') !== 'talking') this.activity('mara', mood);
     }
+    this.putThrough(onTheLine(workspace.call, workspace.workers));
     const briefings = workspace.briefings || [];
     if (!this.seen) this.seen = new Set(briefings.map((b) => b.id));
     else
@@ -467,6 +472,30 @@ export class AgencyScene implements GameScene {
       trip.hold = false;
       if (trip.wait === Infinity) trip.wait = 0;
     }
+  }
+  /** The call is put through to worker `id` (onTheLine): they walk to the phone and hold there, as Donna does while it rings. Anyone else holding it hangs up and walks back (update() plans the way when the trip ends). Runs on every workspace, so a worker who was busy or rebuilt still goes. */
+  private putThrough(id?: string) {
+    for (const [k, trip] of this.trips)
+      if (trip.phone && trip.hold && k !== id) {
+        trip.hold = false;
+        if (trip.wait === Infinity) trip.wait = 0;
+      }
+    const w = this.lastWorkspace?.workers.find((w) => w.id === id),
+      r = w && this.rooms.get(w.projectId),
+      home = id ? this.homes.get(id) : undefined;
+    if (!id || !r || !home || !this.npcs.get(id) || this.trips.has(id)) return;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const si = this.seats.get(id);
+    this.trips.set(id, {
+      points: phoneRoute(r, home, si === undefined ? undefined : loungeSpots[si]),
+      index: 0,
+      returning: false,
+      wait: 0,
+      moving: false,
+      hold: true,
+      phone: true,
+      face: phoneFace,
+    });
   }
   toolTrip(phase: 'start' | 'finish', e: { callId: string; name?: string; projectId?: string; workerId?: string }) {
     if (phase === 'start') this.calls.push({ ...e, name: e.name || '' });
