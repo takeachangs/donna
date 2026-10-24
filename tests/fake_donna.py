@@ -1,7 +1,7 @@
 # /// script
 # dependencies = []
 # ///
-"""A scripted fake Donna for a headless end-to-end check of the task lifecycle. Stdlib only.
+"""A scripted stand-in for Donna's brain (the /call session) for a headless check of the task lifecycle. Stdlib only.
 
     uv run tests/fake_donna.py          # the agent: watches the herd inbox, take -> note -> (ask ->) say
     uv run tests/fake_donna.py --demo   # driver: temp HIGGS_HOME, agent thread + `bridge.py --ring --silent`, scripted turns
