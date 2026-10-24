@@ -9,6 +9,16 @@ export type Office = { workspace: Workspace; state: 'file' | 'missing'; updated:
 export const officeFile = () => join(process.env.HIGGS_HOME || join(homedir(), '.higgs'), 'office.json');
 
 // ponytail: char-female-b, not the contract's char-female-a, which is not a shipped model (the NPC would be a placeholder).
+/** #75: 'armed' while a `bridge.py --ring` phone runs: it rewrites state.json every 250 ms with armed: true; older than 3 s = gone. */
+export function phoneState(dir: string, now = Date.now()): 'armed' | 'absent' {
+  try {
+    const f = join(dir, 'state.json');
+    return now - statSync(f).mtimeMs <= 3000 && JSON.parse(readFileSync(f, 'utf8')).armed === true ? 'armed' : 'absent';
+  } catch {
+    return 'absent';
+  }
+}
+
 /** Donna alone, off the line: what the office shows without a valid file. */
 export const emptyWorkspace = (): Workspace => ({
   revision: 0,

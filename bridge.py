@@ -9,7 +9,7 @@
   uv run bridge.py --text "a | b"         # headless: typed turns instead of the mic; exits after the last result is spoken
   uv run bridge.py --silence-ms 1000      # VAD silence before a turn ends (live mic default 800 ms; --text/--wav keep the server's 500)
   uv run bridge.py --ring --backend session   # Donna's phone: no call open; a `say` in ~/.higgs/herd/donna/outbox.jsonl rings,
-                                          # Enter calls her; hangs up on "bye", 60 s of silence or Higgs idle timeout
+                                          # Enter (or the office's Call Donna button) calls her; hangs up on "bye", Hang up, 60 s of silence or Higgs idle timeout
                                           # every call starts with ~/.higgs/herd/donna/context.txt; tasks go through herd.py send
   uv run bridge.py --ring --silent        # headless Donna phone: each stdin line is Enter (no call open) or a typed turn (on a call)
   uv run bridge.py --ring --backend session --brain ~/projects/app   # also start the brain: Claude Code on /call in tmux `donna`
@@ -26,8 +26,8 @@ Session backend: delegations land in ~/.higgs/herd/donna/inbox.jsonl through her
 The call's seed is herd/donna/context.txt (session backend or --ring), else ~/.higgs/context.txt; if present it is sent to the
 voice at the start of the call (first 4000 chars). If its first line is
 `Calling about: <reason>` the voice speaks first and says why it's calling. The delegation layer itself is higgslive.py.
-While running, the bridge writes ~/.higgs/state.json ({"state": off|ringing|listening|thinking|speaking}, every 250 ms, `off`
-last) and re-renders ~/.higgs/office.json every second (herd.write_office, docs/office-state.md).
+While running, the bridge writes ~/.higgs/state.json ({"state": off|ringing|listening|thinking|speaking, "armed": --ring}, every
+250 ms, `off` last); --ring also reads ~/.higgs/phone.cmd (`call`|`hangup`, the office's button, #75) and re-renders ~/.higgs/office.json every second (herd.write_office, docs/office-state.md).
 """
 import argparse, asyncio, base64, contextlib, json, logging, os, queue, re, sys, threading, time
 
@@ -54,6 +54,13 @@ def deaf_once(st: dict) -> bool:
     st["deaf"] = True
     return True
 
+def phone_cmd(path: str) -> str | None:
+    """#75: the office's Call Donna / Hang up button writes `call` or `hangup` to $HIGGS_HOME/phone.cmd; read it once and delete it."""
+    try:
+        with open(path) as f: cmd = f.read().strip()
+        os.remove(path); return cmd
+    except OSError: return None
+
 ECHO_TAIL = 0.3   # s: the voice's audio counts as audible this long after its estimated end (output latency, room echo)
 
 def find_device(devices, name: str, kind: str) -> int | None:
@@ -77,6 +84,8 @@ import herd
 HERD = os.path.join(HIGGS_DIR, "herd"); EVENTS = os.path.join(HERD, "events.jsonl"); DONNA = os.path.join(HERD, "donna")
 OUTBOX = os.path.join(DONNA, "outbox.jsonl")   # the session backend's only reply path: herd.py reply donna (one inbox path, #32)
 STATE = os.path.join(HIGGS_DIR, "state.json")
+PHONE_CMD = os.path.join(HIGGS_DIR, "phone.cmd")   # #75: the office's button (POST /agency-api/phone) writes call|hangup here
+HANG_UP = object()   # ring: TYPED item for the office's Hang up
 CALLING_ABOUT = "Calling about:"
 
 # Mike's prompt.txt as the model. Measured Oct 24 with probe/r26 (text mode, higgs-realtime): first-turn delegation 24/24 (the old
@@ -147,6 +156,8 @@ if sys.argv[1:2] == ["selftest"]:   # offline: no session, no audio
                                           ("No need to check.", "Got it, no need to check on that. I'm just waiting for the task to finish up.")))   # the 08:30 call
     assert not any(echo_of(h, s) for h, s in (("On that now. No, you don't have to check on that. Um.", "I'm checking on that now."),   # echo + the user's own words
                                               ("Blue.", "Should the page be blue or green?"), ("Blue, please.", "Should the page be blue or green?"), ("They'll run it.", "It's still running.")))
+    import tempfile; cf = os.path.join(tempfile.mkdtemp(), "phone.cmd")   # #75: read once, then gone
+    assert phone_cmd(cf) is None; open(cf, "w").write("call\n"); assert phone_cmd(cf) == "call" and phone_cmd(cf) is None and not os.path.exists(cf)
     print("ok"); sys.exit(0)
 
 ap = argparse.ArgumentParser()
@@ -212,9 +223,9 @@ def call_state(now: float) -> str:   # state.json's word (Mike's contract): thin
     if not c: return "ringing" if NOW["ringing"] else "off"
     return "speaking" if now < c["play_until"] else "thinking" if c["pending"] else "listening"
 
-def write_state(s: str):
+def write_state(s: str, armed: bool | None = None):   # armed: a --ring phone is running (#75: the office's Call Donna button)
     try:
-        with open(STATE + ".tmp", "w") as f: json.dump({"state": s, **({"with": NOW["with"]} if NOW["with"] and s != "off" else {})}, f)
+        with open(STATE + ".tmp", "w") as f: json.dump({"state": s, "armed": args.ring if armed is None else armed, **({"with": NOW["with"]} if NOW["with"] and s != "off" else {})}, f)
         os.replace(STATE + ".tmp", STATE)
     except OSError: pass
 
@@ -481,7 +492,12 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     else: await conn.session.commentary.append(content=f"[note] An update just came in from the work you sent off; tell the user in a sentence or two: {text}", delegation_id=sid, kind="say")   # the id: its commentary.appended marks it spoken
             async def typed():   # stdin lines on a call: typed turns (the headless check's only input)
                 while True:
-                    if text := await TYPED.get(): await typed_turn(text)
+                    text = await TYPED.get()
+                    if text is HANG_UP:   # #75: the office's Hang up: the voice says its goodbye, then the call closes (guard_idle: 8 s at most)
+                        log("hang up from the office"); st["bye"] = time.monotonic()
+                        try: await conn.session.commentary.append(content=f'[note] The user hung up. Say a one-line goodbye ending with the exact words "{SIGN_OFF}"')
+                        except Exception: end("hangup")
+                    elif text: await typed_turn(text)
             tasks += [asyncio.create_task(says()), asyncio.create_task(typed())]
         if not args.text: tasks.append(asyncio.create_task(guard_idle()))
 
@@ -591,10 +607,19 @@ async def main():
         except Exception: pass
     threading.Thread(target=stdin_thread, daemon=True).start()
     watcher = asyncio.create_task(watch_outbox())
+    with contextlib.suppress(OSError): os.remove(PHONE_CMD)   # a click while the phone was down must not dial now
+    async def watch_cmd():   # #75: the office's button, every 250 ms: call = Enter while no call is open, hangup ends the open one
+        while True:
+            await asyncio.sleep(0.25)
+            if NOW["ringing"] or not (cmd := phone_cmd(PHONE_CMD)): continue   # ringing: the session is not up yet; the file waits
+            if cmd == "call" and not NOW["call"]: TYPED.put_nowait("")
+            elif cmd == "hangup" and NOW["call"]: TYPED.put_nowait(HANG_UP)
+            else: log(f"phone.cmd {cmd!r} ignored ({call_state(time.monotonic())})")
+    cmds = asyncio.create_task(watch_cmd())
     while True:
         log("ring: waiting — Enter to call Donna")
         while SAYS.empty() and TYPED.empty(): await asyncio.sleep(0.2)
-        if not TYPED.empty(): TYPED.get_nowait()   # any line is an Enter
+        if not TYPED.empty() and TYPED.get_nowait() is HANG_UP: continue   # any line is an Enter; a Hang up left from the last call is not
         seed = context_seed()   # Enter: the voice waits for the user
         if not SAYS.empty():
             await asyncio.sleep(0.5)   # let a burst of says land together
@@ -642,6 +667,6 @@ if args.brain: start_brain(os.path.abspath(os.path.expanduser(args.brain)))
 try: asyncio.run(run())
 except KeyboardInterrupt: log("hung up (Ctrl-C)")
 finally:   # `off` last (Mike's contract), and the office sees it at once
-    write_state("off")
+    write_state("off", armed=False)
     try: herd.write_office()
     except Exception: pass
