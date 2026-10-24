@@ -65,7 +65,7 @@ The producer copies a file from the attached repository or one of its Git worktr
 in `herd/donna/results.json`. Reports carry optional `artifacts: [{id, file, title}]`.
 The office's **Open result** link reads that snapshot through `GET /agency-api/results/<id>/<file>`;
 unregistered files, traversal and paths outside snapshot storage are rejected. HTML previews use
-an opaque sandbox origin, embedded assets only, and no network or office API access.
+an opaque sandbox origin with embedded assets; resource and office API requests are restricted.
 Decided Oct 24 07:15 (issue #26 comment): the office is an event listener, fed by Claude Code hooks.
 - `hooks/office.json` registers `python3 $HOME/projects/higgs-hackathon/herd.py hook <Event>` for `SubagentStart`,
   `SubagentStop`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `Notification`. Install per session with
