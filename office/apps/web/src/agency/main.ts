@@ -1,19 +1,21 @@
 import { initLocale, setLocale, t } from '../i18n';
 import { Engine } from '../render/Engine';
 import { AgencyScene } from './Scene';
-import { adapt, donnaLine, onTheLine } from './floor';
+import { adapt, donnaLine, onTheLine, phoneButton } from './floor';
 import type { Workspace, View, Assignment, Decision, Briefing } from './types';
 import './style.css';
 import './board.css';
 initLocale();
 setLocale('en');
 
-// A display only: the server streams ~/.higgs/office.json over /agency-ws and this page draws it. Nothing here writes.
+// A display: the server streams ~/.higgs/office.json over /agency-ws and this page draws it. The one write is the Call Donna /
+// Hang up button (#75): POST /agency-api/phone, which the server hands to bridge.py --ring; the audio stays in the bridge.
 const root = document.querySelector<HTMLDivElement>('#agency-root')!;
 root.innerHTML = `<main class="app">
  <header class="callbar">
   <span class="brand" aria-hidden="true"><svg class="brand-plan" viewBox="0 0 32 36" aria-hidden="true"><path d="M12 3H3v11h9M20 3h9v11h-9M12 19H3v11h9M20 19h9v11h-9M16 7v25" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="square"/><circle cx="16" cy="33" r="2.5" fill="currentColor"/></svg><span class="brand-wordmark">${t('agency.title')}</span></span>
   <span id="pill" class="pill" data-state="reconnecting" role="status">${t('agency.loading')}</span>
+  <button id="phone" class="phone-button" type="button" disabled>${t('agency.phone_absent')}</button>
   <span id="donna-line" class="donna-line" hidden></span>
  </header>
  <section class="office" aria-label="${t('agency.scene')}">
@@ -46,7 +48,8 @@ let scene: AgencyScene | undefined,
   view: View = 'command',
   online = false,
   attempt = 0,
-  call = '';
+  call = '',
+  phone = 'absent';
 let pane: 'reports' | 'report' = 'reports',
   openReport: string | undefined,
   drawerOpen = true;
@@ -84,6 +87,12 @@ function paintCall() {
       ? t('agency.call_with', { name: name(line) })
       : label[state] || label.off
     : t('agency.reconnecting');
+  const b = phoneButton(state, online ? phone : 'absent'),
+    button = el<HTMLButtonElement>('phone');
+  button.textContent = t(b.key, { name: workspace?.secretary.name || 'Donna' });
+  button.disabled = !b.cmd;
+  button.dataset.cmd = b.cmd || '';
+  button.title = b.cmd ? '' : t('agency.phone_hint');
   const doing = online && workspace ? donnaLine(workspace.workers) : '';
   el('donna-line').hidden = !doing;
   el('donna-line').textContent = doing
@@ -352,6 +361,19 @@ function connect() {
     window.setTimeout(connect, Math.min(15000, 1000 * 2 ** attempt++));
   };
 }
+/** #75: the office server's health says whether a --ring phone runs (state.json fresh, armed); every 2 s, since a dead bridge stops writing office.json. */
+async function pollPhone() {
+  try {
+    phone = (await (await fetch('/agency-api/health')).json()).phone || 'absent';
+  } catch {
+    phone = 'absent';
+  }
+  paintCall();
+}
+el('phone').onclick = () => {
+  const cmd = el('phone').dataset.cmd;
+  if (cmd) void fetch('/agency-api/phone', { method: 'POST', body: JSON.stringify({ cmd }) });
+};
 function setDrawer(open: boolean) {
   drawerOpen = open;
   document.body.dataset.drawer = open ? 'open' : 'closed';
@@ -397,3 +419,5 @@ el('drawer-back').onclick = () => {
 };
 setDrawer(true);
 connect();
+void pollPhone();
+window.setInterval(pollPhone, 2000);

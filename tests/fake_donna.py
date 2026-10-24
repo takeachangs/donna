@@ -7,7 +7,7 @@
     uv run tests/fake_donna.py --demo   # driver: temp HIGGS_HOME, agent thread + `bridge.py --ring --silent`, scripted turns;
                                         # ends with a task still running at the goodbye, whose later say rings a second call
     uv run tests/fake_donna.py --transfer   # #28: who built it -> put through to Maya (her voice) -> a question only her
-                                        # transcript answers -> back to Donna (her voice) -> bye
+                                        # transcript answers -> back to Donna (her voice) -> bye; the put-through is "can you put Maya on?" (#73)
     uv run tests/fake_donna.py --fast-take  # #49: the brain takes each task within ~10 ms, then stays silent past the 20 s
                                         # deaf-brain timer: every take must reach the bridge (no "no take for" line)
     uv run tests/fake_donna.py --order  # #55: three tasks, each result a bare "Done.", landing in another order: each reply
@@ -57,7 +57,7 @@ def work(herd, line):
     said = (task + " " + " ".join(t for _, t in line.get("transcript") or [])).lower()
     if line.get("with") == "Maya":  # put through: the brain forwards to Maya (SendMessage) and says her answer
         say(herd, tid, "take", ""); time.sleep(1.0); say(herd, tid, "say", MAYA if "timer" in said or "question" in said else "That's not mine; Donna will know."); return
-    if "maya" in said and any(w in task.lower() for w in ("line", "through", "talk", "connect", "speak", "transfer")):  # before who-built: "connect me with Maya, who built it"
+    if "maya" in said and any(w in task.lower() for w in ("line", "through", "talk", "connect", "speak", "transfer", "put", "join", "bring", "phone")):  # before who-built: "connect me with Maya, who built it"
         say(herd, tid, "transfer", "Maya"); return
     if any(w in task.lower() for w in ("who", "author", "creator")):  # "who built the quiz?", "identify the author of the quiz"
         say(herd, tid, "say", "Maya built the quiz."); return
@@ -133,7 +133,7 @@ def transfer_flow(herd, wait_log, type_):  # #28: each segment is a fresh sessio
     end = time.time() + 40  # #61: from task_status's office rows or from the brain's say, either is fine
     while "Maya" not in wait_log("VOICE", max(1, end - time.time())): pass
     time.sleep(2)
-    type_("Get me on the line with her.")
+    type_("Okay, can you put Maya on?")  # #73: the 12:53 call's "put Leo on" (Maya is this office's worker); "get me on the line" is in the selftest
     wait_log("transfer: putting the user through to Maya", 40)
     wait_log("event call.transfer", 30)
     assert "voice: chloe" in wait_log("session ready", 30)  # Maya's voice: office.json workers[].voice (the first female look)

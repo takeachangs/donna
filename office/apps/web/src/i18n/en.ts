@@ -1,7 +1,7 @@
 // Personal Agency product copy.
 export default {
-  'agency.title': 'Chamber',
-  'agency.scene': 'Chamber office',
+  'agency.title': 'Huang & Chang Inc',
+  'agency.scene': 'Huang & Chang Inc office',
   'agency.secretary_office': 'Donna’s office',
   'agency.empty_desk': 'Ready for a team',
   'agency.naming': 'Naming itself',
@@ -49,6 +49,10 @@ export default {
   'agency.call_thinking': 'Thinking',
   'agency.call_speaking': 'Speaking',
   'agency.call_with': 'On the line: {name}',
+  'agency.call_donna': 'Call {name}',
+  'agency.hang_up': 'Hang up',
+  'agency.phone_absent': 'Phone not running',
+  'agency.phone_hint': 'Start the phone once in a terminal: uv run bridge.py --ring --backend session --voice nora --out EarPods',
   'agency.donna_line': '{name}: {action}',
   'agency.hired': 'Hired',
   'agency.activity': 'Activity',

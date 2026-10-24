@@ -1,7 +1,7 @@
 // Personal Agency product copy.
 export default {
-  'agency.title': 'Chamber',
-  'agency.scene': 'Chamber 办公室',
+  'agency.title': 'Huang & Chang Inc',
+  'agency.scene': 'Huang & Chang Inc 办公室',
   'agency.secretary_office': 'Donna 的办公室',
   'agency.empty_desk': '等待团队就位',
   'agency.naming': '正在命名',
@@ -48,6 +48,10 @@ export default {
   'agency.call_listening': '正在听',
   'agency.call_thinking': '正在思考',
   'agency.call_speaking': '正在说话',
+  'agency.call_donna': '呼叫 {name}',
+  'agency.hang_up': '挂断',
+  'agency.phone_absent': '电话未运行',
+  'agency.phone_hint': '先在终端启动电话：uv run bridge.py --ring --backend session --voice nora --out EarPods',
   'agency.call_with': '通话中：{name}',
   'agency.donna_line': '{name}：{action}',
   'agency.hired': '新入职',

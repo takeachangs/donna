@@ -22,6 +22,9 @@ const dynamic = ['queued', 'working', 'waiting', 'review', 'done', 'paused', 'fa
     'agency.latest',
     'agency.checkpoint',
     'agency.next_step',
+    'agency.call_donna',
+    'agency.hang_up',
+    'agency.phone_absent',
   );
 describe('i18n', () => {
   for (const [n, D] of [
