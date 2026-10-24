@@ -68,6 +68,9 @@ def update(d, **kw):  # merge into status.json
 
 def new(name, kind="session", project=None):
     d = check_name(name)
+    if (d / "meta.json").exists():  # /call runs `new donna` on every start
+        print(f"herd: {name} exists", file=sys.stderr)
+        return
     d.mkdir(parents=True, exist_ok=True)
     ts = time.time()
     write_json(d / "meta.json", {"name": name, "kind": kind, "project": str(Path(project or ".").resolve()),
@@ -125,6 +128,7 @@ def selfcheck():
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["HIGGS_HOME"] = tmp
         new("donna", project=tmp)
+        new("donna", project=tmp)  # idempotent: no second agent.new, status untouched
         tid = send("donna", "fix it", context="ctx")
         reply("donna", tid, "note", "on it")
         reply("donna", tid, "say", "done")
