@@ -12,6 +12,8 @@
                                           # Enter calls her; hangs up on "bye", 60 s of silence or Higgs idle timeout
                                           # every call starts with ~/.higgs/herd/donna/context.txt; tasks go through herd.py send
   uv run bridge.py --ring --silent        # headless Donna phone: each stdin line is Enter (no call open) or a typed turn (on a call)
+  uv run bridge.py --ring --backend session --brain ~/projects/app   # also start the brain: Claude Code on /call in tmux `donna`
+                                          # (tmux attach -t donna to watch or type); each new task is typed into it, waking it
   uv run bridge.py selftest               # offline checks (idle policy, sign-off, prompt size), no API call
 
 Session backend: delegations land in ~/.higgs/herd/donna/inbox.jsonl through herd.send, one JSON line each: {"id", "task",
@@ -128,12 +130,15 @@ ap.add_argument("--out", help="substring of the output device name, e.g. AirPods
 ap.add_argument("--project", help="directory the claude backend works in (default: ./sandbox)")
 ap.add_argument("--ring", action="store_true", help="no session until Donna's outbox gets a `say` (or you press Enter); one call at a time, then wait again")
 ap.add_argument("--silence-ms", type=int, help="server VAD silence (ms) that ends a user turn; default 800 on a live mic, server default (500) otherwise")
+ap.add_argument("--brain", metavar="REPO", help="start Donna's brain first (Claude Code on the /call skill, working in REPO) in tmux session `donna`, unless it runs already")
 args = ap.parse_args()
 if args.ring and args.text: ap.error("--ring cannot be combined with --text")
 CONTEXT = os.path.join(DONNA if args.ring or args.backend == "session" else HIGGS_DIR, "context.txt")   # Donna's seed (the skill writes it)
 MIC = not (args.wav or args.text or args.ring and args.silent)   # a live mic: real speech pauses longer than TTS
 HERE = os.path.dirname(os.path.abspath(__file__))
 SANDBOX = os.path.abspath(os.path.expanduser(args.project)) if args.project else os.path.join(HERE, "sandbox")
+DEAF_AFTER = 20   # seconds with no take before the voice tells the user the brain is not answering (#38)
+DEAF = "[note] Nobody on the computer has picked up the task you sent. Tell the user in one sentence that the brain is not answering and that typing anything in its window wakes it."
 
 T0 = time.monotonic()
 LOGF = open(os.path.join(HERE, "bridge.log"), "a")
@@ -356,9 +361,16 @@ async def call(seed: str) -> str:
                 if not sess and BACKEND_LOCK.locked(): await conn.session.thinking.append(content="queued behind the current task", delegation_id=did)
                 async with contextlib.nullcontext() if sess else BACKEND_LOCK:
                     t = time.monotonic(); log(f"backend started for {did}: {task[:90]}")
-                    async def progress(text): await conn.session.thinking.append(content=text, delegation_id=did)
-                    async def ask(text): await conn.session.commentary.append(content=text, delegation_id=did, kind="ask"); ASK["did"] = did
-                    text, kind = await backend(did, task, [list(x) for x in transcript[-12:]], progress, ask, replaces)
+                    heard = asyncio.Event()   # the brain answered: take, note, ask or the result
+                    async def progress(text): heard.set(); await conn.session.thinking.append(content=text, delegation_id=did)
+                    async def ask(text): heard.set(); await conn.session.commentary.append(content=text, delegation_id=did, kind="ask"); ASK["did"] = did
+                    async def deaf():   # #38: its wait loop died and nothing woke it (no tmux), or it is busy with something else
+                        await asyncio.sleep(DEAF_AFTER)
+                        if heard.is_set(): return
+                        log(f"brain: no take for {did} in {DEAF_AFTER} s; it is not answering. Type anything in its window (tmux attach -t {herd.tmux_name()} if it runs there)")
+                        await conn.session.commentary.append(content=DEAF)
+                    if sess: tasks.append(asyncio.create_task(deaf()))
+                    text, kind = await backend(did, task, [list(x) for x in transcript[-12:]], progress, ask, replaces); heard.set()
                     log(f"backend done for {did} in {time.monotonic()-t:.1f}s")
                     await conn.session.commentary.append(content=text, delegation_id=did, kind=kind)
             finally: st["pending"] -= 1
@@ -515,6 +527,25 @@ async def run():
     try: await main()
     finally: states.cancel()
 
+def start_brain(repo):   # #38: the brain in tmux, so herd.send can wake it (herd.wake) and the user can attach and watch
+    import subprocess
+    name = herd.tmux_name(); t = f"={name}:"
+    tm = lambda *a: subprocess.run(["tmux", *a], capture_output=True, text=True)
+    if tm("has-session", "-t", t).returncode == 0: log(f"brain: tmux session {name} is running already"); return
+    tm("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", repo, "-e", f"HIGGS_HOME={HIGGS_DIR}",
+       "env", "-u", "ANTHROPIC_API_KEY", "claude", "--settings", os.path.join(HERE, "hooks", "office.json"))   # the claude.ai login, not the low-credit key
+    told = False
+    for _ in range(90):   # wait for the prompt; a folder Claude Code has not seen asks for trust first, and that answer is the user's
+        pane = tm("capture-pane", "-p", "-t", t).stdout
+        if "trust" in pane.lower():
+            if not told: log(f"brain: Claude Code asks whether to trust {repo}; answer it in: tmux attach -t {name}"); told = True
+        elif "❯" in pane: break
+        time.sleep(1)
+    else: log(f"brain: no prompt in 90 s; see: tmux attach -t {name}"); return
+    herd.wake(f"Read {HERE}/.claude/skills/call/SKILL.md and follow it: you are Donna's brain.")
+    log(f"brain: started in tmux session {name} ({repo}); watch it with: tmux attach -t {name}")
+
+if args.brain: start_brain(os.path.abspath(os.path.expanduser(args.brain)))
 try: asyncio.run(run())
 except KeyboardInterrupt: log("hung up (Ctrl-C)")
 finally:   # `off` last (Mike's contract), and the office sees it at once
