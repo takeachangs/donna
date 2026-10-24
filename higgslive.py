@@ -93,7 +93,8 @@ DONE = re.compile(r"\b(has|have|'s|is|was|are|were)\s+(been\s+)?(now\s+|all\s+)?
                   r"\b(finished|completed|added|created|written|wrote|built|fixed|updated|saved|backed up|deployed|pushed|merged|committed|published|installed|deleted|renamed)\b")   # "we're done here" is the call
 LATER = re.compile(r"\b(when|once|until|till|soon|if|will|not|yet|still|being|going to|about to|who|what|which|whether|check|checking|find out|look|looking)\b|'ll|n't|\?\W*$")   # "I'll call you when it's done" is a promise, not a claim
 FIX = "(system) No result has come in yet; the task is still running. Your last reply was wrong and was not played. Say exactly this and nothing else: \"{}\""
-REPEAT = "[the user said something new; respond to it, delegate if it is a request]"   # Oct 24 call: six user turns in 50 s, one answer each, "Still working on that website and marketing plan for you." (#36)
+REPEAT = ("(system) Not played: you already said \"{}\" Never say it again. Answer the user's last words in different words; "   # Oct 24 call: six user turns in 50 s, one answer
+          f"if they asked for something, call {TOOL}.")   # each, "Still working on that website and marketing plan for you." (#36)
 REPEAT_WINDOW, REPEAT_MIN_WORDS = 60, 2   # ponytail: 2 words catches "Still running." (a loop line); raise it if "Got it." style fillers count as repeats
 
 
@@ -383,7 +384,7 @@ class Conn:
                 drop = whole and not st["fresh"] and (answered or st.get("retried") != st["user_at"] and not st["turn_delegated"])   # never a result, never a turn left silent
                 log.info("repeat: %s%s", rep, "" if not drop else " → dropped" if answered else " → dropped, retrying")
                 if drop:
-                    st.update(repeat=not answered, guarded=True, spk_until=0.0, last_voice=ev["transcript"]); self._emit("session.output_audio.discard"); return   # answered: just dropped
+                    st.update(repeat=not answered and ev["transcript"], guarded=True, spk_until=0.0, last_voice=ev["transcript"]); self._emit("session.output_audio.discard"); return   # answered: just dropped
             st["heard_at"] = time.monotonic()
             st["last_voice"], st["question"] = ev["transcript"], st["asked"] or open_question(ev["transcript"]); self._emit("session.output_transcript.done", transcript=ev["transcript"])
         if t == "response.done":
@@ -397,8 +398,8 @@ class Conn:
                 st["in_flight"] = True; await self._item(FIX.format(st["fix"])); st["fix"] = None
                 await self._send({"type": "response.create"}); return   # no response.done for the consumer: the fixed reply's is the one
             st["fix"] = None
-            if st.pop("repeat", False) and not calls and not status:   # ponytail: a repeat that came with a call has lost its audio; the call goes on, unacknowledged
-                nudge = NUDGE if self._fake_claim() and ASKED.search(st["last_user"].lower()) else REPEAT   # "I'm on it." again to a new request: GUARD's nudge gets the call made
+            if (said := st.pop("repeat", False)) and not calls and not status:   # ponytail: a repeat that came with a call has lost its audio; the call goes on, unacknowledged
+                nudge = NUDGE if self._fake_claim() and ASKED.search(st["last_user"].lower()) else REPEAT.format(said)   # "I'm on it." again to a new request: GUARD's nudge gets the call made
                 st.update(in_flight=True, retried=st["user_at"]); await self._item(nudge); await self._send({"type": "response.create"}); return   # one retry per user turn (a status answer is guarded too)
             self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})   # before the status answer: a status call in
             self._open.update(c["call_id"] for c in calls)   # the same response must see this task running, or it reads "idle" and says "done"
@@ -642,13 +643,13 @@ if __name__ == "__main__":   # self-check: no network
         assert await reply("Still working on that website for you.", True) == ["session.output_transcript.done", "response.done"] and sent == []
         assert await reply("Ha, it has. Still working on that website for you!", True) == ["session.output_transcript.done", "response.done"]   # partly new: heard
         assert await reply("Still working on that website for you.", True) == ["session.output_audio.discard"] and kinds(sent) == ["message", "response.create"]
-        assert sent[0]["item"]["content"][0]["text"] == REPEAT and c._st["in_flight"]
+        assert sent[0]["item"]["content"][0]["text"] == REPEAT.format("Still working on that website for you.") and c._st["in_flight"]
         assert await reply("Still working on that website for you.", False) == ["session.output_transcript.done", "response.done"]   # the retry repeats: heard, one retry per turn
         sent.clear(); assert await reply("Still working on that website for you.", False) == ["session.output_audio.discard", "response.done"] and sent == []   # already answered this turn: dropped, no retry
         c._st.update(last_user="also compile a plan for the team"); await reply("I'm on it.", True)   # "I'm on it." again to a new request: GUARD's nudge, which gets the call made
         assert await reply("I'm on it.", True) == ["session.output_audio.discard"] and sent[-2]["item"]["content"][0]["text"] == NUDGE, sent
         c._st.update(last_user=""); await reply("Still just me on this one.", True); c._st.update(user_at=time.monotonic(), guarded=True)   # next turn: a task_status answer runs guarded
-        assert await reply("Still just me on this one.", False) == ["session.output_audio.discard"] and sent[-2]["item"]["content"][0]["text"] == REPEAT, sent
+        assert await reply("Still just me on this one.", False) == ["session.output_audio.discard"] and sent[-2]["item"]["content"][0]["text"] == REPEAT.format("Still just me on this one."), sent
         c._st.update(guarded=False, last_user=""); sent.clear()
         assert await reply(PENDING_LINE, True) == await reply(PENDING_LINE, True) == ["session.output_transcript.done", "response.done"] and sent == []   # the guard's own line
         await c._attach(("[note] still in progress; tell the user.", None, "d1", "say"), True); assert sent == [] and c._out.empty()   # a still-working note never rides on the user's turn
