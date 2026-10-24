@@ -9,6 +9,7 @@
   uv run bridge.py --text "a | b"         # headless: typed turns instead of the mic; exits after the last result is spoken
   uv run bridge.py --ring --backend session   # Donna's phone: no call open; a `say` in ~/.higgs/herd/donna/outbox.jsonl rings,
                                           # Enter calls her; hangs up on "bye", 60 s of silence or Higgs idle timeout
+                                          # every call starts with ~/.higgs/herd/donna/context.txt; tasks go through herd.py send
   uv run bridge.py say  ID "text"         # spoken result for delegation ID   (session backend)
   uv run bridge.py note ID "text"         # quiet progress for delegation ID  (session backend)
 
@@ -64,13 +65,13 @@ ap.add_argument("--ring", action="store_true", help="no session until Donna's ou
 args = ap.parse_args()
 if args.ring:
     if args.text: ap.error("--ring cannot be combined with --text")
-    INBOX, OUTBOX = (os.path.join(DONNA, f) for f in ("inbox.jsonl", "outbox.jsonl"))   # Donna's files, not the /call skill's
+    INBOX, OUTBOX, CONTEXT = (os.path.join(DONNA, f) for f in ("inbox.jsonl", "outbox.jsonl", "context.txt"))   # Donna's files (herd.py)
 HERE = os.path.dirname(os.path.abspath(__file__))
 SANDBOX = os.path.abspath(os.path.expanduser(args.project)) if args.project else os.path.join(HERE, "sandbox")
 
 PROMPT = """## Role
-You're Sam, the user's warm, easygoing voice assistant. No set topic or scenario: the user decides what to talk about and you
-follow. Never invent a topic or something you were "supposed to" discuss. Talk like a person: contractions, a little humor,
+You're Donna, the user's secretary: warm, brief, competent, on the phone with them. No set topic or scenario: the user decides
+what to talk about and you follow. Never invent a topic or something you were "supposed to" discuss. Talk like a person: contractions, a little humor,
 short turns, react to what they actually said. Vary your wording; no stock lines. Brisk, lively pace, never slow or soothing.
 
 ## Delegation policy
@@ -111,7 +112,12 @@ async def backend(did: str, task: str, context: str, progress) -> str:
     """Run the task; await progress(text) per step; return ≤3 spoken sentences: facts, status, next step."""
     if args.backend == "session":
         os.makedirs(os.path.dirname(OUTBOX), exist_ok=True); open(OUTBOX, "a").close()
-        with open(INBOX, "a") as f: f.write(json.dumps({"id": did, "task": task, "context": context, **({"from": "voice", "ts": time.time()} if args.ring else {})}) + "\n")
+        if args.ring:   # through herd.py, so task.sent and unread fire; the call_id stays the line's id for the outbox match below
+            import herd
+            try: herd.send("donna", task, context, "voice", tid=did)
+            except SystemExit: return "Donna isn't on duty right now, so I couldn't hand that off."
+        else:
+            with open(INBOX, "a") as f: f.write(json.dumps({"id": did, "task": task, "context": context}) + "\n")
         log(f"  → inbox {did}")
         t0 = time.monotonic()
         with open(OUTBOX) as f:
@@ -334,7 +340,7 @@ async def call(seed: str) -> str:
                     if not args.silent: spk.put(base64.b64decode(ev.delta))
                 elif t == "session.output_transcript.done":
                     secs = st.pop("audio_bytes", 0) / (RATE * 2); words = len(ev.transcript.split())
-                    log(f"VOICE ({secs:.1f}s, {words / secs * 60:.0f} wpm):" if secs > 0.5 else "VOICE:", ev.transcript); transcript.append("Sam: " + ev.transcript); st["act"] = time.monotonic()
+                    log(f"VOICE ({secs:.1f}s, {words / secs * 60:.0f} wpm):" if secs > 0.5 else "VOICE:", ev.transcript); transcript.append("Donna: " + ev.transcript); st["act"] = time.monotonic()
                 elif t == "session.delegation.created":
                     log(f"DELEGATION {ev.delegation.id} @{ev.offset_ms}ms: {ev.delegation.task[:90]}"); st["delegated"] = True
                     CLAIMED.add(ev.delegation.id); tasks.append(asyncio.create_task(run_delegation(ev.delegation.id, ev.delegation.task)))
@@ -371,11 +377,11 @@ async def main():
     while True:
         log("ring: waiting — Enter to call Donna")
         while SAYS.empty() and not enter.is_set(): await asyncio.sleep(0.2)
-        seed = ""   # Enter: the voice waits for the user
+        seed = context_seed()   # Enter: the voice waits for the user
         if not SAYS.empty():
             await asyncio.sleep(0.5)   # let a burst of says land together
             about = " ".join(" ".join(SAYS.get_nowait() for _ in range(SAYS.qsize())).split())
-            event("call.ring", about=about); seed = f"{CALLING_ABOUT} {about}"
+            event("call.ring", about=about); seed = f"{CALLING_ABOUT} {about}\n{seed}".strip()
         event("call.answered"); set_state("on_call"); reason = "interrupted"
         try: reason = await call(seed)
         except Exception as e: log("call failed:", repr(e)); reason = "error"

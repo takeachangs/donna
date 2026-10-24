@@ -49,16 +49,17 @@ below; nothing here is specific to one coding agent. Design: `docs/herd.md` §1 
    - **A `say` while nobody is on the line makes the voice call the person** (`bridge.py --ring`, issue #3). Make
      every `say` worth a phone call: one per task, the result, not chatter.
    Then go back to step 2.
-4. Voice, only when the person wants to talk now (not on a bare `/call`; the voice is billed per minute). Optionally
-   write `$D/context.txt` first: a few plain sentences on what this chat is working on, under 4000 characters; a first
-   line `Calling about: <reason>` makes the voice speak first. Then:
+4. The phone, once, when the person wants Donna to call them (not on a bare `/call`; a call is billed per minute).
+   Optionally write `$D/context.txt` first: a few plain sentences on what this chat is working on, under 4000
+   characters; every call starts with it. Then start the ring (it stays in the background, no call open):
    ```bash
-   cd ~/projects/higgs-hackathon && (HIGGS_DIR=$HOME/.higgs/herd/donna nohup uv run -q bridge.py --backend session --voice nora --out AirPods > /dev/null 2>&1 < /dev/null &); sleep 3; tail -2 bridge.log
+   pgrep -f "bridge.py --ring" >/dev/null || (cd ~/projects/higgs-hackathon && (nohup uv run -q bridge.py --ring --backend session --voice nora --out AirPods > /dev/null 2>&1 < /dev/null &)); sleep 3; tail -2 ~/projects/higgs-hackathon/bridge.log
    ```
-   Wait for `session ready`, tell the person to talk. They hang up with Ctrl-C in the voice log or `pkill -f bridge.py`;
-   then delete `$D/context.txt`.
-5. Off duty (the person says stop): stop waiting, `pkill -f bridge.py` if a voice is running, and give a two-line
-   summary of what was asked and done.
+   Expect `ring: waiting`. From now on every `say` rings the person and the voice opens with your result; tasks they
+   give on the call land in your inbox. They hang up by saying "bye" (or 60 s of silence). If they ask you to call
+   them right now, place the call: `uv run -q ~/projects/higgs-hackathon/herd.py reply donna now say "You asked me to call."`
+5. Off duty (the person says stop): stop waiting, `pkill -f "bridge.py --ring"` (stops the phone, hangs up a live
+   call), delete `$D/context.txt`, and give a two-line summary of what was asked and done.
 
 ## Notes
 - `~/.higgs/herd/donna/` holds `inbox.jsonl`, `outbox.jsonl`, `status.json`, `meta.json`, `.offset`, `context.txt`;
