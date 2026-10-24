@@ -1,5 +1,14 @@
 # Donna and the herd: the mailbox between the voice and the brain (design memo Oct 23, rewritten Oct 24 for the shipped code)
 
+Windows host: `start-windows.ps1` keeps the same Codex worker/mail/office contracts without tmux.
+`bridge.py --brain-engine codex` registers a `native_brain`; `wake()` resumes its CLI thread on
+new phone tasks or worker results. The brain reads pending inbox tasks, hires/revises named herd
+workers and writes its own note/ask/say replies. A completed CLI turn is not itself a completed
+parent task: planning acknowledgements remain open, and worker results wake the review turn.
+`meta.thread` and `meta.session` retain the actual brain ID; each worker retains its own thread.
+Workers use an OS file lock (fcntl on Unix, msvcrt on Windows), UTF-8 and stdin prompts. This is
+still the CLI implementation; app-server live steering remains an optional future upgrade.
+
 Reference: `warmblood-kr/remuda` and `warmblood-kr/remuda-butler` (verbs `new/ls/send/capture/close`; mail with a `Next:` reply
 line; deferred replies; code-built status). We borrow the vocabulary and the invariants, not the Rust/Lua/Matrix.
 

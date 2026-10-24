@@ -12,3 +12,7 @@ sandbox/
 probe/r15/*.out
 probe/r15/C-idle-*
 notes.txt
+.venv*/
+.runtime/
+.cache/
+.env.*
