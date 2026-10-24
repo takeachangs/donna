@@ -146,5 +146,33 @@ class ProjectFlow(unittest.TestCase):
         self.assertFalse(notifications.conveys(message,"Hi, it's Donna. I'm calling to check on the counter."))
         self.assertTrue(notifications.conveys(message,"Hi, it's Donna. Ava fixed the counter and I reviewed the file. Use Open result in the report."))
 
+    def test_durable_receipt_survives_crash_before_office_event(self):
+        self.finish(); notifications.acknowledge(notifications.pending()[0])
+        file=herd.root()/'events.jsonl'
+        rows=[r for r in herd.lines(file) if r.get('ev')!='task.spoken']
+        file.write_text(''.join(json.dumps(r)+'\n' for r in rows),encoding='utf-8')
+        self.assertEqual(notifications.pending(),[])
+        self.assertEqual(herd.office()['briefings'][-1]['status'],'presented')
+
+    def test_transfers_remain_live_commands_and_are_not_replayed(self):
+        with patch.object(herd,'wake'):
+            old=herd.send('donna','Put me through to Maya')
+            herd.reply('donna',old,'transfer','Maya')
+        async def flow():
+            queue=asyncio.Queue()
+            watch=bridge_function('watch_outbox',asyncio=asyncio,time=time,SAYS=queue,CLAIMED=set(),NOW={'call':{'live':True}})
+            task=asyncio.create_task(watch())
+            try:
+                with self.assertRaises(asyncio.TimeoutError): await asyncio.wait_for(queue.get(),.4)
+                with patch.object(herd,'wake'):
+                    tid=herd.send('donna','Put me through now')
+                    herd.reply('donna',tid,'transfer','Maya')
+                self.assertEqual(await asyncio.wait_for(queue.get(),1),('transfer',tid,'Maya'))
+            finally:
+                task.cancel()
+                try: await task
+                except asyncio.CancelledError: pass
+        asyncio.run(flow())
+
 
 if __name__ == '__main__': unittest.main()
