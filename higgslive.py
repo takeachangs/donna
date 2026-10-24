@@ -98,6 +98,14 @@ DONE = re.compile(r"\b(has|have|'s|is|was|are|were)\s+(been\s+)?(now\s+|all\s+)?
                   r"\b(finished|completed|added|created|written|wrote|built|fixed|updated|saved|backed up|deployed|pushed|merged|committed|published|installed|deleted|renamed)\b")   # "we're done here" is the call
 LATER = re.compile(r"\b(when|once|until|till|soon|if|will|not|yet|still|being|going to|about to|who|what|which|whether|check|checking|find out|look|looking)\b|'ll|n't|\?\W*$")   # "I'll call you when it's done" is a promise, not a claim
 FIX = "(system) No result has come in yet; the task is still running. Your last reply was wrong and was not played. Say exactly this and nothing else: \"{}\""
+REPEAT = ("(system) Not played: you already said \"{}\" Never say it again. Answer the user's last words in different words; "   # Oct 24 call: six user turns in 50 s, one answer
+          f"if they asked for something, call {TOOL}.")   # each, "Still working on that website and marketing plan for you." (#36)
+REPEAT_WINDOW, REPEAT_MIN_WORDS = 60, 2   # ponytail: 2 words catches "Still running." (a loop line); raise it if "Got it." style fillers count as repeats
+
+
+def sentences(voice: str) -> list:
+    """The reply's sentences, lower case, words only (the split `fabricated` uses)."""
+    return [" ".join(re.findall(r"[a-z0-9']+", p.lower().replace("’", "'"))) for p in re.split(r"(?<=[.!?;\]}])\s+", voice.strip())]
 
 
 def fabricated(voice: str) -> str | None:
@@ -206,6 +214,7 @@ class Conn:
         self._stale: set[str] = set()                     # delegations a correction replaced: their result is dropped, never spoken
         self._notes: dict = {}                            # delegation id → its latest progress note, for task_status only
         self._sent: dict = {}                             # delegation id → (task, epoch) for task_status
+        self._said: list = []                             # (sentence, monotonic) the voice said in the last REPEAT_WINDOW s (#36)
         self._instructions = ""
         self._relay = False   # a worker's voice (#28): every user turn is for the agent; see _start
         self._t0 = time.monotonic()
@@ -294,7 +303,8 @@ class Conn:
 
     async def _attach(self, entry, voice: bool):
         """The user started a turn while `entry` was held: put it in the conversation now, no response.create (the server answers the turn anyway)."""
-        text, did, _, kind = entry
+        text, did, about, kind = entry
+        if about: return   # a "still working" note: the user is talking to her, so it would be answered instead of them (Oct 24 call, #36)
         if voice: self._st["att"] = asyncio.Event()   # set by its item.added; if response.created beats it, the model never saw the result
         for item in self._items(text, did): await self._send({"type": "conversation.item.create", "item": item})
         log.info("→ attached held result %s to the user's turn", did or "(no delegation)")
@@ -341,8 +351,10 @@ class Conn:
                 await asyncio.sleep(0.1)
 
     async def _still_working(self, did: str):
-        await asyncio.sleep(STILL_WORKING_AT)
-        if did in self._pending: await self._spoken.put(("[note] The task you handed off is still in progress and taking longer than usual; tell the user in a few words.", None, did, "say"))
+        t0 = time.monotonic(); await asyncio.sleep(STILL_WORKING_AT)
+        if did in self._pending and self._st["user_at"] < t0 and time.monotonic() - self._st.get("still_at", -1e9) >= STILL_WORKING_AT:   # a silent wait only (the user
+            self._st["still_at"] = time.monotonic()   # spoke since: they are not waiting), and one note for all running tasks (#36 probe: three tasks, three identical lines)
+            await self._spoken.put(("[note] The task you handed off is still in progress and taking longer than usual; tell the user in a few words.", None, did, "say"))
 
     # ---- event translation -----------------------------------------------------------------------------------------
     def _emit(self, type_: str, **kw): self._out.put_nowait(_ev({"type": type_, **kw}))
@@ -391,6 +403,14 @@ class Conn:
                 if not st["guarded"]:   # dropped unplayed; the voice says the fixed line at response.done (one retry per user turn, like GUARD)
                     st.update(guarded=True, fix=fixed, spk_until=0.0); self._emit("session.output_audio.discard"); return
                 ev["transcript"] = fixed   # a second one in the same turn: the transcript (and the sign-off it keeps) is right at least
+            rep, whole = self._repeats(ev["transcript"])
+            if rep and self.delegation and self._pending:   # the same line again while a task runs (#36)
+                answered = st.get("heard_at", 0) > st["user_at"]   # the user already heard a reply this turn (a claim before GUARD's call, an earlier ack)
+                drop = whole and not st["fresh"] and (answered or st.get("retried") != st["user_at"] and not st["turn_delegated"])   # never a result, never a turn left silent
+                log.info("repeat: %s%s", rep, "" if not drop else " → dropped" if answered else " → dropped, retrying")
+                if drop:
+                    st.update(repeat=not answered and ev["transcript"], guarded=True, spk_until=0.0, last_voice=ev["transcript"]); self._emit("session.output_audio.discard"); return   # answered: just dropped
+            st["heard_at"] = time.monotonic()
             st["last_voice"], st["question"] = ev["transcript"], st["asked"] or open_question(ev["transcript"]); self._emit("session.output_transcript.done", transcript=ev["transcript"])
         if t == "response.done":
             st["in_flight"] = False; st["voice_at"] = time.monotonic()
@@ -403,6 +423,9 @@ class Conn:
                 st["in_flight"] = True; await self._item(FIX.format(st["fix"])); st["fix"] = None
                 await self._send({"type": "response.create"}); return   # no response.done for the consumer: the fixed reply's is the one
             st["fix"] = None
+            if (said := st.pop("repeat", False)) and not calls and not status:   # ponytail: a repeat that came with a call has lost its audio; the call goes on, unacknowledged
+                nudge = NUDGE if self._fake_claim() and ASKED.search(st["last_user"].lower()) else REPEAT.format(said)   # "I'm on it." again to a new request: GUARD's nudge gets the call made
+                st.update(in_flight=True, retried=st["user_at"]); await self._item(nudge); await self._send({"type": "response.create"}); return   # one retry per user turn (a status answer is guarded too)
             self._sent.update({c["call_id"]: (json.loads(c["arguments"]).get("task", ""), time.time()) for c in calls})   # before the status answer: a status call in
             self._open.update(c["call_id"] for c in calls)   # the same response must see this task running, or it reads "idle" and says "done"
             for c in status:   # synchronous: answered now, never enters _pending/_open
@@ -431,6 +454,16 @@ class Conn:
                 self._emit("session.delegation.created", delegation={"id": did, "task": task, "replaces": old}, offset_ms=int((time.monotonic() - self._t0) * 1000))
             self._emit("response.done", calls=len(calls), pending=len(self._pending))
         if "delta" not in t: self._emit("raw", raw_type=t)   # for DEBUG logging; consumers ignore it
+
+    def _repeats(self, voice: str) -> tuple[list, bool]:
+        """Sentences of `voice` already said in the last REPEAT_WINDOW s (PENDING_LINE, said verbatim on purpose, aside) and whether
+        that is all of it; records them (#36)."""
+        now, mine = time.monotonic(), set(sentences(PENDING_LINE))
+        self._said = [(s, t) for s, t in self._said if now - t < REPEAT_WINDOW]
+        said, new = {s for s, _ in self._said}, [s for s in sentences(voice) if len(s.split()) >= REPEAT_MIN_WORDS and s not in mine]
+        self._said += [(s, now) for s in new]
+        rep = [s for s in new if s in said]
+        return rep, bool(new) and len(rep) == len(new)
 
     def _fake_claim(self) -> bool:
         v = self._st["last_voice"].lower(); self._st["last_voice"] = ""
@@ -527,6 +560,13 @@ if __name__ == "__main__":   # self-check: no network
     sent = asyncio.run(stale_note())
     assert [e.get("item", {}).get("type") or e["type"] for e in sent] == ["function_call_output", "message", "response.create"], sent
     assert sent[0]["item"]["output"] == "Done, the page is open." and sent[1]["item"]["content"][0]["text"] == RESULT_CUE, sent
+    STILL_WORKING_AT = 0.05   # two tasks running: one "still working" note, not one each (#36 probe: three tasks, three identical lines)
+    c = Conn(None, 24000); c._pending = {"d1", "d2"}
+    async def two(): await asyncio.gather(c._still_working("d1"), c._still_working("d2"))
+    asyncio.run(two()); assert c._spoken.qsize() == 1
+    c = Conn(None, 24000); c._pending = {"d3"}   # the user spoke while it waited: no note (they are not waiting in silence)
+    async def spoke(): t = asyncio.create_task(c._still_working("d3")); await asyncio.sleep(0.01); c._st["user_at"] = time.monotonic(); await t
+    asyncio.run(spoke()); assert c._spoken.empty()
     with tempfile.TemporaryDirectory() as tmp:   # per-task records: in progress, queued, needs_you, failed; ring mode's duplicate `sent` is skipped
         os.environ["HIGGS_HOME"], h = tmp, Path(tmp) / "herd"
         for name, st in (("ann", {"state": "working", "tasks": {"t1": {"state": "in_progress", "task": "build x", "ts": now - 125},
@@ -632,7 +672,27 @@ if __name__ == "__main__":   # self-check: no network
         c._relay = False
         c._done("d2", "say"); c._st["guarded"] = False   # a result went in this turn (d1 still runs): "all done" may be true
         await c._handle({"type": "response.output_audio_transcript.done", "transcript": "All done."}); assert [e.transcript for e in outs() if e.type == "session.output_transcript.done"] == ["All done."]
-    async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer(), stale(), fab()); await cap()   # cap flips globals: not alongside the others
+    async def rep():   # the same line twice while a task runs: the second answer to a user's turn is dropped unplayed and retried once with REPEAT
+        c, sent, now = mk(); c.delegation, c._pending = True, {"d1"}
+        outs = lambda: [e.type for e in (c._out.get_nowait() for _ in range(c._out.qsize())) if e.type != "raw"]
+        async def reply(text, user):
+            if user: c._st.update(user_at=time.monotonic(), guarded=False)
+            await c._handle({"type": "response.output_audio_transcript.done", "transcript": text}); await c._handle({"type": "response.done", "response": {"output": []}})
+            return outs()
+        assert await reply("Still working on that website for you.", True) == ["session.output_transcript.done", "response.done"] and sent == []
+        assert await reply("Ha, it has. Still working on that website for you!", True) == ["session.output_transcript.done", "response.done"]   # partly new: heard
+        assert await reply("Still working on that website for you.", True) == ["session.output_audio.discard"] and kinds(sent) == ["message", "response.create"]
+        assert sent[0]["item"]["content"][0]["text"] == REPEAT.format("Still working on that website for you.") and c._st["in_flight"]
+        assert await reply("Still working on that website for you.", False) == ["session.output_transcript.done", "response.done"]   # the retry repeats: heard, one retry per turn
+        sent.clear(); assert await reply("Still working on that website for you.", False) == ["session.output_audio.discard", "response.done"] and sent == []   # already answered this turn: dropped, no retry
+        c._st.update(last_user="also compile a plan for the team"); await reply("I'm on it.", True)   # "I'm on it." again to a new request: GUARD's nudge, which gets the call made
+        assert await reply("I'm on it.", True) == ["session.output_audio.discard"] and sent[-2]["item"]["content"][0]["text"] == NUDGE, sent
+        c._st.update(last_user=""); await reply("Still just me on this one.", True); c._st.update(user_at=time.monotonic(), guarded=True)   # next turn: a task_status answer runs guarded
+        assert await reply("Still just me on this one.", False) == ["session.output_audio.discard"] and sent[-2]["item"]["content"][0]["text"] == REPEAT.format("Still just me on this one."), sent
+        c._st.update(guarded=False, last_user=""); sent.clear()
+        assert await reply(PENDING_LINE, True) == await reply(PENDING_LINE, True) == ["session.output_transcript.done", "response.done"] and sent == []   # the guard's own line
+        await c._attach(("[note] still in progress; tell the user.", None, "d1", "say"), True); assert sent == [] and c._out.empty()   # a still-working note never rides on the user's turn
+    async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer(), stale(), fab(), rep()); await cap()   # cap flips globals: not alongside the others
     STILL_WORKING_AT = 25   # stale() opens a delegation: no "still working" note inside the test
     t0 = time.monotonic(); asyncio.run(policy()); assert time.monotonic() - t0 < 3
     print("ok")

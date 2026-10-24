@@ -77,7 +77,8 @@ Shell variables do not carry over between commands, so each command sets its own
        two players, simple art. Who is it for, and phone or desktop?"`. At most two asks per task; after that, go with
        your best reading and say which in the result.
      - "Just do it" in the transcript skips the asks; "let's plan this" asks even when the request is clear.
-   - Under a minute of work (a lookup, a one-file read, a small edit): do it yourself, then `say`.
+   - Under a minute of work (a lookup, a one-file read, a small edit; "which project are we in?" from `meta.json`'s
+     project or your cwd): do it yourself, then one `say`.
    - Longer: spawn workers. Claude Code: the Agent tool with `run_in_background: true`, `model: "sonnet"`, `name` = a
      first name ("Ava"; never spawn an unnamed worker), `description` = the role ("Writes the game page"), and a complete brief (goal, files, what done
      looks like, which checks to run, what to report). In a git repo every brief names the task's worktree and says
