@@ -46,3 +46,17 @@ uv run bridge.py --ring --backend session --voice nora           # Donna's phone
 - Keep it cheap: text-mode probes (`output_modalities: ["text"]`) cost cents; don't leave sessions running.
 - Never commit `.env` or keys; the repo goes public for submission, pinned to a commit SHA.
 - Record new Boson findings in `docs/INDEX.md` Gotchas and the decision log in `IDEAS.md`.
+
+## Contracts that must not drift
+Changing any of these means changing every side in the same commit.
+- `~/.higgs/office.json` shape, `WorkStatus` words, `call.state` words (`docs/office-state.md`): `herd.office()` ↔ `office/`.
+- `~/.higgs/state.json` `{"state": "off|ringing|listening|thinking|speaking"}`: `bridge.py` writes it every 250 ms, `off`
+  last; `herd.office()` reads a file older than 3 s as `off`.
+- Herd line shapes (`docs/herd.md` §4, §6, §8). Inbox `{id, task, context, from, ts}` plus `transcript` (`[[role, text]]`,
+  role `user`/`assistant`, the call's last 12 turns), `in_reply_to` (the answer to an `ask`), `replaces` (a correction).
+  Outbox `{id, kind: take|note|ask|say|fail, text, ts}`. Writers `bridge.py`, `herd.py`; readers the `/call` skill,
+  `herd.py hook`, `higgslive.status_summary`.
+- `delegate_task` parameters `task`, `replaces` (`higgslive.TOOL_DEF`) ↔ the `# Corrections` rule in `bridge.py` `PROMPT`.
+- `hooks/office.json` event list ↔ `herd.py hook` and the `office()` reducer.
+- `Hanging up now.`: `SIGN_OFF` in `bridge.py` only (`PROMPT` interpolates it; hearing it in the voice's transcript closes
+  the call); the skill names it in prose. `Calling about:`: `CALLING_ABOUT` in `bridge.py` and the `/call` skill.

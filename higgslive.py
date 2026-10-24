@@ -41,7 +41,11 @@ TOOL_DEF = {"type": "function", "name": TOOL, "description": "Hands a job to an 
             "create or edit files, open pages or files in the browser, run commands, read code, check git, look things up, calculate. "
             "Use it for ANY request to make, add, change, design, open, run, check, find or compute something, including what is in a "
             "file, folder or directory. The task is a plain-English request, not a command.",
-            "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}
+            "parameters": {"type": "object", "properties": {"task": {"type": "string"},   # replaces: set on 7/7 corrections, 0/6 second tasks (Oct 24 text probe)
+                           "replaces": {"type": "boolean", "description": "true when this request corrects or changes the one you sent just before; the earlier one is dropped"}},
+                           "required": ["task"]}}
+STALE = "Dropped: the user changed this request and the new call replaces it. Say nothing about it."   # closes the replaced call; no response.create
+REPLACING = re.compile(r"\b(replacing|instead of) the (previous|earlier|last) (request|task)\b", re.I)   # 2/2 misses of the flag said this in the task text
 STATUS = "task_status"   # answered at once by this layer from the herd files; never left open
 STATUS_DEF = {"type": "function", "name": STATUS, "description": f"How the tasks you sent with {TOOL} are going: which are running, "
               "for how long, latest progress, which finished. Only for tasks.", "parameters": {"type": "object", "properties": {}}}   # naming files/folders here pulled "what's in my directory" to this tool (2/6 runs)
@@ -78,7 +82,7 @@ def open_question(voice: str) -> bool:
     v = voice.strip().lower()
     return v.endswith("?") and not CLOSER.search(v) and len(v.split()) >= 5 and bool(TASK_Q.search(v))
 STILL_WORKING_AT = 25   # seconds before one spoken "taking longer than usual", per GPT-Live's "say something when a delay matters"
-CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching)|should be running|backend result)")
+CLAIM = re.compile(r"\b(sen[dt]\w*\s+(that|it|this)\s+off|hand(ing|ed)\b[^.]{0,20}\boff|on it\b|i'?m\s+(creating|making|building|writing|checking|looking|running|opening|sending|whipping|drafting|putting|setting|sketching)|should be running|backend result|i'?ll\s+have\s+(the|an|my)\s+agent)")   # the last: "I'll have the agent take a look" (Oct 24 probe)
 OFFER = re.compile(r"\b(i'?ll\s+(creat|mak|build|writ|check|look|run|open|get|find|count|send|add|chang|design|plan|styl|improv|updat)|let me\s+(creat|mak|check|look|run|open|see)|"
                    r"i (can'?t|cannot|am not able to|'m not able to)\b[^.]{0,60}\b(directly|files?|code|computer|browser|access|run|open|create|make)|copy and paste|here'?s (a|the) (simple )?(example|code|html)|"
                    r"shall i (set|get|start) (that|it|this)|(want|like) me to (delegate|hand|send|set|go ahead)|i (can|could) delegate|"
@@ -157,6 +161,7 @@ class Conn:
         self._pending: set[str] = set()                   # delegations with no commentary yet
         self._arrived: set[str] = set()                   # delegations whose result came in (queued or spoken): their "still working" note is stale
         self._open: set[str] = set()                      # function calls whose output we have not returned yet
+        self._stale: set[str] = set()                     # delegations a correction replaced: their result is dropped, never spoken
         self._notes: dict = {}                            # delegation id → its latest progress note, for task_status only
         self._sent: dict = {}                             # delegation id → (task, epoch) for task_status
         self._instructions = ""
@@ -188,6 +193,8 @@ class Conn:
 
     # ---- the three return channels + inputs ------------------------------------------------------------------------
     async def _commentary(self, content: str, delegation_id: str | None = None, kind: str = "say"):
+        if delegation_id in self._stale:   # the user corrected this request: its result answers the old question
+            log.info("dropped stale result %s: %s", delegation_id, content[:80]); self._done(delegation_id, "dropped"); return
         if kind == "ask":   # the agent needs a decision: not a result, so it skips the queue and the hold
             self._asking += 1; self._tasks.append(asyncio.create_task(self._ask(content, delegation_id))); return
         self._arrived.add(delegation_id)
@@ -355,11 +362,16 @@ class Conn:
                 await self._item(NUDGE); await self._send({"type": "response.create"}); return
             spoke = any(o.get("type") == "message" and any(p.get("text") or p.get("transcript") for p in o.get("content", [])) for o in ev["response"].get("output", []))
             for c in calls:
-                did, task = c["call_id"], json.loads(c["arguments"]).get("task", "")
+                a = json.loads(c["arguments"]); did, task = c["call_id"], a.get("task", "")
+                old = next((d for d in reversed(self._sent) if d in self._pending), None) if a.get("replaces") or REPLACING.search(task) else None
+                if old:   # a correction: the replaced call is closed at once, its result dropped when it lands
+                    self._stale.add(old); self._pending.discard(old); self._open.discard(old); self._sent.pop(old, None)
+                    await self._send({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": old, "output": STALE}})
+                    log.info("delegation %s replaces %s", did, old)
                 st["turn_delegated"] = True; self._pending.add(did)
                 if not spoke: await self._send({"type": "response.create"})   # 1.5 speaks a preamble in the call response itself; a second ack would make it talk twice. No output yet: the call stays open and the model acknowledges. Bare: a body with instructions/tool_choice makes it greet from scratch
                 self._tasks.append(asyncio.create_task(self._still_working(did)))
-                self._emit("session.delegation.created", delegation={"id": did, "task": task}, offset_ms=int((time.monotonic() - self._t0) * 1000))
+                self._emit("session.delegation.created", delegation={"id": did, "task": task, "replaces": old}, offset_ms=int((time.monotonic() - self._t0) * 1000))
             self._emit("response.done", calls=len(calls), pending=len(self._pending))
         if "delta" not in t: self._emit("raw", raw_type=t)   # for DEBUG logging; consumers ignore it
 
@@ -391,8 +403,9 @@ class connect:
 if __name__ == "__main__":   # self-check: no network
     assert _ev({"delegation": {"id": "x"}}).delegation.id == "x"
     assert CLAIM.search("i've sent that off") and not CLAIM.search("sure, what else?")
-    assert all(CLAIM.search(x) for x in ("i've handed that task off", "i've handed off the task", "i'm handing off the request"))
+    assert all(CLAIM.search(x) for x in ("i've handed that task off", "i've handed off the task", "i'm handing off the request", "got it. i'll have the agent take a look"))
     assert ASKED.search("make me a page") and OFFER.search("i'll create it for you")
+    assert REPLACING.search("Write a poem about dogs, replacing the previous task") and not REPLACING.search("replace the previous header in index.html")
     assert all(OFFER.search(x) for x in ("i can't create files myself, but i can delegate that. shall i set that up?", "shall i set that up?",
                                          "want me to delegate that?", "would you like me to hand that off?")) and not OFFER.search("sure, what else?")
     assert all(OFFER.search(x) for x in ("sure, i can draft a hero section for a tech company. what vibe are we going for?",   # the Oct 24 call, verbatim
@@ -507,6 +520,19 @@ if __name__ == "__main__":   # self-check: no network
             await c.session.commentary.append(content="Done.", delegation_id="d1"); await asyncio.sleep(0.15); assert sent == [], sent
             await asyncio.sleep(0.45); t.cancel(); assert kinds(sent) == ["function_call_output", "message", "response.create"], sent
         finally: HOLD_MAX, QUESTION_MAX = 10, 6
-    async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer()); await cap()   # cap flips globals: not alongside the others
+    async def stale():   # a correction: the replaced call is closed with STALE at once (no response.create), its late result is dropped unspoken
+        c, sent, now = mk(); c._st.update(user_at=now - 10, voice_at=now - 10); t = asyncio.create_task(c._speak_loop())
+        c._open, c._pending, c._sent, got = {"d1"}, {"d1"}, {"d1": ("blue page", time.time())}, []
+        await c._handle({"type": "response.done", "response": {"output": [{"type": "message", "content": [{"transcript": "Green it is."}]},
+            {"type": "function_call", "name": TOOL, "call_id": "d2", "arguments": '{"task": "green page", "replaces": true}'}]}})
+        assert kinds(sent) == ["function_call_output"] and sent[0]["item"] == {"type": "function_call_output", "call_id": "d1", "output": STALE}, sent
+        while not c._out.empty(): got.append(c._out.get_nowait())
+        assert [e.delegation.replaces for e in got if e.type == "session.delegation.created"] == ["d1"] and c._pending == {"d2"} and "d1" not in c._sent
+        sent.clear(); await c.session.commentary.append(content="Blue page done.", delegation_id="d1"); await asyncio.sleep(0.3); assert sent == [], sent
+        assert c._out.get_nowait().kind == "dropped"   # the bridge still hears that the old delegation ended
+        c._st["voice_at"] -= 10; await c.session.commentary.append(content="Green page done.", delegation_id="d2"); await asyncio.sleep(0.3); t.cancel()
+        assert kinds(sent) == ["function_call_output", "message", "response.create"] and sent[0]["item"]["call_id"] == "d2", sent
+    async def policy(): await asyncio.gather(hold(), quiet(), ask(), closer(), stale()); await cap()   # cap flips globals: not alongside the others
+    STILL_WORKING_AT = 25   # stale() opens a delegation: no "still working" note inside the test
     t0 = time.monotonic(); asyncio.run(policy()); assert time.monotonic() - t0 < 3
     print("ok")
