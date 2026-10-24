@@ -45,3 +45,37 @@ export function seat(workers:Who[],assignments:Work[],current:Map<string,number>
  }
  return out;
 }
+/** Walking speed (units/s) of every trip; errand meet-ups time against it. */
+export const pace=13;
+/** A voice tool call that concerns a room or a worker: the server's `tool_started`. */
+export type ToolCall={callId:string;name:string;projectId?:string;workerId?:string};
+/** A worker on the floor. free: its body is at its desk (no trip, no lounge seat), so it can get up. */
+export type Desk={id:string;projectId:string;home:Point;free:boolean};
+/** Donna's walk for one tool call. points: from her desk outward; face: where she looks on arrival. meet: the worker who gets up, walks its points (none = stands up at the desk) after wait seconds so both arrive together, then looks at face. glow: reduced motion, light the room instead. note: delegate/create hand a note over. */
+export type Errand={room:string;points:Point[];face?:Point;glow?:true;note?:true;meet?:{id:string;points:Point[];wait:number;face:Point}};
+/** The call's room is projectId, else the worker's room; undefined when it is not on the floor. message_worker: in front of that worker's desk, the worker turns round. Otherwise the doorway, where the named worker, else the free worker nearest the door, comes to meet her; a delegate/create note into a room with no workers goes to its empty desk. */
+export function errand(call:ToolCall,rooms:(Footprint&{id:string})[],desks:Desk[],reduce:boolean):Errand|undefined{
+ const worker=desks.find(d=>d.id===call.workerId),room=rooms.find(r=>r.id===(call.projectId??worker?.projectId));
+ if(!room)return undefined;
+ if(reduce)return {room:room.id,points:[],glow:true};
+ const left=room.side==='left',wall=left?room.x+room.width:room.x,doorZ=room.z+5,edge=left?wall-1:wall+1,door={x:left?wall+1:wall-1,z:doorZ};
+ const out=[{x:-.3,z:17.65},{x:-.3,z:13},{x:0,z:11},{x:0,z:doorZ}],note=call.name==='delegate_work'||call.name==='create_project'?{note:true as const}:{};
+ const toDesk=(h:Point)=>{const stand={x:h.x,z:h.z+.9};return {stand,points:[...out,{x:edge,z:doorZ},{x:edge,z:stand.z},stand],face:h};};
+ if(call.name==='message_worker'&&worker){
+  const {stand,points,face}=toDesk(worker.home);
+  return {room:room.id,points,face,...(worker.free?{meet:{id:worker.id,points:[],wait:len([secretaryPosition,...points])/pace,face:stand}}:{}),...note};
+ }
+ if(note.note&&!desks.some(d=>d.projectId===room.id)){
+  const {points,face}=toDesk({x:room.x+room.width/2,z:room.z+3+1.65});
+  return {room:room.id,points,face,...note};
+ }
+ const points=[...out,door],free=desks.filter(d=>d.projectId===room.id&&d.free),gap=(d:Desk)=>Math.hypot(d.home.x-edge,d.home.z-doorZ);
+ const m=free.find(d=>d.id===call.workerId)??free.reduce<Desk|undefined>((b,d)=>!b||gap(d)<gap(b)?d:b,undefined);
+ const mp=m&&[{x:edge,z:m.home.z},{x:edge,z:doorZ}];
+ return {room:room.id,points,face:{x:edge,z:doorZ},...(m&&mp?{meet:{id:m.id,points:mp,wait:Math.max(0,(len([secretaryPosition,...points])-len([m.home,...mp]))/pace),face:door}}:{}),...note};
+}
+const len=(p:Point[])=>p.reduce((s,q,i)=>i?s+Math.hypot(q.x-p[i-1].x,q.z-p[i-1].z):0,0);
+/** Turn back where she is: she is at or heading to points[index], so retrace points[index-1]…points[0], then home (index 0: just home). */
+export function turnBack(points:Point[],index:number,home:Point):Point[]{return [...points.slice(0,index)].reverse().concat(home);}
+/** The next call to walk: queued calls that already finished are stale and dropped. Returns it and the rest of the queue. */
+export function nextCall(queue:ToolCall[],finished:Set<string>):[ToolCall|undefined,ToolCall[]]{const q=queue.filter(c=>!finished.has(c.callId));return [q[0],q.slice(1)];}

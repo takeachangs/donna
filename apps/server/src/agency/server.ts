@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import {randomUUID} from 'node:crypto';
 import {createServer} from 'node:http';
 import {WebSocketServer,WebSocket} from 'ws';
 import {existsSync,readFileSync,appendFileSync,statSync} from 'node:fs';
@@ -58,11 +59,14 @@ const server=createServer(async(req,res)=>{
   return json(res,{error:'Not found'},404);
  }catch(err){return json(res,{error:String(err)},400);}
 });
+// ponytail: mirrors workspace.ts's private norm (not exported, to stay out of #21's file).
+const norm=(s:string)=>String(s??'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const wss=new WebSocketServer({server,path:'/agency-ws',maxPayload:24000});
 wss.on('connection',(client,req)=>{
  if(!local(req.headers.origin)){client.close(1008);return;}
  clients.add(client);log('ws')(`client connected (${clients.size} open)`);let selected=projects.list()[0]?.id||'',view='secretary',started=false,ready=false,voice:HiggsColleague|undefined,closed=false;
  let presentation:Presentation|undefined;
+ let walks:{callId:string;projectId?:string;workerId?:string;job:string}[]=[];
  const floor={userAt:0,voiceAt:0,userSpeaking:false,playing:false,question:false};let said='',saidFor='',pending:{id:string;since:number}[]=[],seen=new Set<string>(),announceJob:Job|undefined,heldWhy='',timer:ReturnType<typeof setInterval>|undefined,bye=false,pickup:string|undefined;
  const watch=(e:any)=>{const t=Date.now();
   if(e.type==='speech_started'){floor.userSpeaking=true;floor.userAt=t;floor.question=false;floor.playing=false;}
@@ -72,7 +76,10 @@ wss.on('connection',(client,req)=>{
   else if(e.type==='await_playback')floor.playing=true;
   else if(e.type==='interrupted')floor.playing=false;
   else if(e.type==='user_transcript')bye=hangsUp(String(e.text||''));
+  if(e.type==='interrupted'||(e.type==='turn_done'&&(e.cancelled||!e.hasAudio)))heard();
  };
+ /** The call a walk covers is over once its answer has been heard (`played`), or its turn ended without audio, or was interrupted. Copy-then-clear: emit re-enters watch. */
+ const heard=(job?:string)=>{const done=walks.filter(w=>!job||w.job===job);walks=walks.filter(w=>job&&w.job!==job);for(const {job:_,...w} of done)emit({type:'tool_finished',...w});};
  const emit=(event:any)=>{watch(event);if(!closed&&client.readyState===WebSocket.OPEN)client.send(JSON.stringify(event));};
  const room=()=>selected?store.load(selected):undefined;
  // Keep old prose out of every turn. Full preserved drafts remain available on
@@ -80,7 +87,7 @@ wss.on('connection',(client,req)=>{
  const progress=()=>Object.fromEntries(workspace.snapshot().projects.filter(p=>!p.deletedAt).flatMap(p=>{const t=workspace.progress(p.id);return t?[[p.name,t]]:[];}));
  const current=()=>({selected_project_id:projects.list().some(p=>p.id===selected)?selected:null,...(projects.list().length?{}:{note:'No projects yet; the office is only you. A room is created when the user asks for work.'}),progress:progress(),view,workspace:workspace.snapshot(),legacy:selected?{documents:room()!.documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
  const read=(id?:string)=>id?{...current(),project:workspace.snapshot().projects.find(p=>p.id===id),legacy:store.load(id)}:current();
- function tool(name:string,args:any,job:Job):any{
+ function run(name:string,args:any,job:Job):any{
   if(name==='read_briefing'&&job===announceJob)throw Error('Only announce the result and ask whether the user wants it now; read it after they say yes.');
   args=resolveProjectTarget(name,args,selected,projects.list().map(p=>p.id));
   if(name==='read_workspace')return {committed:false,...read(args.project_id)};
@@ -95,6 +102,22 @@ wss.on('connection',(client,req)=>{
   if(name==='message_worker')return workspace.message({project_id:projects.list().some(p=>p.id===selected)?selected:undefined,worker:args.worker,text:args.text});
   if(name==='prepare_command_room'){view='command';emit({type:'view',view:'command'});return {committed:true,...read(args.project_id)};}
   throw Error('Unknown secretary tool');
+ }
+ // Tools are synchronous (0 ms), so tool_started follows the call with resolved ids, and tool_finished waits until her answer has been heard: the walk covers the real wait. The server never waits for the scene.
+ function tool(name:string,args:any,job:Job):any{
+  const r=run(name,args,job);
+  try{const target=walkTarget(name,args,r);if(target){const w={callId:randomUUID(),...target};walks.push({...w,job:job.id});emit({type:'tool_started',name,...w});}}catch{}
+  return r;
+ }
+ function walkTarget(name:string,args:any,r:any):{projectId?:string;workerId?:string}|undefined{
+  const here=projects.list().some(p=>p.id===selected)?selected:undefined,ws=workspace.snapshot();
+  if(name==='worker_status'||name==='message_worker'){
+   if(norm(args.worker)==='all')return here?{projectId:here}:undefined;
+   const n=norm(r?.worker||args.worker),w=ws.workers.filter(w=>!w.lead&&w.name&&norm(w.name)===n&&ws.projects.some(p=>p.id===w.projectId&&!p.deletedAt)).sort((a,b)=>Number(b.projectId===here)-Number(a.projectId===here))[0];
+   return w?{projectId:w.projectId,workerId:w.id}:undefined;
+  }
+  if(name==='read_briefing'){const b=ws.briefings.find(b=>b.id===presentation?.briefingId);return b?{projectId:b.projectId}:undefined;}
+  if(name==='read_workspace'||name==='delegate_work'||name==='create_project'){const id=r?.project?.id||(args.project_id&&args.project_id!=='selected'?args.project_id:here);return id?{projectId:id}:undefined;}
  }
  const onLanded=(w:Workspace)=>{for(const b of w.briefings)if(b.status==='queued'&&!seen.has(b.id)){seen.add(b.id);pending.push({id:b.id,since:Date.now()});console.log(`[ring] landed ${b.id} for ${w.projects.find(p=>p.id===b.projectId)?.name||'a project'}`);}};
  async function announce(){
@@ -135,7 +158,7 @@ wss.on('connection',(client,req)=>{
   if(e.type==='audio'){if(typeof e.audio!=='string'||e.audio.length>16000||!/^[A-Za-z0-9+/]+=*$/.test(e.audio))throw Error('Invalid PCM frame');voice.audio(e.audio);return;}
   if(e.type==='interrupt'){if(typeof e.itemId==='string'&&Number.isFinite(e.audioEndMs))voice.truncate(e.itemId,e.audioEndMs);await voice.cancel();emit({type:'interrupted'});return;}
   if(e.type==='focus'){emit({type:'focus',agentId:'mara'});return;}
-  if(e.type==='played'){floor.playing=false;floor.voiceAt=Date.now();const id=completedBriefing(presentation,e.jobId);if(id){presentation=undefined;workspace.presentBriefing(id);}return;}
+  if(e.type==='played'){heard(String(e.jobId));floor.playing=false;floor.voiceAt=Date.now();const id=completedBriefing(presentation,e.jobId);if(id){presentation=undefined;workspace.presentBriefing(id);}return;}
   if(e.type==='stop'){voice.close();client.close();return;}
  }catch(err){log('ws')(`error: ${String(err)}`);emit({type:'error',message:String(err)});}})();});
  client.on('close',()=>{closed=true;clearInterval(timer);landed.delete(onLanded);clients.delete(client);if(voice)voices.delete(voice);voice?.close();log('ws')(`client closed (${clients.size} open)`);});
