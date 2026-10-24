@@ -2,7 +2,7 @@ import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach,expect,it,vi} from 'vitest';
-import {secretaryInstructions,secretaryTools,resolveProjectTarget} from '../apps/server/src/agency/secretary';
+import {secretaryInstructions,secretaryTools,resolveProjectTarget,hangsUp,pickUpNotice} from '../apps/server/src/agency/secretary';
 
 const transport=vi.hoisted(()=>({sockets:[] as any[],autoReady:true}));
 vi.mock('ws',async()=>{
@@ -129,4 +129,14 @@ it('opens with rule one and routes every tool by its own job',()=>{
  const rule=secretaryInstructions.indexOf('RULE ONE'),follow=secretaryInstructions.indexOf('FOLLOW THROUGH'),routing=secretaryInstructions.slice(secretaryInstructions.indexOf('WHICH TOOL'),follow);
  expect(rule).toBeGreaterThan(-1);expect(rule).toBeLessThan(follow);expect(secretaryInstructions).toContain('Reply to what the user just said');
  for(const t of secretaryTools){expect(routing).toContain(t.name);expect(t.description).not.toMatch(/\bNOT\b/);for(const o of secretaryTools)if(o!==t)expect(t.description).not.toContain(o.name);}
+});
+
+it.each([["bye",true],["Bye!",true],["Goodbye.",true],["good bye",true],["Bye-bye",true],["Okay, thanks, bye!",true],["Thanks Donna, talk later.",true],["talk soon",true],["Talk to you later",true],["Okay, I'll talk to you later.",true],["No, that's it, bye.",true],["See you",true],["Later!",false],["Later, thanks.",false],["gotta go",true],["Bye for now",true],["thanks, bye Donna",true],["make a page that says bye",false],["say goodbye to the old header",false],["yes",false],["no thanks",false],["how's it going?",false],["make a tiny page that says hi",false],["",false],["Byelorussian history",false]])('hangsUp(%j)=%s',(text,want)=>{expect(hangsUp(text)).toBe(want);});
+
+it('picks up the phone with her name',()=>{expect(pickUpNotice('Donna')).toContain("Hey, it's Donna. What do you need?");});
+
+it('instructs Donna as a phone call, placed after rule one and before tool routing',()=>{
+ const i=secretaryInstructions,phone=i.indexOf('ON THE PHONE');
+ for(const x of ['ON THE PHONE',"Hey, it's Donna.",'offer the short version',"I'll let you go",'The bakery page is done, Ellis and Miles finished it. Want the short version?','Never say ids, file paths','Reply to what the user just said'])expect(i).toContain(x);
+ expect(phone).toBeGreaterThan(i.indexOf('RULE ONE'));expect(phone).toBeLessThan(i.indexOf('WHICH TOOL'));expect(i).not.toContain('2–3 natural spoken sentences');
 });

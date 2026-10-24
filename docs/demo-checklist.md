@@ -14,7 +14,7 @@ Data dir below: `D=$(mktemp -d)`; logs are in `$D/calls.jsonl`, `$D/executions.j
 - [ ] Footer engine status: default engine verified and enabled. Office shows Donna alone, no "Project 01" (after #8; before #8 an empty "Project 01" exists).
 - [ ] Browser: Chrome, click once on the page first (autoplay policy can mute the ring chime), allow the microphone when prompted.
 - [ ] Output device set (system output or AirPods). Laptop mic in, since an AirPods mic degrades STT.
-- [ ] Pre-flight voice test: click **Talk to secretary**, **Enable microphone**, say "Hello". Pass: a plain greeting, no talk of work. Then **Stop speaking**.
+- [ ] Pre-flight voice test: click **Talk to secretary** (the mic goes live in the same click). Pass: Donna speaks first, "Hey, it's Donna. What do you need?". Say "Hello": a plain greeting, no talk of work. Then **Hang up**.
 
 ## 2. Headless checks (typed text, no mic)
 Connect, then type into the goal box. Each check uses the same server and data dir.
@@ -24,16 +24,16 @@ Connect, then type into the goal box. Each check uses the same server and data d
 - [ ] **Status is truthful.** While a worker runs, type `how's it going`. Look: `workspace.json` assignment statuses. Pass: the reply matches the state (plan running means planning; worker running means a worker is on it). Loose wording such as "the plan is in progress" is a known blemish, a wrong phase is a fail.
 - [ ] **Greeting.** Type `hello` with work running. Pass: a greeting and nothing else (5/6 in PR 7; "the bakery page is being built" counted as a miss).
 - [ ] **Brain plans two workers.** Type `build a landing page with a contact form`. Look: `workspace.json` assignments of `kind` plan, crew, review. Pass: plan, 2 crew (the second `depends_on` the first), review; the same brain `threadId` in the plan and review rows of `executions.jsonl`; exactly one briefing with both workers as contributors and all files (`index.html`, `styles.css`, `script.js`). Expect about 85 s end to end (plan about 24 s, workers about 21 s each, review about 17 s).
-- [ ] **Announcement.** Connected when the briefing lands. Look for the server log `[ring] holding ...` then `[ring] announcing "<title>" for <project> after N s`. Pass: Donna says "The review for X is ready; want it now?" and the report stays `queued`.
+- [ ] **Announcement.** Connected when the briefing lands. Look for the server log `[ring] holding ...` then `[ring] announcing "<title>" for <project> after N s`. Pass: Donna says "The X is done, A and B finished it. Want the short version?" and the report stays `queued`.
 - [ ] **Restart mid-task.** While a worker is `working`: stop the server, rerun `npm run dev` with the same `AGENCY_DATA_DIR`. Pass: `workspace.json` and the UI keep the project, assignments and queue; nothing is staffed twice. Resume the interrupted step if it shows paused or failed. (Recovery is designed; this exact case was not in any PR check, so run it before the demo.)
 - [ ] **Second request while one runs.** Repeat the same goal within 2 minutes. Pass (after #8): one assignment only; the existing one is returned with `note: "already queued"` and Donna says it's in progress. Before #8 this duplicates; do not demo it.
 
 ## 3. Mic checks (presenter)
-- [ ] **Connect.** Talk to secretary, enable microphone. Pass: a status line and Donna replies to "Hello".
+- [ ] **Connect.** Talk to secretary (no separate microphone step). Pass: Donna picks up first with her name and replies to "Hello".
 - [ ] **10-second request with pauses (VAD 800 ms).** Say, with a 1 s pause in the middle: "I want a landing page for a bakery, um, with a menu section, and a contact form." Pass: Donna waits for the end and does not talk over you. If she cuts in, raise `AGENCY_VAD_SILENCE_MS=1000` and restart. Not measured with a real mic in Chamber.
 - [ ] **Interrupt.** While Donna speaks a long answer, say "stop, wait". Pass: she stops; a report being read stays queued.
-- [ ] **Announcement when connected.** Stay connected while the brain finishes. Pass: "The review for X is ready; want it now?" at a pause, not over you. Say "yes". Pass: she reads that report.
-- [ ] **Ring when disconnected.** Disconnect, wait for the briefing. Pass: two-tone chime, **Calling** badge, the connect button reads **Answer Donna**, status "Donna is calling about ...", Donna walks to the entrance phone. Click **Answer Donna**: it connects and that report is read first, then Donna walks back.
+- [ ] **Announcement when connected.** Stay connected while the brain finishes. Pass: "The X is done, A and B finished it. Want the short version?" at a pause, not over you. Say "yes". Pass: she gives the short version, no file paths or check lists. Say "bye": she says goodbye and the call ends.
+- [ ] **Ring when disconnected.** Hang up, wait for the briefing. Pass: two-tone chime, **Calling** badge, the connect button reads **Answer Donna**, status "Donna is calling about ...", Donna walks to the entrance phone. Click **Answer Donna**: it connects with the mic live, Donna opens "Hey, it's Donna. The X is done… Want the short version?", you say yes and hear it; Donna walks back.
 - [ ] **Idle 5 min.** Not documented or verified anywhere. Try it once before the demo (leave the call open 5 min, then speak) and write down what happens. Do not rely on a long idle on stage.
 
 ## 4. Known limits and do not do on stage
@@ -56,8 +56,8 @@ Pre-start: connected, mic on, Donna alone in the office (after #8). Keep the typ
 | 0:20 | "Make me a landing page for a bakery with a contact form." | One short sentence confirming the project and the work are set up | Room appears; Donna "thinking" (plan) | Type the same text |
 | 0:45 | "How's it going?" | A status matching the state (planning, or a worker writing the page) | Crew desks appear, workers typing | Type it; or read the activity log aloud |
 | 1:15 | (talk over the build) "Workers never talk to me; Donna's brain plans, runs, and reviews them." | Silent | Workers at desks; Donna "working" during review | Play the clip from here |
-| 1:45 | Disconnect (click Connect/hangup) before the result lands to show the ring, if timing fits | - | Chime, **Calling** badge, Donna walks to the phone | Skip; stay connected and use the next row |
-| 2:00 | Click **Answer Donna** (or say "yes" when she asks "want it now?") | "The review for X is ready; want it now?" then the briefing, naming the files and both workers | Delivery trip, report highlighted in the briefing queue | Click **Read report** and show Details/files |
+| 1:45 | Say "bye" (or click **Hang up**) before the result lands to show the ring, if timing fits | - | Chime, **Calling** badge, Donna walks to the phone | Skip; stay connected and use the next row |
+| 2:00 | Click **Answer Donna**, then say "yes" | "Hey, it's Donna. The X is done, A and B finished it. Want the short version?" then the short version naming both workers | Delivery trip, report highlighted in the briefing queue | Click **Read report** and show Details/files |
 | 2:40 | "Open the page." Open the file from the project room | - | Real `index.html` deliverable | Open the saved file from the data dir |
 | 2:55 | "Everything stays local; the voice talks, the brain plans, workers act." | - | Office floor | - |
 

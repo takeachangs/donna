@@ -8,9 +8,9 @@ import {HiggsColleague,type Job} from './higgs.js';
 import {Projects} from './projects.js';
 import {AgencyExecutors} from './executors.js';
 import {AgencyWorkspace,type Workspace} from './workspace.js';
-import {secretaryInstructions,secretaryTools,resolveProjectTarget} from './secretary.js';
+import {secretaryInstructions,secretaryTools,resolveProjectTarget,hangsUp,pickUpNotice} from './secretary.js';
 import {serveWeb} from './static.js';
-import {completedBriefing,holdReason,openQuestion,type Briefing,type Presentation} from './briefings.js';
+import {completedBriefing,holdReason,openQuestion,resultNotice,hold,type Briefing,type Presentation} from './briefings.js';
 
 const store=new OfficeStore(process.env.AGENCY_DATA_DIR?resolve(process.env.AGENCY_DATA_DIR):undefined),root=store.root,projects=new Projects(store),executors=new AgencyExecutors(),codex=executors.codex;
 const defaultProvider=await executors.defaultProvider();
@@ -55,7 +55,7 @@ wss.on('connection',(client,req)=>{
  if(!local(req.headers.origin)){client.close(1008);return;}
  clients.add(client);let selected=projects.list()[0]?.id||'',view='secretary',started=false,ready=false,voice:HiggsColleague|undefined,closed=false;
  let presentation:Presentation|undefined;
- const floor={userAt:0,voiceAt:0,userSpeaking:false,playing:false,question:false};let said='',saidFor='',pending:{id:string;since:number}[]=[],seen=new Set<string>(),announceJob:Job|undefined,heldWhy='',timer:ReturnType<typeof setInterval>|undefined;
+ const floor={userAt:0,voiceAt:0,userSpeaking:false,playing:false,question:false};let said='',saidFor='',pending:{id:string;since:number}[]=[],seen=new Set<string>(),announceJob:Job|undefined,heldWhy='',timer:ReturnType<typeof setInterval>|undefined,bye=false,pickup:string|undefined;
  const watch=(e:any)=>{const t=Date.now();
   if(e.type==='speech_started'){floor.userSpeaking=true;floor.userAt=t;floor.question=false;floor.playing=false;}
   else if(e.type==='thinking'&&floor.userSpeaking){floor.userSpeaking=false;floor.userAt=t;}
@@ -63,6 +63,7 @@ wss.on('connection',(client,req)=>{
   else if(e.type==='turn_done'){floor.voiceAt=t;floor.question=!e.cancelled&&openQuestion(said);}
   else if(e.type==='await_playback')floor.playing=true;
   else if(e.type==='interrupted')floor.playing=false;
+  else if(e.type==='user_transcript')bye=hangsUp(String(e.text||''));
  };
  const emit=(event:any)=>{watch(event);if(!closed&&client.readyState===WebSocket.OPEN)client.send(JSON.stringify(event));};
  const room=()=>selected?store.load(selected):undefined;
@@ -75,7 +76,7 @@ wss.on('connection',(client,req)=>{
   if(name==='read_briefing'&&job===announceJob)throw Error('Only announce the result and ask whether the user wants it now; read it after they say yes.');
   args=resolveProjectTarget(name,args,selected,projects.list().map(p=>p.id));
   if(name==='read_workspace')return {committed:false,...read(args.project_id)};
-  if(name==='read_briefing'){const b=workspace.briefing(args.briefing_id);presentation={briefingId:b.id,job,audioComplete:false};view='secretary';emit({type:'view',view});return {committed:false,briefing:{title:b.title,project:workspace.snapshot().projects.find(p=>p.id===b.projectId)?.name,summary:b.summary,files:b.artifacts.map(f=>f.path),verification:b.verification,contributors:b.contributors},note:'Give a short spoken briefing using names, not internal IDs. Playback completion records presentation; it does not accept the work.'};}
+  if(name==='read_briefing'){const b=workspace.briefing(args.briefing_id);presentation={briefingId:b.id,job,audioComplete:false};view='secretary';emit({type:'view',view});return {committed:false,briefing:{title:b.title,project:workspace.snapshot().projects.find(p=>p.id===b.projectId)?.name,summary:b.summary,files:b.artifacts.map(f=>f.path),verification:b.verification,contributors:b.contributors},note:'Give the short version in two or three spoken sentences: what was made, who made it, and anything the user must do. Never say file paths, ids, check lists or markdown aloud. Playback completion records presentation; it does not accept the work.'};}
   if(name==='set_secretary_identity')return workspace.setSecretary(args);
   if(name==='create_project'||name==='delegate_work'){const result=name==='create_project'?workspace.createProject(args):workspace.delegate(args);if('project' in result){selected=result.project.id;emit({type:'state',state:room()});}return result;}
   if(name==='update_project')return workspace.updateProject(args);
@@ -94,7 +95,8 @@ wss.on('connection',(client,req)=>{
   if(why){if(why!==heldWhy)console.log(`[ring] holding ${label}: ${why}`);heldWhy=why;return;}
   heldWhy='';const since=pending[0].since;pending=[];console.log(`[ring] announcing ${label} after ${((now-since)/1000).toFixed(1)} s`);
   for(const b of bs)emit({type:'ring',briefingId:b.id});
-  try{announceJob=await voice.ask(`(Office notice, not the user speaking.) A result just landed in your briefing queue: ${label}. In one short sentence tell me it is ready and ask whether I want it now, e.g. "The review for ${names.find(p=>p.id===bs[0].projectId)?.name||'the project'} is ready; want it now?" Do not read or summarize it and do not call any tool until I answer. When I say yes, pass that briefing_id to read_briefing; never say IDs aloud.`);}catch(err){emit({type:'error',message:String(err)});}
+  const who=pickup;pickup=undefined;
+  try{announceJob=await voice.ask(resultNotice(bs.map(b=>({id:b.id,title:b.title,project:names.find(p=>p.id===b.projectId)?.name||'the project',names:b.contributors.map(c=>c.name)})),who));}catch(err){emit({type:'error',message:String(err)});}
  }
  client.on('message',raw=>{void(async()=>{try{
   const e=JSON.parse(raw.toString());
@@ -106,13 +108,16 @@ wss.on('connection',(client,req)=>{
    if(selected)emit({type:'state',state:room()});emit({type:'workspace',workspace:workspace.snapshot()});emit({type:'focus',agentId:'mara'});
    voice=new HiggsColleague('mara',()=>selected,root,emit,tool,(_id,job,hasAudio)=>{if(presentation?.job===job)presentation.audioComplete=!job.cancelled&&hasAudio;if(!job.cancelled&&hasAudio)emit({type:'await_playback',jobId:job.id});},()=>{presentation=undefined;emit({type:'interrupted'});},{instructions:()=>secretaryInstructions,context:current,tools:secretaryTools,voice:'eleanor'});
    for(let attempt=0;;attempt++){try{await voice.connect();break;}catch(err){voice.close();if(closed||attempt>=2||!String(err).includes('429'))throw err;emit({type:'connection_retry',attempt:attempt+1});await new Promise(r=>setTimeout(r,4000*(attempt+1)));}}
-   if(closed){voice.close();return;}ready=true;timer=setInterval(announce,250);emit({type:'ready',model:'higgs-realtime'});return;
+   if(closed){voice.close();return;}ready=true;timer=setInterval(()=>{if(bye&&voice&&!voice.busy&&!floor.userSpeaking&&!floor.playing&&floor.voiceAt>floor.userAt){bye=false;console.log('[call] goodbye played; hanging up');voice.close();client.close();return;}void announce();},250);emit({type:'ready',model:'higgs-realtime'});
+   const me=workspace.snapshot().secretary.name||'Donna';let answer:string|undefined;try{if(typeof e.answer==='string')answer=workspace.briefing(e.answer).id;}catch{}
+   if(answer){pickup=me;pending.push({id:answer,since:Date.now()-hold.maxMs});console.log(`[ring] answered ${answer}`);}else await voice.ask(pickUpNotice(me));
+   return;
   }
   if(!started||!voice)throw Error('Connect to the secretary first');
   if(['text','interrupt','switch_project','present_briefing','stop'].includes(e.type))presentation=undefined;
   if(e.type==='text'){floor.userAt=Date.now();floor.question=false;}
   if(e.type==='present_briefing')pending=pending.filter(p=>p.id!==e.briefingId);
-  if(e.type==='present_briefing'){if(!ready)throw Error('Secretary is connecting');const b=workspace.briefing(e.briefingId);emit({type:'interrupted'});await voice.ask(`Use read_briefing with briefing_id ${b.id}. Give me a natural spoken briefing in 2–3 sentences: who delivered what, the most useful check, and any action I need to take. Never read internal IDs or URLs aloud. Keep technical detail in the saved report. Do not accept the work or start new work.`);return;}
+  if(e.type==='present_briefing'){if(!ready)throw Error('Secretary is connecting');const b=workspace.briefing(e.briefingId);emit({type:'interrupted'});await voice.ask(`Use read_briefing with briefing_id ${b.id}. Give me the short version in two or three spoken sentences: what was made, who made it, and anything I need to do. Never say file paths, IDs, URLs or check lists aloud. Do not accept the work or start new work.`);return;}
   if(e.type==='switch_project'){if(!projects.list().some(p=>p.id===e.roomId))throw Error('Unknown project');await voice.cancel();voice.clearInput();selected=e.roomId;view='project';emit({type:'interrupted'});emit({type:'state',state:room()});emit({type:'project_ready'});return;}
   if(e.type==='set_view'){if(!['secretary','command','project'].includes(e.view))throw Error('Unknown view');view=e.view;return;}
   if(e.type==='text'){if(!ready)throw Error('Secretary is connecting');if(typeof e.text!=='string'||!e.text.trim()||e.text.length>5000)throw Error('Invalid text');emit({type:'interrupted'});emit({type:'user_transcript',text:e.text});await voice.ask(e.text);return;}

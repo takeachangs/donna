@@ -3,6 +3,7 @@ import {Engine} from '../render/Engine'
 import {AgencyScene} from './Scene'
 import {OfficeAudio,chime} from './Audio'
 import {projectActions} from './projectActions'
+import {callControls} from './call'
 import type {State,Colleague,Doc,Project,Workspace,View,Assignment,Decision,Briefing} from './types'
 import './style.css'
 import './board.css'
@@ -25,8 +26,9 @@ root.innerHTML=`<main class="agency-shell">
   <div id="agency-scene"><div id="handoff-status" class="handoff-status" role="status" hidden></div></div><div id="roster" class="agency-roster" aria-label="${t('agency.team')}"></div>
   <div class="agency-caption" aria-live="polite"><strong id="speaker"></strong><p id="caption">${t('agency.welcome')}</p></div>
   <footer class="agency-controls"><div class="agency-secretary-line"><strong id="secretary-name"></strong><span id="execution-health"></span></div>
-   <div class="agency-actions"><button id="mic" disabled aria-pressed="false">${t('agency.mic_on')}</button><button id="meet" disabled>${t('agency.meet')}</button><button id="interrupt" disabled>${t('agency.interrupt')}</button></div>
-   <form id="command-form"><label class="sr-only" for="command">${t('agency.command')}</label><input id="command" maxlength="5000" autocomplete="off" placeholder="${t('agency.placeholder')}" disabled><button id="send" disabled>${t('agency.send')}</button></form>
+   <div class="agency-actions"><button id="mic" disabled aria-pressed="false">${t('agency.mute')}</button><button id="interrupt" disabled>${t('agency.interrupt')}</button></div>
+   <details id="type-instead"><summary>${t('agency.type_instead')}</summary>
+   <form id="command-form"><label class="sr-only" for="command">${t('agency.command')}</label><input id="command" maxlength="5000" autocomplete="off" placeholder="${t('agency.placeholder')}" disabled><button id="send" disabled>${t('agency.send')}</button></form></details>
    <div class="agency-status"><span id="status" role="status">${t('agency.loading')}</span></div>
   </footer>
  </section>
@@ -51,7 +53,7 @@ root.innerHTML=`<main class="agency-shell">
 </main>`
 const el=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById(id)! as T
 const make=<K extends keyof HTMLElementTagNameMap>(tag:K,cls='',text='')=>{const e=document.createElement(tag);e.className=cls;e.textContent=text;return e}
-let socket:WebSocket|undefined,audio:OfficeAudio|undefined,scene:AgencyScene|undefined,state:State|undefined,cast:Colleague[]=[],workspace:Workspace|undefined,ready=false,mic=false,currentResponse='',connected=false,firstTurnAt=0,projects:Project[]=[],selectedProject='',view:View='command',switching=false,polling=false
+let socket:WebSocket|undefined,audio:OfficeAudio|undefined,scene:AgencyScene|undefined,state:State|undefined,cast:Colleague[]=[],workspace:Workspace|undefined,ready=false,mic=false,micBlocked=false,currentResponse='',connected=false,firstTurnAt=0,projects:Project[]=[],selectedProject='',view:View='command',switching=false,polling=false
 const usage=new Map<string,any>(),heard=new Set<string>(),signatures=new Map<string,string>()
 let actionError='',transportError=''
 let listenWhenReady:string|undefined,ringing:string|undefined,seenBriefings:Set<string>|undefined
@@ -64,7 +66,8 @@ const projectManager=projectActions({projects:()=>workspace?.projects||[],reques
 const paintError=()=>{el('error').hidden=!(actionError||transportError);el('error').textContent=actionError||transportError}
 const error=(message='')=>{if(!message){actionError='';transportError=''}else if(/^TransportError:|^SyntaxError:.*JSON|Unexpected end of JSON|Failed to fetch|fetch failed|NetworkError/.test(message)){transportError=message.replace(/^TransportError: /,'')}else actionError=message;paintError()}
 function clearTransportError(){if(!transportError)return;transportError='';paintError();if(el('status').textContent===t('agency.error'))status(t(connected?'agency.ready':'agency.offline_ready'))}
-const controls=(value:boolean)=>{ready=value;document.body.dataset.ready=String(value);for(const id of ['mic','meet','interrupt','command','send'])(el(id) as HTMLButtonElement).disabled=!value;renderBriefings()}
+function paintCall(){const c=callControls({socket:!!socket,ringing:!!ringing,mic:mic?'live':micBlocked?'blocked':'muted'});el('connect').textContent=t(c.connect);el('mic').textContent=t(c.mic);el('mic').setAttribute('aria-pressed',String(!mic&&!micBlocked));document.body.dataset.call=String(c.onCall);if(c.typeOpen)el<HTMLDetailsElement>('type-instead').open=true;return c}
+const controls=(value:boolean)=>{ready=value;document.body.dataset.ready=String(value);for(const id of ['mic','interrupt','command','send'])(el(id) as HTMLButtonElement).disabled=!value;renderBriefings()}
 class TransportError extends Error{constructor(){super(t('agency.reconnecting_workspace'));this.name='TransportError'}}
 async function api<T=any>(url:string,body?:unknown):Promise<T>{let r:Response;try{r=await fetch(url,body===undefined?undefined:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})}catch{throw new TransportError()}if(r.status>=500)throw new TransportError();let value:any;try{value=await r.json()}catch{throw new TransportError()}if(r.status===404&&body!==undefined&&/^\/agency-api\/projects\/[^/]+\/(rename|delete|restore)$/.test(url))throw Error(t('agency.project_controls_unavailable'));if(!r.ok)throw Error(value.error||t('agency.request_failed'));return value}
 function section(id:string,value:unknown,render:()=>HTMLElement[]){const signature=JSON.stringify(value);if(signatures.get(id)===signature)return;signatures.set(id,signature);const host=el(id),open=new Set([...host.querySelectorAll<HTMLDetailsElement>('details[open]')].map(d=>d.dataset.key));host.replaceChildren(...render());for(const d of host.querySelectorAll<HTMLDetailsElement>('details'))if(open.has(d.dataset.key))d.open=true}
@@ -124,9 +127,9 @@ function openBriefing(b:Briefing){
 function ring(id:string|undefined){
  if(ringing===id)return
  ringing=id;const c=el('connect')
- if(id&&!socket){chime();scene?.ring(true);c.classList.add('is-ringing');c.textContent=t('agency.answer_call');status(t('agency.ring_status',{name:workspace?.secretary.name||'',title:workspace?.briefings.find(b=>b.id===id)?.title||''}))}
- else if(c.classList.contains('is-ringing')){scene?.ring(false);c.classList.remove('is-ringing');c.textContent=t(ready?'agency.disconnect':'agency.connect')}
- renderBriefings()
+ if(id&&!socket){chime();scene?.ring(true);c.classList.add('is-ringing');status(t('agency.ring_status',{name:workspace?.secretary.name||'',title:workspace?.briefings.find(b=>b.id===id)?.title||''}))}
+ else if(c.classList.contains('is-ringing')){scene?.ring(false);c.classList.remove('is-ringing')}
+ paintCall();renderBriefings()
 }
 function watchRing(){
  if(!workspace)return
@@ -193,27 +196,28 @@ function onEvent(e:any){
  if(e.type==='project_ready'){switching=false;usage.clear();void loadUsage();controls(true);status(t('agency.ready'));send({type:'set_view',view})}
  if(e.type==='ring')ring(e.briefingId)
  if(e.type==='colleague_ready')status(t('agency.connecting'))
- if(e.type==='ready'){connected=true;controls(true);status(t('agency.ready'));el('connect').textContent=t('agency.disconnect');error();if(listenWhenReady){const id=listenWhenReady;listenWhenReady=undefined;presentBriefing(id)}}
+ if(e.type==='ready'){connected=true;controls(true);error();status(t(paintCall().idle))}
  if(e.type==='thinking'){scene?.activity('mara','thinking');status(t('agency.thinking'));if(!firstTurnAt)firstTurnAt=performance.now()}
  if(e.type==='audio'){audio?.play(e);scene?.activity('mara','talking')}
  if(e.type==='speech_text'){if(currentResponse!==e.responseId){currentResponse=e.responseId;el('caption').textContent=''}el('caption').textContent+=e.delta}
  if(e.type==='speech_started'){audio?.stop();firstTurnAt=performance.now();status(t('agency.listening'));currentResponse='';el('caption').textContent=''}
  if(e.type==='interrupted'){audio?.stop(false);status(t('agency.interrupted'))}
  if(e.type==='await_playback')audio?.done(e.jobId)
- if(e.type==='turn_done'){if(!e.cancelled)status(t('agency.ready'));scene?.activity('mara','idle');void loadWorkspace().catch(err=>error(String(err)))}
+ if(e.type==='turn_done'){if(!e.cancelled)status(t(paintCall().idle));scene?.activity('mara','idle');void loadWorkspace().catch(err=>error(String(err)))}
  if(e.type==='usage'){usage.set(e.row.id,e.row);meter()}
  if(e.type==='error'||e.type==='colleague_disconnected'){error(e.message||t('agency.connection_lost'));status(t('agency.error'));if(switching){switching=false;controls(connected)}}
 }
 function rememberRoom(){localStorage.setItem(roomKey,selectedProject);const u=new URL(location.href);if(selectedProject)u.searchParams.set('room',selectedProject);else u.searchParams.delete('room');history.replaceState({},'',u)}
 async function start(){
- if(socket){ring(undefined);socket.close();socket=undefined;listenWhenReady=undefined;audio?.stop(false);mic=false;connected=false;controls(false);await audio?.mic(false);el('mic').textContent=t('agency.mic_on');el('connect').textContent=t('agency.connect');status(t('agency.disconnected'));return}
+ if(socket){send({type:'stop'});ring(undefined);socket.close();socket=undefined;listenWhenReady=undefined;audio?.stop(false);mic=false;connected=false;controls(false);paintCall();await audio?.mic(false);status(t('agency.disconnected'));return}
  if(ringing){listenWhenReady??=ringing;ring(undefined)}
  error();audio??=new OfficeAudio(send,(e,delay)=>{if(heard.has(e.jobId))return;heard.add(e.jobId);void fetch('/agency-api/measurement',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({roomId:selectedProject,kind:'first-audible',jobId:e.jobId,agentId:e.agentId,commandToAudibleMs:firstTurnAt?performance.now()-firstTurnAt+delay:undefined})});firstTurnAt=0})
  await audio.resume();status(t('agency.connecting'));el<HTMLButtonElement>('connect').disabled=true
- const ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/agency-ws`);socket=ws;renderBriefings()
- ws.onopen=()=>{send({type:'start',roomId:selectedProject,view});el<HTMLButtonElement>('connect').disabled=false}
+ try{await audio.mic(true);mic=true;micBlocked=false}catch{mic=false;micBlocked=true}
+ const ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/agency-ws`);socket=ws;paintCall();renderBriefings()
+ ws.onopen=()=>{send({type:'start',roomId:selectedProject,view,answer:listenWhenReady});listenWhenReady=undefined;el<HTMLButtonElement>('connect').disabled=false}
  ws.onmessage=e=>{try{onEvent(JSON.parse(e.data))}catch(err){error(String(err))}}
- ws.onclose=()=>{if(socket!==ws)return;socket=undefined;listenWhenReady=undefined;ring(undefined);connected=false;controls(false);void audio?.mic(false);mic=false;audio?.stop(false);el('mic').textContent=t('agency.mic_on');el('mic').setAttribute('aria-pressed','false');el('connect').textContent=t('agency.connect');el<HTMLButtonElement>('connect').disabled=false;status(t('agency.disconnected'))}
+ ws.onclose=()=>{if(socket!==ws)return;socket=undefined;listenWhenReady=undefined;ring(undefined);connected=false;controls(false);void audio?.mic(false);mic=false;audio?.stop(false);paintCall();el<HTMLButtonElement>('connect').disabled=false;status(t('agency.disconnected'))}
  ws.onerror=()=>error(t('agency.connection_lost'))
 }
 function renderProjects(){section('project-select',[projects,selectedProject,view],()=>{const prompt=make('option','',t('agency.project_rooms'));prompt.value='';prompt.disabled=true;const options=projects.map(p=>{const o=make('option','',p.name);o.value=p.id;return o});return[prompt,...options]});el<HTMLSelectElement>('project-select').value=view==='project'?selectedProject:'';
@@ -233,8 +237,7 @@ el<HTMLSelectElement>('project-select').onchange=e=>void switchProject((e.target
 el('new-project').onclick=()=>el<HTMLDialogElement>('project-dialog').showModal();el('project-cancel').onclick=()=>el<HTMLDialogElement>('project-dialog').close()
 el('project-form').onsubmit=e=>{e.preventDefault();void(async()=>{const submit=el('project-form').querySelector<HTMLButtonElement>('[type=submit]')!;submit.disabled=true;el('project-error').hidden=true;try{const p=await api<Project>('/agency-api/projects',{name:el<HTMLInputElement>('project-name').value,brief:el<HTMLTextAreaElement>('project-brief').value});await loadWorkspace();el<HTMLDialogElement>('project-dialog').close();el<HTMLFormElement>('project-form').reset();await switchProject(p.id)}catch(err){el('project-error').hidden=false;el('project-error').textContent=String(err)}finally{submit.disabled=false}})()}
 el('connect').onclick=()=>void start().catch(err=>error(String(err)))
-el('mic').onclick=()=>void(async()=>{try{await audio!.resume();await audio!.mic(!mic);mic=!mic;el('mic').textContent=t(mic?'agency.mic_off':'agency.mic_on');el('mic').setAttribute('aria-pressed',String(mic));status(t(mic?'agency.listening':'agency.ready'))}catch(err){error(String(err))}})()
-el('meet').onclick=()=>{setView('command');command(t('agency.meeting_request'))}
+el('mic').onclick=()=>void(async()=>{try{await audio!.resume();await audio!.mic(!mic);mic=!mic;micBlocked=false;paintCall();status(t(mic?'agency.listening':'agency.ready'))}catch(err){mic=false;micBlocked=true;paintCall();error(String(err))}})()
 el('interrupt').onclick=()=>{audio?.stop();send({type:'interrupt'});status(t('agency.interrupted'))}
 el('command-form').onsubmit=e=>{e.preventDefault();const input=el<HTMLInputElement>('command');command(input.value);input.value=''}
 el('document-close').onclick=()=>el<HTMLDialogElement>('document-dialog').close()

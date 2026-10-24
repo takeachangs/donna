@@ -115,3 +115,8 @@ body[data-view="command"] #goal,body[data-view="secretary"] #goal{display:none}
 @media(max-width:580px){.brand-plan{height:28px}.rail-bottom{flex-wrap:wrap;gap:0}.rail-bottom #deleted-projects{min-height:32px;padding:3px 8px;font-size:10px}#project-nav .project-nav-row{display:flex;flex:none}#project-nav .project-nav-item{min-width:70px;max-width:150px}#project-nav .project-options{min-width:32px;width:32px}.header-actions{flex-direction:column;align-items:stretch}#manage-current-project{min-height:32px}#briefings{max-width:none}}
 
 #connect.is-ringing{background:#79512d;border-color:#594432;color:#fffaf2;animation:ring-pulse 1.4s ease-in-out infinite}.ring-badge{margin-left:8px;padding:2px 7px;border-radius:999px;background:#79512d;color:#fffaf2;font-size:10px;letter-spacing:1.3px;animation:ring-pulse 1.4s ease-in-out infinite}.briefing-slot.is-ringing .briefing-card{border-color:#D4A574}@keyframes ring-pulse{50%{box-shadow:0 0 0 4px #D4A57455}}
+
+/* A call is a call (#13): while connected, board actions wait until after the call; typing is a collapsed fallback. */
+body[data-call="true"] :is(.decision-form,.briefing-actions,.item-actions button:not(.inspect-result),#work-body>button){display:none}
+body[data-ready="false"] #type-instead{display:none}
+#type-instead{margin:0 0 4px}#type-instead>summary{font-size:11px;color:var(--muted);min-height:28px}#type-instead[open]>summary{margin-bottom:8px}
