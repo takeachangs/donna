@@ -5,13 +5,13 @@ import {z} from 'zod';
 import {OfficeStore} from './state.js';
 import {Projects} from './projects.js';
 import {reconcileBriefings,type Briefing} from './briefings.js';
-import {createProjectSchema,workPlanSchema,validateDependencies,goalSchema,parsePlan,lastJson,brainReviewSchema} from './plans.js';
+import {createProjectSchema,roomName,workPlanSchema,validateDependencies,goalSchema,parsePlan,lastJson,brainReviewSchema} from './plans.js';
 
 export type ExecutionStatus='queued'|'working'|'waiting'|'review'|'done'|'paused'|'failed';
 export type Artifact={path:string;url:string;size:number;storage?:string;snapshotAt?:string};
 export type Provider='codex'|'claude';
 export type Worker={id:string;projectId:string;provider?:Provider;lead?:true;name?:string;role:string;responsibility:string;characterKey:string;status:ExecutionStatus;sessionId?:string;assignmentId:string;currentAction?:string};
-export type Assignment={id:string;projectId:string;workerId:string;provider?:Provider;kind?:'plan'|'review';title:string;brief:string;acceptance:string;status:ExecutionStatus;revision:number;runId?:string;cwd:string;sessionId?:string;dependsOn:string[];reasoningEffort?:'low'|'medium';summary?:string;artifacts:Artifact[];verification?:string[];error?:string;startedAt?:string;completedAt?:string;tokens?:unknown;usageMissing?:boolean;elapsedMs?:number};
+export type Assignment={id:string;projectId:string;workerId:string;provider?:Provider;kind?:'plan'|'review';title:string;brief:string;acceptance:string;status:ExecutionStatus;revision:number;runId?:string;cwd:string;sessionId?:string;dependsOn:string[];reasoningEffort?:'low'|'medium';summary?:string;artifacts:Artifact[];verification?:string[];error?:string;startedAt?:string;completedAt?:string;tokens?:unknown;usageMissing?:boolean;elapsedMs?:number;createdAt?:string};
 export type Decision={id:string;projectId:string;title:string;context:string;options?:string[];status:'open'|'decided';decision?:string;reason?:string;createdAt:string;updatedAt:string};
 export type ProjectOverview={id:string;name:string;deletedAt?:string;goal:string;memory:{outcome:string;checkpoint:string;latest:string;nextStep:string;updatedAt:string}};
 export type Workspace={revision:number;secretary:{id:'mara';name:string;role:'Secretary';voice:'eleanor';characterKey:string};projects:ProjectOverview[];workers:Worker[];assignments:Assignment[];decisions:Decision[];briefings:Briefing[];activity:{at:string;projectId?:string;message:string}[]};
@@ -22,6 +22,10 @@ export interface CodexRunner {
  close():void;
 }
 const now=()=>new Date().toISOString();
+const norm=(s:string)=>s.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const stop=new Set(['make','build','create','please','can','you','could','would','want','need','the','and','with','that','where','which','using','for','from','into']);
+const words=(s:string)=>new Set((s.toLowerCase().match(/[a-z0-9]{3,}/g)||[]).filter(w=>!stop.has(w)));
+const similar=(a:string,b:string)=>{const x=words(a),y=words(b),both=[...x].filter(w=>y.has(w)).length;return both>0&&both/(x.size+y.size-both)>=0.5;};
 const label=(p?:Provider)=>p==='claude'?'Claude Code':'Codex';
 const text=z.string().trim().min(1);
 const resultSchema=z.object({name:text.max(40),summary:text.max(12000),artifacts:z.array(text.max(500)).max(30),verification:z.array(z.string().max(3000)).max(20),needsInput:z.string().max(3000).optional()});
@@ -55,13 +59,18 @@ export class AgencyWorkspace {
  presentBriefing(id:string){const existing=this.data.briefings.find(b=>b.id===id);if(existing?.status==='presented')return {committed:false,briefing:structuredClone(existing)};const b=this.briefing(id),stored=this.data.briefings.find(k=>k.id===b.id)!;stored.status='presented';stored.presentedAt=now();this.log(`Donna presented: ${b.title}`,b.projectId);this.save();return {committed:true,briefing:structuredClone(stored)};}
  private log(message:string,projectId?:string){this.data.activity.push({at:now(),projectId,message});this.data.activity=this.data.activity.slice(-120);}
  private project(id:string){const p=this.data.projects.find(p=>p.id===id);if(!p)throw Error('Unknown project; create or select a registered project first.');if(p.deletedAt)throw Error('Project is in Recently deleted. Restore it before changing work.');return p;}
+ // ponytail: word-overlap heuristic inside a 2-minute window; a genuinely different follow-up passes, a paraphrase of in-flight work does not.
+ private inFlight(goal:string,projectId?:string):Assignment|undefined{return this.data.assignments.find(a=>a.kind&&['queued','working'].includes(a.status)&&(!projectId||a.projectId===projectId)&&(norm(a.brief)===norm(goal)||(!!a.createdAt&&Date.now()-Date.parse(a.createdAt)<120000&&similar(a.brief,goal))));}
  createProject(value:unknown){
   const input=createProjectSchema.parse(value),goal=input.initial_work;
   if(goal&&!this.options.brain)throw Error('Donna\'s brain is not connected in this office');
-  const project=this.projects.create(input);this.syncProjects();
-  if(!goal)return {committed:true,project,executionStarted:false,note:'Empty project created; nothing is queued. If the user asked for work, call delegate_work for this project now, before speaking.'};
-  const r=this.delegate({project_id:project.id,goal});
-  return {committed:true,project,executionStarted:true,planning:true,assignments:[r.assignment],note:'Donna\'s brain is planning this goal now; workers appear when the plan lands. Do not delegate the same work again.'};
+  const dup=goal?this.inFlight(goal):undefined;
+  if(dup){const p=this.project(dup.projectId);return {committed:false,planning:true,alreadyQueued:true,selected:true,project:{id:p.id,name:p.name},assignment:dup,note:`already queued: this goal is already in progress in "${p.name}", now the selected room. Tell the user it is in progress; do not hand it over again.`};}
+  const project=this.projects.create({name:roomName(input.name,input.brief||goal||''),brief:input.brief.trim()||goal||''});this.syncProjects();
+  const made=`Room "${project.name}" created and now selected; later calls use project_id "selected". `;
+  if(!goal)return {committed:true,selected:true,project,executionStarted:false,note:made+'Empty project created; nothing is queued. If the user asked for work, call delegate_work for this project now, before speaking.'};
+  const r=this.queue(this.project(project.id),goal);
+  return {committed:true,selected:true,project,executionStarted:true,planning:true,assignment:r.assignment,assignments:[r.assignment],note:made+'Donna\'s brain is planning this goal now; workers appear when the plan lands. Do not delegate the same work again.'};
  }
  renameProject(id:string,value:unknown){this.project(id);const p=this.projects.rename(id,value);this.syncProjects();this.log(`Renamed project to ${p.name}`,id);this.save();return {committed:true,project:p};}
  deleteProject(id:string){const p=this.project(id);for(const a of this.data.assignments.filter(a=>a.projectId===id&&['working','queued','waiting'].includes(a.status))){a.revision++;this.state(a,'paused','Project moved to Recently deleted; files and session retained');}this.projects.setDeleted(id,true);this.syncProjects();this.log(`Moved ${p.name} to Recently deleted`,id);this.save();const cur=this.current&&this.data.assignments.find(a=>a.id===this.current!.id&&a.projectId===id);if(cur&&this.current!.threadId)void this.runner(cur)?.interrupt(this.current!.threadId).catch(()=>{});return {committed:true};}
@@ -77,13 +86,18 @@ export class AgencyWorkspace {
  updateProject(value:unknown){const a=z.object({project_id:z.string().uuid(),goal:text.max(2000).optional(),checkpoint:text.max(1000).optional(),next_step:text.max(1000).optional()}).parse(value),p=this.project(a.project_id);if(a.goal){p.goal=a.goal;p.memory.outcome=a.goal;}if(a.checkpoint)p.memory.checkpoint=a.checkpoint;if(a.next_step)p.memory.nextStep=a.next_step;p.memory.updatedAt=now();this.log('Updated project brief',p.id);this.save();return {committed:true,project:p};}
  /** The voice's entry: queue a planning step for Donna's brain, the project's persistent lead session. */
  delegate(value:unknown){
-  const {project_id,goal}=z.object({project_id:z.string().uuid(),goal:goalSchema}).parse(value);
+  const {project_id,goal}=z.object({project_id:z.string().uuid().optional(),goal:goalSchema}).parse(value);
   if(!this.options.brain)throw Error('Donna\'s brain is not connected in this office');
-  const p=this.project(project_id);
+  if(!project_id){const r=this.createProject({brief:goal,initial_work:goal});return r as typeof r&{assignment:Assignment};}
+  const p=this.project(project_id),dup=this.inFlight(goal,p.id);
+  if(dup)return {committed:false,planning:true,alreadyQueued:true,assignment:dup,note:'already queued: this goal is already in progress here. Tell the user it is in progress; do not hand it over again.',progress:this.progress(p.id)};
+  return this.queue(p,goal);
+ }
+ private queue(p:{id:string;memory:ProjectOverview['memory']},goal:string){
   let lead=this.data.workers.find(w=>w.projectId===p.id&&w.lead);
   if(!lead){lead={id:'lead-'+randomUUID(),projectId:p.id,provider:'claude',lead:true,name:this.data.secretary.name,role:'Lead',responsibility:'Plans the team, reviews its results and writes the briefing',characterKey:this.data.secretary.characterKey,status:'queued',assignmentId:''};this.data.workers.push(lead);}
   const cwd=resolve(this.store.root,'workspaces',p.id);mkdirSync(cwd,{recursive:true});
-  const plan:Assignment={id:randomUUID(),projectId:p.id,workerId:lead.id,provider:'claude',kind:'plan',title:'Plan: '+goal.slice(0,170),brief:goal,acceptance:'A valid plan for this request',status:'queued',revision:1,cwd,sessionId:lead.sessionId,dependsOn:[],reasoningEffort:'medium',artifacts:[]};
+  const plan:Assignment={id:randomUUID(),projectId:p.id,workerId:lead.id,provider:'claude',kind:'plan',title:'Plan: '+goal.slice(0,170),brief:goal,acceptance:'A valid plan for this request',status:'queued',revision:1,cwd,sessionId:lead.sessionId,dependsOn:[],reasoningEffort:'medium',artifacts:[],createdAt:now()};
   this.data.assignments.push(plan);Object.assign(lead,{assignmentId:plan.id,status:'queued',currentAction:'Planning queued'});
   Object.assign(p.memory,{latest:`Donna's brain is planning: ${goal.slice(0,300)}`,nextStep:'Wait for the plan; workers appear when it lands.',updatedAt:now()});
   this.log(`Donna's brain is planning: ${goal.slice(0,120)}`,p.id);this.save();this.kick();
@@ -160,7 +174,7 @@ At completion your LAST message MUST be only a JSON object (no fence) with {"nam
   const p=this.project(a.projectId);
   if(a.kind==='plan'){
    const plan=parsePlan(text),{assignments}=this.staff(a.projectId,plan);
-   const review:Assignment={id:randomUUID(),projectId:a.projectId,workerId:a.workerId,provider:'claude',kind:'review',title:plan.title,brief:a.brief,acceptance:'Every deliverable checked against its acceptance; one briefing written.',status:'queued',revision:1,cwd:a.cwd,sessionId:a.sessionId,dependsOn:assignments.map(x=>x.id),reasoningEffort:'medium',artifacts:[]};
+   const review:Assignment={id:randomUUID(),projectId:a.projectId,workerId:a.workerId,provider:'claude',kind:'review',title:plan.title,brief:a.brief,acceptance:'Every deliverable checked against its acceptance; one briefing written.',status:'queued',revision:1,cwd:a.cwd,sessionId:a.sessionId,dependsOn:assignments.map(x=>x.id),reasoningEffort:'medium',artifacts:[],createdAt:now()};
    this.data.assignments.push(review);a.summary=plan.rationale;a.completedAt=now();this.state(a,'done','Plan delivered');
    Object.assign(this.worker(a),{assignmentId:review.id,status:'queued',currentAction:'Waiting for the team to deliver'});
    this.log(`Donna planned ${assignments.length} worker(s) for ${plan.title}`,a.projectId);this.save();return;

@@ -162,7 +162,8 @@ function render(){
  document.body.dataset.view=view;document.body.dataset.ready=String(ready)
  projects=workspace.projects.filter(p=>!p.deletedAt)
  if(selectedProject&&!projects.some(p=>p.id===selectedProject)){if(socket)void start();selectedProject=projects[0]?.id||'';state=undefined;usage.clear();meter();view='command';rememberRoom();scene?.overview();document.body.dataset.view=view}
- if(!selectedProject&&projects.length){selectedProject=projects[0].id;rememberRoom();if(connected){switching=true;controls(false);send({type:'switch_project',roomId:selectedProject})}}
+ // Connected: the server selects the room it creates and sends `state`; switch_project here would cancel the voice's in-progress turn.
+ if(!selectedProject&&projects.length&&!socket){selectedProject=projects[0].id;rememberRoom()}
  renderProjects();scene?.workspace(workspace);projectManager.renderTrash();el('deleted-count').textContent=workspace.projects.some(p=>p.deletedAt)?String(workspace.projects.filter(p=>p.deletedAt).length):'';el('manage-current-project').hidden=view!=='project'
  const project=workspace.projects.find(p=>p.id===selectedProject&&!p.deletedAt),all=view!=='project',visible=(id:string)=>projects.some(p=>p.id===id)&&(all||id===selectedProject),assignments=workspace.assignments.filter(a=>visible(a.projectId)),decisions=workspace.decisions.filter(d=>d.status==='open'&&visible(d.projectId)),workers=workspace.workers.filter(w=>!w.lead&&visible(w.projectId))
  const title=view==='project'?project?.name||t('agency.project'):t(view==='command'?'agency.command_room':'agency.secretary_office')
@@ -216,7 +217,7 @@ async function start(){
  ws.onerror=()=>error(t('agency.connection_lost'))
 }
 function renderProjects(){section('project-select',[projects,selectedProject,view],()=>{const prompt=make('option','',t('agency.project_rooms'));prompt.value='';prompt.disabled=true;const options=projects.map(p=>{const o=make('option','',p.name);o.value=p.id;return o});return[prompt,...options]});el<HTMLSelectElement>('project-select').value=view==='project'?selectedProject:'';
- section('project-nav',[projects.map(p=>[p.id,p.name]),selectedProject,view],()=>projects.map(p=>{const row=make('div','project-nav-row'),b=make('button','nav-item project-nav-item'),manage=make('button','project-options','···');b.append(make('span','project-dot',''),make('span','',p.name));b.setAttribute('aria-pressed',String(view==='project'&&p.id===selectedProject));b.title=p.name;b.onclick=()=>void switchProject(p.id).catch(err=>error(String(err)));manage.setAttribute('aria-label',t('agency.manage_named',{name:p.name}));manage.setAttribute('aria-haspopup','dialog');manage.title=t('agency.project_settings');manage.onclick=()=>projectManager.open(p.id);row.append(b,manage);return row}));scene?.projects(workspace?.projects||projects)}
+ section('project-nav',[projects.map(p=>[p.id,p.name]),selectedProject,view],()=>projects.length?projects.map(p=>{const row=make('div','project-nav-row'),b=make('button','nav-item project-nav-item'),manage=make('button','project-options','···');b.append(make('span','project-dot',''),make('span','',p.name));b.setAttribute('aria-pressed',String(view==='project'&&p.id===selectedProject));b.title=p.name;b.onclick=()=>void switchProject(p.id).catch(err=>error(String(err)));manage.setAttribute('aria-label',t('agency.manage_named',{name:p.name}));manage.setAttribute('aria-haspopup','dialog');manage.title=t('agency.project_settings');manage.onclick=()=>projectManager.open(p.id);row.append(b,manage);return row}):[empty(t('agency.no_rooms'))]);scene?.projects(workspace?.projects||projects)}
 async function loadUsage(){if(!selectedProject)return;const rows=await api<any[]>(`/agency-api/rooms/${selectedProject}/calls`);for(const r of rows)usage.set(r.id,r);meter()}
 async function loadWorkspace(){const next=await api<Workspace>('/agency-api/workspace');workspace=next;render();clearTransportError()}
 function setView(next:View){view=next;scene?.viewRoom(next==='project'?selectedProject:next);if(connected)send({type:'set_view',view});render();document.querySelector<HTMLElement>('.agency-board')!.scrollTop=0}
@@ -249,7 +250,6 @@ async function init(){
   const old=await api<State>(`/agency-api/rooms/${candidate}`)
   if(old.projectName||old.documents.length){await api('/agency-api/projects/register',{id:candidate,name:old.projectName||t('agency.first_project')});workspace=await api<Workspace>('/agency-api/workspace');projects=workspace.projects.filter(p=>!p.deletedAt)}
  }
- if(!workspace.projects.length){const p=await api<Project>('/agency-api/projects',{name:t('agency.first_project')});projects.push(p)}
  selectedProject=projects.some(p=>p.id===candidate)?candidate:projects[0]?.id||''
  if(selectedProject)state=await api<State>(`/agency-api/rooms/${selectedProject}`)
  rememberRoom();await loadWorkspace();await loadUsage()

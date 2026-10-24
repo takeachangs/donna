@@ -25,7 +25,7 @@ The client talks to `/agency-api/*` and `/agency-ws`. Only the backend holds the
 
 Donna's current workspace context is refreshed in session instructions, separate from actual user messages. Old draft bodies are read on demand. Current state establishes execution facts; the user's latest correction establishes intent. Typed follow-ups keep the caption history even if audio is still playing. Microphone interruption and explicit stop still use the audio playhead.
 
-Project tools accept `project_id: "selected"` so the secretary does not need to reconstruct UUIDs for the current room. Explicit unknown IDs are rejected, never silently redirected. Identical failed tool retries stop with a visible error; the total tool-round limit also reports an error rather than appearing to finish successfully.
+Project tools accept `project_id: "selected"`, which the server resolves to the current room, so the secretary never reconstructs UUIDs. When no room is selected (the office starts with Donna alone), `delegate_work` and `read_workspace` resolve to no project instead of failing; `delegate_work` then creates the room from the goal. Explicit unknown IDs are still rejected, never silently redirected. Identical failed tool retries stop with a visible error; the total tool-round limit also reports an error rather than appearing to finish successfully.
 
 Existing native workspaces can contain absolute paths. Keep this directory in place during source refactors. Moving an existing installation to a different machine/path needs an explicit workspace-path migration; the source ZIP is not a user-data backup.
 
@@ -55,7 +55,7 @@ Project settings use local rename/delete/restore endpoints. Deletion pauses acti
 - Three.js rendering is local. Only six character models and six furniture models are preloaded.
 - Historical candidates, music, world-image, GPU scripts and their dependencies are outside the active repository.
 
-For a new project with executable work, Donna supplies a required `initial_work` choice to `create_project`: the goal text, handed to the brain in the same tool call, or `null` for an intentionally idle room. Existing projects use `delegate_work` with a goal. The tool result says planning: no worker exists until the brain's plan is validated. An invalid plan fails the plan step, which can be resumed; nothing is staffed from it. A queued assignment is distinct from a running native session.
+There is no pre-created room: rooms are created by work. For a new goal Donna calls `create_project` with a required `initial_work` choice (the goal text, handed to the brain in the same call, or `null` for an intentionally idle room), or calls `delegate_work` with no room and the server does the same from the goal. The name is optional: a placeholder such as "Project 01" is replaced by a short name derived from the brief, and a name already used by an active project gets a " 2", " 3" suffix. The new room is selected server-side and the client is told through a state event. The tool result says planning: no worker exists until the brain's plan is validated. An invalid plan fails the plan step, which can be resumed; nothing is staffed from it. A queued assignment is distinct from a running native session. Asking again for a goal whose brain step is still queued or working (identical text, or a close paraphrase within two minutes) creates nothing and returns that assignment with `alreadyQueued`, so a repeated voice call cannot spawn a duplicate room or plan.
 
 ## What replaced what (issue #4)
 

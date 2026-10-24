@@ -103,7 +103,7 @@ it('surfaces failed provider responses without applying incomplete tools',async(
 
 it('resolves the selected project without guessing or silently replacing invalid targets',()=>{
  expect(resolveProjectTarget('read_workspace',{project_id:'selected'},'',[]).project_id).toBeUndefined();
- expect(()=>resolveProjectTarget('delegate_work',{project_id:'selected'},'',[])).toThrow('Unknown project target');
+ expect(resolveProjectTarget('delegate_work',{project_id:'selected'},'',[]).project_id).toBeUndefined();
  const selected='09410879-ca31-495f-8746-025f15b85d30',other='b151db6a-edf3-4b63-87db-b27e321eaf39',ids=[selected,other];
  expect(resolveProjectTarget('delegate_work',{project_id:'selected',checkpoint:'Save file'},selected,ids)).toEqual({project_id:selected,checkpoint:'Save file'});
  expect(resolveProjectTarget('read_workspace',{},selected,ids).project_id).toBe(selected);

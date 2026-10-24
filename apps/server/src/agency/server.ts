@@ -69,7 +69,7 @@ wss.on('connection',(client,req)=>{
  // Keep old prose out of every turn. Full preserved drafts remain available on
  // an explicit read; current project memory describes the ongoing work.
  const progress=()=>Object.fromEntries(workspace.snapshot().projects.filter(p=>!p.deletedAt).flatMap(p=>{const t=workspace.progress(p.id);return t?[[p.name,t]]:[];}));
- const current=()=>({selected_project_id:projects.list().some(p=>p.id===selected)?selected:null,progress:progress(),view,workspace:workspace.snapshot(),legacy:selected?{documents:room()!.documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
+ const current=()=>({selected_project_id:projects.list().some(p=>p.id===selected)?selected:null,...(projects.list().length?{}:{note:'No projects yet; the office is only you. A room is created when the user asks for work.'}),progress:progress(),view,workspace:workspace.snapshot(),legacy:selected?{documents:room()!.documents.map(d=>({id:d.id,title:d.title,revision:d.revision}))}:undefined});
  const read=(id?:string)=>id?{...current(),project:workspace.snapshot().projects.find(p=>p.id===id),legacy:store.load(id)}:current();
  function tool(name:string,args:any,job:Job):any{
   if(name==='read_briefing'&&job===announceJob)throw Error('Only announce the result and ask whether the user wants it now; read it after they say yes.');
@@ -77,9 +77,8 @@ wss.on('connection',(client,req)=>{
   if(name==='read_workspace')return {committed:false,...read(args.project_id)};
   if(name==='read_briefing'){const b=workspace.briefing(args.briefing_id);presentation={briefingId:b.id,job,audioComplete:false};view='secretary';emit({type:'view',view});return {committed:false,briefing:{title:b.title,project:workspace.snapshot().projects.find(p=>p.id===b.projectId)?.name,summary:b.summary,files:b.artifacts.map(f=>f.path),verification:b.verification,contributors:b.contributors},note:'Give a short spoken briefing using names, not internal IDs. Playback completion records presentation; it does not accept the work.'};}
   if(name==='set_secretary_identity')return workspace.setSecretary(args);
-  if(name==='create_project'){const result=workspace.createProject(args);selected=result.project.id;emit({type:'state',state:room()});return result;}
+  if(name==='create_project'||name==='delegate_work'){const result=name==='create_project'?workspace.createProject(args):workspace.delegate(args);if('project' in result){selected=result.project.id;emit({type:'state',state:room()});}return result;}
   if(name==='update_project')return workspace.updateProject(args);
-  if(name==='delegate_work')return workspace.delegate(args);
   if(name==='revise_assignment')return workspace.revise(args);
   if(name==='control_assignment'){if(args.action==='pause')return workspace.pause(args.assignment_id);if(args.action==='resume')return workspace.resume(args.assignment_id);if(args.action==='accept')return workspace.accept(args.assignment_id);throw Error('Unknown control action');}
   if(name==='record_decision')return workspace.decide(args);

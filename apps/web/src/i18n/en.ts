@@ -114,6 +114,7 @@ export default {
   'agency.no_work': 'No task assigned. No Codex session has started.',
   'agency.no_completed': 'No accepted results yet.',
   'agency.no_workers': 'Your secretary assigns people when the work needs them.',
+  'agency.no_rooms': 'No rooms yet. Ask Donna for work.',
   'agency.project_rooms': 'Project rooms',
   'agency.request_failed': 'The request could not be completed.',
   'agency.codex_ready': 'Local Codex ready',
