@@ -135,12 +135,23 @@ When the user wants Donna back or is done with you ("put Donna back", "get me ba
 # The call so far
 {recent}"""
 
+ASK = {"did": None, "want": None, "at": 0.0, "open": False}   # did: the task whose question was SPOKEN (the user's next words answer it); want/at/open: the last ask sent to the voice, its time, and whether the user has answered it yet
+ASK_DUP_S = 25                 # a second ask for the same task this soon, still unanswered, is the brain's non-answer re-ask (#62): not spoken again
+
+def ask_new(did) -> bool:
+    """False when this ask repeats an unanswered one for the same task within ASK_DUP_S: the first stays the open question."""
+    now = time.monotonic()
+    if ASK["open"] and ASK["want"] == did and now - ASK["at"] < ASK_DUP_S: globals().get("log", print)(f"ask: duplicate for {did}, kept the first"); return False
+    ASK.update(want=did, at=now, open=True); return True
+
 if sys.argv[1:2] == ["selftest"]:   # offline: no session, no audio
     assert len(PROMPT) <= 3000 and PROMPT.count(SIGN_OFF) == 1, len(PROMPT)
     wp = worker_prompt("Maya", "the kids site", "Builds the quiz", "user: who built the quiz?")
     assert "a question stays a question" in wp and "say it again" in wp   # #82
     assert BACK_PROMISE.search("i'll get you back to donna right away.") and BACK_PROMISE.search("i'll put donna back on for you.") and not any(BACK_PROMISE.search(x) for x in ("let me get back to you on that.", "i can put you back to donna if you like."))
     assert wp.count(BACK) == 1 and wp.count(SIGN_OFF) == 1 and "You worked on: Builds the quiz." in wp and len(wp) < 2000, len(wp)
+    ASK.update(did=None, want=None, at=0.0, open=False); assert ask_new("t1") and not ask_new("t1") and ask_new("t2")   # #62 re-ask: the second ask for t1 is dropped
+    ASK["at"] -= 30; assert ask_new("t2")   # old enough: asked afresh
     done: dict = {}   # idle_action on a fake clock, speech at t=100 (Mike's cases)
     acts = [idle_action(t, 100, 0, False, done) for t in (110, 129, 130, 131, 149, 150, 151, 159, 160, 161)]
     assert acts == [None, None, "nudge", None, None, "warn", None, None, "hangup", None], acts
@@ -217,7 +228,6 @@ BACKEND_LOCK = asyncio.Lock()  # one agent: tasks run one at a time, in order
 CLAIMED: set = set()           # ring: delegation ids; backend() reads their say/note itself, so the outbox watcher skips them
 SAYS: asyncio.Queue = asyncio.Queue()   # ring: (kind, id, text) of unclaimed say/ask/fail lines (the agent calling the user)
 TYPED: asyncio.Queue = asyncio.Queue()  # ring: stdin lines: Enter while no call is open, a typed turn on a call
-ASK = {"did": None}            # the task whose question was just asked aloud; the user's next words answer it
 BYE = re.compile(r"\b(bye|goodbye|that'?s all|talk (to you )?later|hang up)\b")   # ring: the user's goodbye, a fallback for a voice that skips SIGN_OFF
 NOW: dict = {"call": None, "ringing": False, "with": None}   # the open call's state dict (None = no call); state.json is read off it; with: who the user talks to (#28)
 TURNS = [t.strip() for t in args.text.split("|")] if args.text else []   # --text: the typed turns, across every segment of the call
@@ -248,7 +258,8 @@ def worker_on() -> str | None:   # the worker the user is talking to (#28), None
 def forward_answer(text, transcript):
     """The user's next words answer the question Donna asked for task ASK["did"]: hand them back to her as an inbox line."""
     did, ASK["did"] = ASK["did"], None
-    if not did: return
+    if not did: return   # no ask has been spoken yet: this turn is a normal one
+    ASK["open"] = False
     log(f"answer → donna {did}: {text}")
     try: herd.send("donna", text, None, "voice", reply_to=did, transcript=transcript, with_=worker_on())
     except SystemExit: log("answer not delivered: Donna is not on duty")
@@ -424,7 +435,9 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     heard = asyncio.Event()   # the brain answered: take, note, ask or the result
                     def back(): heard.set(); st["deaf"] = False   # #48: the brain is back: a later silence may say the note again
                     async def progress(text): back(); await conn.session.thinking.append(content=text, delegation_id=did)
-                    async def ask(text): back(); await conn.session.commentary.append(content=text, delegation_id=did, kind="ask"); ASK["did"] = did
+                    async def ask(text):
+                        back()
+                        if ask_new(did): await conn.session.commentary.append(content=text, delegation_id=did, kind="ask")   # ASK["did"] is set when the voice has said it
                     async def deaf():   # #38: its wait loop died and nothing woke it (no tmux), or it is busy with something else
                         await asyncio.sleep(DEAF_AFTER)
                         if heard.is_set(): return
@@ -491,7 +504,8 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
             async def says():   # updates from the work sent off, arriving mid-call
                 while True:
                     kind, sid, text = await SAYS.get()
-                    if kind == "ask": await conn.session.commentary.append(content=text, delegation_id=sid, kind="ask"); ASK["did"] = sid
+                    if kind == "ask":
+                        if ask_new(sid): await conn.session.commentary.append(content=text, delegation_id=sid, kind="ask")
                     elif kind == "transfer": await put_through(text.strip())   # a worker the brain held for (busy, #28) is free now
                     elif kind == "fail": await conn.session.commentary.append(content=f"[note] Something you sent off could not be finished; tell the user in a sentence: {text}", delegation_id=sid, kind="fail")
                     else: await conn.session.commentary.append(content=f"[note] An update just came in from the work you sent off; tell the user in a sentence or two: {text}", delegation_id=sid, kind="say")   # the id: its commentary.appended marks it spoken
@@ -546,6 +560,7 @@ async def call(seed: str, transcript: list, who: dict | None = None, opener: str
                     rep = getattr(ev.delegation, "replaces", None)
                     log(f"DELEGATION {ev.delegation.id} @{ev.offset_ms}ms: {ev.delegation.task[:90]}" + (f" (replaces {rep})" if rep else "")); st["delegated"] = True
                     CLAIMED.add(ev.delegation.id); tasks.append(asyncio.create_task(run_delegation(ev.delegation.id, ev.delegation.task, rep)))
+                elif t == "session.commentary.appended" and ev.kind == "ask": ASK["did"] = ev.delegation_id   # the question is out: the user's next words answer it
                 elif t == "session.commentary.appended" and ev.kind == "transfer": st["switch"] = time.monotonic()   # the put-through line is going out
                 elif t == "session.commentary.appended" and ev.delegation_id:
                     if ev.kind in ("say", "fail"): event("task.spoken", id=ev.delegation_id)   # office: that briefing is presented (#31)

@@ -70,6 +70,7 @@ def work(herd, line):
     if "backup" in task.lower():  # still running when the user hangs up: this say must ring them (#32)
         time.sleep(25); say(herd, tid, "say", "The backup of the notes folder is done."); return
     say(herd, tid, "ask", "Should the page be blue or green?")
+    time.sleep(2); say(herd, tid, "ask", "Quick check: blue or green for the page?")  # #62 re-ask: the bridge keeps the first, never speaks this one
     try:
         answer = answers.setdefault(tid, queue.Queue()).get(timeout=60)
     except queue.Empty:
