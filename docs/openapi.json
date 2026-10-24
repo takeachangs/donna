@@ -1,0 +1,1745 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Boson AI API",
+    "description": "REST API for Boson AI audio models.",
+    "version": "1.0.0",
+    "license": {
+      "name": "Proprietary"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.boson.ai"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/v1/realtime/client_secrets": {
+      "post": {
+        "operationId": "createRealtimeClientSecret",
+        "summary": "Create a client secret",
+        "description": "Create a short-lived ephemeral key for a browser, mobile app, or other client-side Higgs Realtime connection. Call this endpoint from a trusted server with a valid Boson API key, then pass the returned key to the client.",
+        "tags": [
+          "Realtime"
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRealtimeClientSecretRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A short-lived Realtime client secret.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RealtimeClientSecret"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body, or ephemeral keys are not enabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Billing entitlement refused. The OpenAI-style upstream error body is passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Client-secret generation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/audio/speech": {
+      "post": {
+        "operationId": "createSpeech",
+        "summary": "Create a speech",
+        "description": "Generate speech audio from text. Returns an audio file, or a stream of raw PCM chunks when `stream` is `true`. The body may be JSON or `multipart/form-data` — the latter lets you upload `ref_audio` as a raw file instead of base64-encoding it.",
+        "tags": [
+          "Audio"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSpeechRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "input"
+                ],
+                "properties": {
+                  "input": {
+                    "type": "string",
+                    "description": "Text to convert to speech."
+                  },
+                  "model": {
+                    "type": "string",
+                    "default": "higgs-tts-3"
+                  },
+                  "voice": {
+                    "type": "string",
+                    "default": "default"
+                  },
+                  "response_format": {
+                    "type": "string",
+                    "default": "mp3"
+                  },
+                  "ref_audio": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Reference audio file for one-off cloning (AAC/WAV/MP3/FLAC/OPUS), or an http(s) URL string."
+                  },
+                  "ref_text": {
+                    "type": "string",
+                    "description": "Recommended transcript of `ref_audio`."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Generated audio. The content type depends on `response_format`. When `timestamps` is true the response is `application/json` instead, carrying the audio base64-encoded alongside the word list.",
+            "content": {
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/ogg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/aac": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/flac": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/L16": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateSpeechTimestampsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request parameters (e.g. `input_too_long`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/videos": {
+      "post": {
+        "operationId": "createVideo",
+        "summary": "Create a video",
+        "description": "Create an avatar talking-head video (async). Returns the Video object with `status: \"queued\"`; poll `GET /v1/videos/{video_id}` and download the rendered MP4 from `GET /v1/videos/{video_id}/content`. Provide a reference image plus exactly one driving input — `input` (audio-to-video) or `input_tts` (text-to-video). The body may be JSON or `multipart/form-data` (upload `ref_image` / `input` as raw files).",
+        "tags": [
+          "Videos"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVideoRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ref_image"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "default": "higgs-avatar"
+                  },
+                  "ref_image": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Reference image file (PNG/JPEG/WEBP), or an http(s) URL string."
+                  },
+                  "input": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Audio-to-video driving-audio file (AAC/WAV/MP3/FLAC/OPUS), or an http(s) URL string. Provide exactly one of `input` / `input_tts`."
+                  },
+                  "input_tts": {
+                    "type": "string",
+                    "description": "Text-to-video: a JSON string of a speech request. Provide exactly one of `input` / `input_tts`."
+                  },
+                  "size": {
+                    "type": "string",
+                    "default": "640x640"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The created Video object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Video"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (e.g. `invalid_image_format`, `invalid_size`, `audio_too_long`, `empty_input`, `input_too_long`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown avatar model (`model_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Inline `ref_image` over the 10 MB cap (`payload_too_large`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed body (e.g. neither or both of `input` / `input_tts`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited, or all replicas busy (`all_replicas_busy`); retry after `Retry-After`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/videos/{video_id}": {
+      "get": {
+        "operationId": "getVideo",
+        "summary": "Retrieve a video",
+        "description": "Retrieve the Video object (status / progress). Always JSON — the rendered MP4 is downloaded from `GET /v1/videos/{video_id}/content`.",
+        "tags": [
+          "Videos"
+        ],
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The video ID returned by `POST /v1/videos`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Video object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Video"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No video with that ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/videos/{video_id}/content": {
+      "get": {
+        "operationId": "downloadVideoContent",
+        "summary": "Download content",
+        "description": "Download the rendered video. Returns the MP4 bytes (`variant=video`, the default). `404` until the video is `completed`.",
+        "tags": [
+          "Videos"
+        ],
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The video ID."
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "video"
+              ],
+              "default": "video"
+            },
+            "description": "Which rendered asset to download. Only `video` (the MP4) is supported."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The rendered MP4 bytes.",
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unsupported `variant` (`invalid_variant`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such video, or its content is not ready yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/videos/stream": {
+      "post": {
+        "operationId": "streamVideo",
+        "summary": "Create a video (streaming)",
+        "description": "Same request body as `POST /v1/videos`, but the response body IS the live fragmented-MP4 (fMP4) byte stream — frames arrive as they are generated, so playback can start before the clip is complete. The video id rides back in the `X-Video-Id` header; the full MP4 is stored too, so a later `GET /v1/videos/{video_id}/content` works.",
+        "tags": [
+          "Videos"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVideoRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ref_image"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "default": "higgs-avatar"
+                  },
+                  "ref_image": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Reference image file (PNG/JPEG/WEBP), or an http(s) URL string."
+                  },
+                  "input": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Audio-to-video driving-audio file (AAC/WAV/MP3/FLAC/OPUS), or an http(s) URL string. Provide exactly one of `input` / `input_tts`."
+                  },
+                  "input_tts": {
+                    "type": "string",
+                    "description": "Text-to-video: a JSON string of a speech request. Provide exactly one of `input` / `input_tts`."
+                  },
+                  "size": {
+                    "type": "string",
+                    "default": "640x640"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The fragmented-MP4 (fMP4) byte stream.",
+            "headers": {
+              "X-Video-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The video id, for a later retrieve / download."
+              }
+            },
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (same codes as `POST /v1/videos`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited, or all replicas busy (`all_replicas_busy`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/audio/voices": {
+      "post": {
+        "operationId": "createVoice",
+        "summary": "Create a voice",
+        "description": "Register a reusable reference voice for cloning. Identical audio re-registered under the same API key returns the existing voice. Pass the returned `voice` ID to the `voice` field of `POST /v1/audio/speech` instead of sending `ref_audio` on every request.",
+        "tags": [
+          "Audio"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVoiceRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ref_audio",
+                  "ref_text"
+                ],
+                "properties": {
+                  "ref_audio": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Reference audio file. Max 10 MB, min 3.0 s."
+                  },
+                  "ref_text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Transcript of the reference audio."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Description for the voice."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The created (or existing) voice.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request parameters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listVoices",
+        "summary": "List voices",
+        "description": "List the reference voices registered under your API key.",
+        "tags": [
+          "Audio"
+        ],
+        "responses": {
+          "200": {
+            "description": "A list of voices.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/audio/voices/{voice}": {
+      "get": {
+        "operationId": "getVoice",
+        "summary": "Get a voice",
+        "description": "Fetch a single reference voice by ID.",
+        "tags": [
+          "Audio"
+        ],
+        "parameters": [
+          {
+            "name": "voice",
+            "in": "path",
+            "required": true,
+            "description": "The voice ID, e.g. `voice_ab12...`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requested voice.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No voice with that ID (`voice_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteVoice",
+        "summary": "Delete a voice",
+        "description": "Delete one of your own reference voices. The reference audio is removed, so the voice stops working on /v1/audio/speech and no longer appears in the voice list. Preset voices cannot be deleted. Because the ID is derived from the audio itself, re-creating the voice with the same `ref_audio` returns the same ID.",
+        "tags": [
+          "Audio"
+        ],
+        "parameters": [
+          {
+            "name": "voice",
+            "in": "path",
+            "required": true,
+            "description": "The voice ID, e.g. `voice_ab12...`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The voice was deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceDeleted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The voice is a shared preset and cannot be deleted (`voice_not_deletable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No voice with that ID, it belongs to another key, or it was already deleted (`voice_not_found`). The three are not distinguished, so this endpoint cannot be used to discover another account's voice IDs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/avatar/sessions": {
+      "post": {
+        "operationId": "createAvatarSession",
+        "summary": "Create a session",
+        "description": "Start a realtime avatar session: the avatar joins the LiveKit room you name in `transport`, as the participant whose token you minted, and publishes lip-synced video together with the speech audio that `transport.publisher_identity` streams to it over a LiveKit data stream. The response is the session object with `status: \"active\"`; the avatar is already in the room. Release it with `DELETE /v1/avatar/sessions/{session_id}` when the conversation ends. Creation is not idempotent: if the response is lost, do not replay the request blindly; look for the avatar participant in the room instead.",
+        "tags": [
+          "Avatar Realtime"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAvatarSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The session is active and the avatar has joined the room.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvatarSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body: a missing field (`missing_required_field`) or a value outside its bounds or an unknown field (`invalid_field_value`), e.g. a `transport.url` that does not start with `wss://`, `max_duration_seconds` over 14400, or an `output` side outside 64–2048.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The API key may not use the requested `model`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown `model`, or one that does not serve realtime sessions (`model_not_found`); unknown `avatar_id` (`avatar_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed but not startable: `invalid_livekit_url` (a `wss://` URL without a host or with credentials, or a host that is not an approved LiveKit server; LiveKit Cloud project URLs are approved, self-hosted servers are not), `invalid_identity` (`participant_identity` equals `publisher_identity`), `invalid_duration` (`max_duration_seconds` over the account limit), or `unsupported_output` (the requested size is not supported).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited (`type: rate_limit_error`, `code: rate_limit_exceeded`), billing refusal (`type: insufficient_quota`, not transient), or every avatar slot in use (`capacity_exhausted`, with a `Retry-After` header in seconds).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable (`service_unavailable`, with `Retry-After`), or realtime avatar is not enabled on this server (`not_configured`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/avatar/sessions/{session_id}": {
+      "get": {
+        "operationId": "getAvatarSession",
+        "summary": "Retrieve a session",
+        "description": "Current state of a session. A session you did not create (with this API key) is reported as not found. Ended sessions stay retrievable until a few minutes after `expires_at`, then `404`.",
+        "tags": [
+          "Avatar Realtime"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The session ID returned by `POST /v1/avatar/sessions`, e.g. `avrt_...`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The session object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvatarSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No session with that ID for this API key (`session_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable (`service_unavailable`, with `Retry-After`), or realtime avatar is not enabled on this server (`not_configured`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAvatarSession",
+        "summary": "Release a session",
+        "description": "End the session and remove the avatar participant from the room. The returned `status` is `terminated` once the end is confirmed, or `releasing` if the confirmation is still pending; poll `GET /v1/avatar/sessions/{session_id}` until it is `terminated` if you need that certainty. Releasing an already-ended session is harmless and returns `terminated`. Ended sessions stay retrievable until a few minutes after `expires_at`, then `404`.",
+        "tags": [
+          "Avatar Realtime"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The session ID returned by `POST /v1/avatar/sessions`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The session object, `status` `terminated` or `releasing`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvatarSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No session with that ID for this API key (`session_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable (`service_unavailable`, with `Retry-After`), or realtime avatar is not enabled on this server (`not_configured`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/avatars": {
+      "get": {
+        "operationId": "listAvatars",
+        "summary": "List avatars",
+        "description": "The avatars this API key can start a session with: Boson's public presets plus any avatars owned by the key. Use an item's `avatar_id` in `POST /v1/avatar/sessions`.",
+        "tags": [
+          "Avatar Realtime"
+        ],
+        "responses": {
+          "200": {
+            "description": "The avatar list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvatarList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The avatar catalog is not available on this server (`not_configured`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Your Boson API key, sent as `Authorization: Bearer $BOSON_API_KEY`."
+      }
+    },
+    "schemas": {
+      "CreateSpeechRequest": {
+        "type": "object",
+        "required": [
+          "input"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "input": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000,
+            "description": "Text to convert to speech. Up to 5,000 characters, or 50,000 with `stream: true`; longer input returns 400 `input_too_long`. May contain inline control tags, which don't count toward this limit. Long input is split at natural boundaries and synthesized in full. With `timestamps: true` the input is not split; we recommend keeping it to roughly 300 characters.",
+            "example": "Hello, this is a test."
+          },
+          "model": {
+            "type": "string",
+            "default": "higgs-tts-3",
+            "enum": [
+              "higgs-tts-3"
+            ],
+            "description": "TTS model ID / public alias. Resolved to the served model server-side."
+          },
+          "voice": {
+            "type": "string",
+            "default": "default",
+            "description": "Preset voice name or custom voice ID. Mutually exclusive with `ref_audio` / `ref_text` when explicitly provided."
+          },
+          "response_format": {
+            "type": "string",
+            "enum": [
+              "mp3",
+              "opus",
+              "pcm",
+              "wav",
+              "aac",
+              "flac"
+            ],
+            "default": "mp3",
+            "description": "Output audio format. Streaming requires `pcm`."
+          },
+          "stream": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, stream raw PCM chunks as they are decoded. Requires `response_format` to be `pcm`. Speed adjustment is not supported when streaming. Raises the input limit to 50,000 characters, so use it for long input."
+          },
+          "ref_audio": {
+            "type": "string",
+            "nullable": true,
+            "description": "Inline reference audio for one-off cloning: an http(s) URL, data URI, or base64-encoded raw audio bytes. Supported formats: AAC, WAV, MP3, FLAC, OPUS. Inline (base64 / data-URI) payloads: max 10 MB."
+          },
+          "ref_text": {
+            "type": "string",
+            "nullable": true,
+            "description": "Recommended transcript of `ref_audio`."
+          },
+          "normalize": {
+            "type": "boolean",
+            "default": true,
+            "description": "Expand non-standard words into spoken form before synthesis, including numbers, dates, times, currency, units, URLs, email addresses, phone numbers, abbreviations, and symbols. Enabled by default; set to false to synthesize the text exactly as written. Text with nothing to normalize is passed through unchanged. Inline tags are preserved. Replaces the deprecated `enable_tn`."
+          },
+          "language": {
+            "type": "string",
+            "nullable": true,
+            "default": null,
+            "description": "ISO 639-3 language code of the `input` text, for example `eng` (English) or `cmn` (Mandarin Chinese). Used for text normalization. Defaults to null, in which case normalization infers the language from the text; set it when you know the language for the most reliable results. An unsupported code returns 400 `invalid_field_value`, including when normalization is disabled. Replaces the deprecated `tn_language` field and ISO 639-1 codes such as `en`."
+          },
+          "timestamps": {
+            "type": "boolean",
+            "default": false,
+            "description": "Attach word-level timestamps to the response. The response becomes a JSON envelope carrying the word list and the audio base64-encoded in the requested `response_format`, instead of raw audio bytes. Requires `stream` to be false; combining the two returns 400 `timestamps_streaming_unsupported`. Available for English, Chinese, and Spanish; other languages return a null word list. Overrides `normalize`, which does not run when timestamps are requested."
+          }
+        }
+      },
+      "CreateSpeechTimestampsResponse": {
+        "type": "object",
+        "description": "Returned when `timestamps` is true, in place of raw audio bytes.",
+        "properties": {
+          "audio": {
+            "type": "string",
+            "format": "byte",
+            "description": "Base64-encoded audio in the requested `response_format`. Decode it before writing it to a file."
+          },
+          "response_format": {
+            "type": "string",
+            "enum": [
+              "mp3",
+              "opus",
+              "pcm",
+              "wav",
+              "aac",
+              "flac"
+            ],
+            "description": "Format of the encoded `audio`, echoing the requested `response_format`."
+          },
+          "input": {
+            "type": "string",
+            "description": "The text the model was given, which the timestamps index into."
+          },
+          "timestamps": {
+            "type": "array",
+            "nullable": true,
+            "description": "One entry per word, in order. Empty when the audio contains no speech to align, and null when alignment was unavailable. Clients must handle both. Chinese returns one entry per character rather than per word.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "word": {
+                  "type": "string",
+                  "description": "The word as it appears in `input`."
+                },
+                "start": {
+                  "type": "number",
+                  "format": "float",
+                  "description": "Start offset in seconds from the beginning of the audio."
+                },
+                "end": {
+                  "type": "number",
+                  "format": "float",
+                  "description": "End offset in seconds from the beginning of the audio."
+                }
+              }
+            }
+          }
+        }
+      },
+      "CreateVoiceRequest": {
+        "type": "object",
+        "required": [
+          "ref_audio",
+          "ref_text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ref_audio": {
+            "type": "string",
+            "description": "Reference audio: an http(s) URL, data URI, or base64. Max 10 MB, min 3.0 s."
+          },
+          "ref_text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Transcript of the reference audio."
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Description for the voice."
+          }
+        }
+      },
+      "VoiceObject": {
+        "type": "object",
+        "required": [
+          "voice",
+          "ref_text"
+        ],
+        "properties": {
+          "voice": {
+            "type": "string",
+            "description": "Stable ID `voice_<sha256>`, deterministic per (API key, audio content)."
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Description for the voice."
+          },
+          "created_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO-8601 UTC timestamp."
+          },
+          "ref_text": {
+            "type": "string",
+            "description": "Transcript of the reference audio."
+          }
+        }
+      },
+      "VoiceListItem": {
+        "type": "object",
+        "required": [
+          "voice"
+        ],
+        "properties": {
+          "voice": {
+            "type": "string",
+            "description": "Stable ID `voice_<sha256>`."
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Description for the voice."
+          },
+          "created_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO-8601 UTC timestamp."
+          }
+        }
+      },
+      "VoiceList": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "list"
+            ],
+            "default": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VoiceListItem"
+            }
+          }
+        }
+      },
+      "CreateRealtimeClientSecretRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "expires_after": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "seconds": {
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 7200,
+                "default": 600,
+                "description": "Client-secret lifetime in seconds."
+              }
+            }
+          }
+        },
+        "example": {
+          "expires_after": {
+            "seconds": 300
+          }
+        }
+      },
+      "RealtimeClientSecret": {
+        "type": "object",
+        "required": [
+          "object",
+          "value",
+          "expires_at",
+          "session"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "realtime.client_secret"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "description": "Ephemeral key beginning with `bai-eph-`.",
+            "example": "bai-eph-<hash>"
+          },
+          "expires_at": {
+            "type": "integer",
+            "description": "Expiration time as Unix seconds.",
+            "example": 1712345678
+          },
+          "session": {
+            "type": "object",
+            "required": [
+              "id",
+              "object"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Realtime session identifier.",
+                "example": "sess_ab12cd34"
+              },
+              "object": {
+                "type": "string",
+                "enum": [
+                  "realtime.session"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string",
+                "description": "Human-readable error message."
+              },
+              "type": {
+                "type": "string",
+                "description": "Error category."
+              },
+              "code": {
+                "type": "string",
+                "nullable": true,
+                "description": "Machine-readable cause within `type`."
+              },
+              "param": {
+                "type": "string",
+                "nullable": true,
+                "description": "The offending parameter, if any."
+              }
+            }
+          }
+        }
+      },
+      "CreateVideoRequest": {
+        "type": "object",
+        "required": [
+          "ref_image"
+        ],
+        "additionalProperties": false,
+        "description": "Provide a `ref_image` plus exactly one driving input: `input` (audio-to-video) or `input_tts` (text-to-video).",
+        "properties": {
+          "model": {
+            "type": "string",
+            "default": "higgs-avatar",
+            "enum": [
+              "higgs-avatar"
+            ],
+            "description": "Avatar model ID / public alias."
+          },
+          "ref_image": {
+            "type": "string",
+            "description": "Reference image (the face to animate): an http(s) URL, data URI, or base64-encoded raw image bytes. Supported formats: PNG, JPEG, WEBP. Inline (base64 / data-URI) payloads: max 10 MB."
+          },
+          "input": {
+            "type": "string",
+            "nullable": true,
+            "description": "Audio-to-video: the driving speech audio as an http(s) URL, data URI, or base64-encoded raw audio bytes. Supported formats: AAC, WAV, MP3, FLAC, OPUS. Max duration: 60 s (it sets the output video length). Provide exactly one of `input` / `input_tts`."
+          },
+          "input_tts": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CreateSpeechRequest"
+              }
+            ],
+            "nullable": true,
+            "description": "Text-to-video: a speech request (the same body as `POST /v1/audio/speech`). The gateway synthesizes the voice and the avatar lip-syncs to it. The nested `stream` field is not supported. Provide exactly one of `input` / `input_tts`."
+          },
+          "size": {
+            "type": "string",
+            "enum": [
+              "640x640",
+              "640x480",
+              "480x640"
+            ],
+            "default": "640x640",
+            "description": "Output video size (WxH): square `640x640`, landscape `640x480`, or portrait `480x640`."
+          }
+        }
+      },
+      "Video": {
+        "type": "object",
+        "description": "A video generation job (the create / retrieve response).",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Video ID, e.g. `video_8a1f...`.",
+            "example": "video_8a1f2c3d4e5f6a7b8c9d0e1f"
+          },
+          "object": {
+            "type": "string",
+            "enum": [
+              "video"
+            ],
+            "default": "video"
+          },
+          "model": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "in_progress",
+              "completed",
+              "failed"
+            ],
+            "description": "Job status."
+          },
+          "progress": {
+            "type": "integer",
+            "description": "Completion percentage (0–100)."
+          },
+          "size": {
+            "type": "string",
+            "description": "Output size (WxH), e.g. `640x640`."
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "Unix timestamp (seconds)."
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Error message when `status` is `failed`."
+          }
+        }
+      },
+      "VoiceDeleted": {
+        "type": "object",
+        "required": [
+          "voice_id",
+          "object",
+          "deleted"
+        ],
+        "properties": {
+          "voice_id": {
+            "type": "string",
+            "description": "The deleted voice's ID."
+          },
+          "object": {
+            "type": "string",
+            "enum": [
+              "voice"
+            ]
+          },
+          "deleted": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        }
+      },
+      "LiveKitTransport": {
+        "type": "object",
+        "description": "The LiveKit room the avatar joins. You own the room and mint the avatar's token with your LiveKit API key and secret.",
+        "required": [
+          "url",
+          "room_name",
+          "participant_token",
+          "participant_identity",
+          "publisher_identity"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "livekit"
+            ],
+            "default": "livekit",
+            "description": "Realtime provider. `livekit` is the only value today."
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "Your LiveKit Cloud project URL, `wss://<project>.livekit.cloud`.",
+            "example": "wss://my-project.livekit.cloud"
+          },
+          "room_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Name of the room the avatar joins. LiveKit Cloud creates the room when its first participant joins, so it needs no setup."
+          },
+          "participant_token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384,
+            "description": "LiveKit access token for the avatar participant, minted by you. Grants: `roomJoin` for `room_name`, `canPublish` with camera and microphone sources, and `canPublishData`. Its identity must equal `participant_identity`, and its TTL must outlast the session (`max_duration_seconds` plus a margin). The API does not inspect the token; a token with the wrong identity or grants fails when the avatar joins the room. This value is never echoed back or logged."
+          },
+          "participant_identity": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Identity the avatar joins as. Must differ from `publisher_identity`.",
+            "example": "boson-avatar-agent"
+          },
+          "publisher_identity": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Identity of the participant that streams the speech audio to the avatar (your voice agent). The avatar lip-syncs to this audio.",
+            "example": "agent-7f3a"
+          },
+          "audio_source": {
+            "type": "string",
+            "enum": [
+              "data_stream"
+            ],
+            "default": "data_stream",
+            "description": "How the speech audio reaches the avatar. `data_stream`: the LiveKit Agents avatar audio protocol, a LiveKit byte stream of 16-bit PCM frames (24 kHz) from `publisher_identity` to `participant_identity`, as `DataStreamAudioOutput` in `livekit-agents` implements it, including its playback and clear-buffer RPCs. The avatar republishes this audio as its own audio track together with the video."
+          }
+        }
+      },
+      "OutputSize": {
+        "type": "object",
+        "required": [
+          "width",
+          "height"
+        ],
+        "properties": {
+          "width": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 2048,
+            "example": 480
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 2048,
+            "example": 640
+          }
+        }
+      },
+      "CreateAvatarSessionRequest": {
+        "type": "object",
+        "required": [
+          "avatar_id",
+          "transport"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "default": "higgs-avatar",
+            "enum": [
+              "higgs-avatar"
+            ],
+            "description": "Avatar model ID, the same ID as `POST /v1/videos` uses. Optional; defaults to `higgs-avatar`."
+          },
+          "avatar_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "The face to render: a preset or an avatar owned by this API key, from `GET /v1/avatars`.",
+            "example": "builtin_claire_v1"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/LiveKitTransport"
+          },
+          "output": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OutputSize"
+              }
+            ],
+            "description": "Rendered video size in pixels (portrait or square works best). Optional; defaults to 480x640. The reference image is center-cropped to this aspect ratio."
+          },
+          "max_duration_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14400,
+            "description": "Hard cap on the session length; the session ends and the avatar leaves the room when it is reached. Optional; defaults to the account limit (3600 s), which a larger value may not exceed (`invalid_duration`).",
+            "example": 1800
+          }
+        }
+      },
+      "AvatarSession": {
+        "type": "object",
+        "description": "A realtime avatar session (the create / retrieve / release response).",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Session ID, e.g. `avrt_...`.",
+            "example": "avrt_3f9c2a7e8b1d4c6f"
+          },
+          "object": {
+            "type": "string",
+            "enum": [
+              "avatar.realtime.session"
+            ],
+            "default": "avatar.realtime.session"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "releasing",
+              "terminated"
+            ],
+            "description": "`active`: the avatar is in the room. `releasing`: a release was requested and is not confirmed yet. `terminated`: the session has ended (released, expired, room emptied, or ended by Boson for another reason)."
+          },
+          "model": {
+            "type": "string",
+            "example": "higgs-avatar"
+          },
+          "avatar_id": {
+            "type": "string",
+            "example": "builtin_claire_v1"
+          },
+          "avatar_identity": {
+            "type": "string",
+            "description": "The LiveKit identity the avatar joined as (`transport.participant_identity`).",
+            "example": "boson-avatar-agent"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the avatar joined the room (ISO 8601, UTC)."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Latest end time: the session ends at this time if it is still running (`created_at` + `max_duration_seconds`)."
+          },
+          "ended_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the session ended; `null` while it is active."
+          }
+        }
+      },
+      "Avatar": {
+        "type": "object",
+        "properties": {
+          "avatar_id": {
+            "type": "string",
+            "description": "Pass this as `avatar_id` when creating a session.",
+            "example": "builtin_claire_v1"
+          },
+          "object": {
+            "type": "string",
+            "enum": [
+              "avatar"
+            ],
+            "default": "avatar"
+          },
+          "name": {
+            "type": "string",
+            "example": "Claire"
+          },
+          "width": {
+            "type": "integer",
+            "description": "Reference image width in pixels."
+          },
+          "height": {
+            "type": "integer",
+            "description": "Reference image height in pixels."
+          },
+          "is_public": {
+            "type": "boolean",
+            "description": "`true` for a Boson preset, `false` for an avatar owned by this API key."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "AvatarList": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "list"
+            ],
+            "default": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Avatar"
+            }
+          }
+        }
+      }
+    }
+  }
+}

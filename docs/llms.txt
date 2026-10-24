@@ -1,0 +1,54 @@
+# Boson
+
+> Build with Higgs Realtime, Higgs TTS 3, and Higgs Avatar APIs.
+
+- [Welcome to Boson AI](https://docs.boson.ai/overview.md): Choose the Higgs API for live conversation, generated speech, or talking-avatar video.
+- [Set up your account](https://docs.boson.ai/set-up-your-account.md): Create a Boson AI account, get an API key, claim your free trial credit, and make your first call.
+- [Free trial credit](https://docs.boson.ai/free-trial-credit.md): What the Boson AI free trial credit covers, how to claim it, and what happens when it runs out.
+- [Authentication](https://docs.boson.ai/authentication.md): Authenticate Boson API requests with a Bearer token.
+- [Pricing](https://docs.boson.ai/pricing.md): Usage-based pricing for Higgs Realtime, Higgs TTS 3, and Higgs Avatar.
+- [Payment & credits](https://docs.boson.ai/account-billing/payment-and-credits.md): How Boson AI billing works: prepaid credits, payment methods, auto-reload, and invoices.
+- [Usage & limits](https://docs.boson.ai/account-billing/usage-and-limits.md): Track spend, set a monthly cap, and understand what happens when a limit is reached.
+- [Overview](https://docs.boson.ai/models/higgs-realtime/overview.md): Build realtime voice assistants over WebSocket with streaming audio, text, turn detection, and tool calling.
+- [Quickstart](https://docs.boson.ai/models/higgs-realtime/quickstart.md): Every step from a fresh account to a working Higgs Realtime voice assistant.
+- [Connections and sessions](https://docs.boson.ai/models/higgs-realtime/guides/connections-and-sessions.md): Connect over WebSocket, authenticate safely, configure a session, and choose Realtime and transcription models.
+- [Audio and voices](https://docs.boson.ai/models/higgs-realtime/guides/audio-and-voices.md): Choose a Realtime voice, audio codec, and sample rate.
+- [Turn detection and interruptions](https://docs.boson.ai/models/higgs-realtime/guides/turn-detection-and-interruptions.md): Configure automatic or manual turns and keep the conversation aligned during barge-in.
+- [Tool use](https://docs.boson.ai/models/higgs-realtime/guides/tool-calling.md): Give the model function tools your application executes, and server-side tools like web search that Higgs Realtime runs for you.
+- [Migrate an existing integration](https://docs.boson.ai/models/higgs-realtime/migrate-an-existing-integration.md): Move an OpenAI Realtime integration to Higgs Realtime and review the protocol compatibility differences.
+- [LiveKit](https://docs.boson.ai/models/higgs-realtime/integrations/livekit.md): LiveKit support status for Higgs Realtime, and what to use in the meantime.
+- [Pipecat](https://docs.boson.ai/models/higgs-realtime/integrations/pipecat.md): Use Higgs Realtime as a speech-to-speech service in a Pipecat pipeline.
+- [Overview](https://docs.boson.ai/models/higgs-tts/overview.md): Chat-native text-to-speech with streaming, 100 languages, instant voice cloning, and inline emotion and style control.
+- [Voices](https://docs.boson.ai/models/higgs-tts/voices.md): Use preset voices, reference audio, or reusable custom voices with Higgs TTS 3.
+- [Languages](https://docs.boson.ai/models/higgs-tts/languages.md): Higgs TTS 3 supports 102 languages with single-digit WER/CER.
+- [Tags](https://docs.boson.ai/models/higgs-tts/tags.md): Inline control tokens that shape emotion, style, prosody, and sound effects inside the input text.
+- [Overview](https://docs.boson.ai/models/higgs-avatar/overview.md): Generate talking-head video from a still image and a driving voice or text.
+- [Inputs and limits](https://docs.boson.ai/models/higgs-avatar/input-options.md): Choose audio or text input, upload local assets, and check Higgs Avatar sizes, limits, and common errors.
+- [Streaming video](https://docs.boson.ai/models/higgs-avatar/streaming-video.md): Receive fragmented MP4 from Higgs Avatar so playback can begin before generation finishes.
+- [Realtime sessions](https://docs.boson.ai/models/higgs-avatar/realtime-sessions.md): Build the smallest realtime avatar: Higgs Realtime talks, a Higgs Avatar lip-syncs it live in your LiveKit room.
+- [Overview](https://docs.boson.ai/api-reference/realtime/overview.md): Connect to Higgs Realtime and navigate the REST and WebSocket protocol reference.
+- [Create a client secret](https://docs.boson.ai/api-reference/realtime/client-secrets.md): Mint a short-lived credential for browser and client-side Higgs Realtime connections.
+- [Client events](https://docs.boson.ai/api-reference/realtime/client-events.md): Configure a Realtime session, provide input, manage conversation items, and control responses.
+- [Server events](https://docs.boson.ai/api-reference/realtime/server-events.md): Handle session state, input audio, streamed responses, tool calls, errors, and lifecycle events.
+- [Create a speech](https://docs.boson.ai/api-reference/audio/create-a-speech.md): Generate speech audio from text. Returns an audio file, or a stream of raw PCM chunks when `stream` is `true`. The body may be JSON or `multipart/form-data` — the latter lets you upload `ref_audio` as a raw file instead of base64-encoding it.
+- [Create a voice](https://docs.boson.ai/api-reference/audio/create-a-voice.md): Register a reusable reference voice for cloning. Identical audio re-registered under the same API key returns the existing voice. Pass the returned `voice` ID to the `voice` field of `POST /v1/audio/speech` instead of sending `ref_audio` on every request.
+- [List voices](https://docs.boson.ai/api-reference/audio/list-voices.md): List the reference voices registered under your API key.
+- [Get a voice](https://docs.boson.ai/api-reference/audio/get-a-voice.md): Fetch a single reference voice by ID.
+- [Delete a voice](https://docs.boson.ai/api-reference/audio/delete-a-voice.md): Delete one of your own reference voices. The reference audio is removed, so the voice stops working on /v1/audio/speech and no longer appears in the voice list. Preset voices cannot be deleted. Because the ID is derived from the audio itself, re-creating the voice with the same `ref_audio` returns t…
+- [Create a video](https://docs.boson.ai/api-reference/videos/create-a-video.md): Create an avatar talking-head video (async). Returns the Video object with `status: "queued"`; poll `GET /v1/videos/{video_id}` and download the rendered MP4 from `GET /v1/videos/{video_id}/content`. Provide a reference image plus exactly one driving input — `input` (audio-to-video) or `input_tts` (…
+- [Retrieve a video](https://docs.boson.ai/api-reference/videos/retrieve-a-video.md): Retrieve the Video object (status / progress). Always JSON — the rendered MP4 is downloaded from `GET /v1/videos/{video_id}/content`.
+- [Download content](https://docs.boson.ai/api-reference/videos/download-content.md): Download the rendered video. Returns the MP4 bytes (`variant=video`, the default). `404` until the video is `completed`.
+- [Create a video (streaming)](https://docs.boson.ai/api-reference/videos/create-a-video-streaming.md): Same request body as `POST /v1/videos`, but the response body IS the live fragmented-MP4 (fMP4) byte stream — frames arrive as they are generated, so playback can start before the clip is complete. The video id rides back in the `X-Video-Id` header; the full MP4 is stored too, so a later `GET /v1/vi…
+- [Overview](https://docs.boson.ai/api-reference/avatar-realtime/overview.md): Start, inspect and release realtime avatar sessions in your LiveKit rooms.
+- [Create a session](https://docs.boson.ai/api-reference/avatar-realtime/create-a-session.md): Start a realtime avatar session: the avatar joins the LiveKit room you name in `transport`, as the participant whose token you minted, and publishes lip-synced video together with the speech audio that `transport.publisher_identity` streams to it over a LiveKit data stream. The response is the sessi…
+- [Retrieve a session](https://docs.boson.ai/api-reference/avatar-realtime/retrieve-a-session.md): Current state of a session. A session you did not create (with this API key) is reported as not found. Ended sessions stay retrievable until a few minutes after `expires_at`, then `404`.
+- [Release a session](https://docs.boson.ai/api-reference/avatar-realtime/release-a-session.md): End the session and remove the avatar participant from the room. The returned `status` is `terminated` once the end is confirmed, or `releasing` if the confirmation is still pending; poll `GET /v1/avatar/sessions/{session_id}` until it is `terminated` if you need that certainty. Releasing an already…
+- [List avatars](https://docs.boson.ai/api-reference/avatar-realtime/list-avatars.md): The avatars this API key can start a session with: Boson's public presets plus any avatars owned by the key. Use an item's `avatar_id` in `POST /v1/avatar/sessions`.
+- [Common error types](https://docs.boson.ai/api-reference/errors.md): HTTP statuses, the error body shape, and every error code with its fix.
+
+## OpenAPI Specs
+
+- [openapi](/openapi.json)
+
+
+This documentation is built and hosted on [Mintlify](https://mintlify.com), a developer documentation platform.

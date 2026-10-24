@@ -1,0 +1,13 @@
+poc.log
+.env
+bridge.log
+__pycache__/
+sandbox/
+# probe audio (16 MB); scripts and findings stay
+*.wav
+*.raw
+*.aiff
+*.opus
+*.opus.bin
+probe/r15/*.out
+probe/r15/C-idle-*
