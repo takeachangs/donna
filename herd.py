@@ -259,6 +259,11 @@ FIRST = set("Ava Ben Noah Mia Maya Zoe Leo Eli Ivy Sam Max Lily Owen Ruby Theo E
              "Rosa Sofia Bob Cy Zed Mara Lena Ian Ada Aria Elena Leah Levi Jonah Ezra Hana Kira Rex Tess Joel Ana Ines Mateo Nova".split())  # #65: first names Donna gives workers; ponytail: an allow-list, so "Done." or "Reading" never becomes a worker
 TEAM = r"([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*)?)"  # #83: a team's name, 1-2 capitalized words: an Agent description "Marketing: writes the brand guide", a note "Hiring Nova and Sam for a Marketing team: ..."
 VOICES = {"female": ["chloe", "eleanor", "nora"], "male": ["jake", "marcus", "oliver"]}  # #28: by the look's gender, round-robin; nora last: Donna is nora
+GENDER = {**dict.fromkeys("Ava Mia Nova Zoe Lily Maya Ruby Ivy Chloe Emma Olivia Ella Isla Nina Priya Sara Sarah Tara Uma Vera Yara Jade Iris Gina Cleo Bea Anna "
+                           "Kate Luna Rosa Sofia Mara Lena Ada Aria Elena Leah Hana Kira Tess Ana Ines".split(), "female"),
+          **dict.fromkeys("Leo Noah Ben Sam Theo Max Eli Owen Jake Liam Lucas Jack Ethan Finn Omar Ravi Tom Wes Zane Hugo Felix Dan Adam Jonas Milo Nate Oscar "
+                           "Paul Bob Zed Ian Levi Jonah Ezra Rex Joel Mateo".split(), "male")}  # #87: "Mia" spoke as jake; a name not here keeps the round-robin look
+LOOKS = {"female": ["char-female-d", "char-female-e", "char-female-b"], "male": ["char-male-b", "char-male-a", "char-male-d"]}  # char-female-b last: Donna wears it
 
 
 def iso(t):
@@ -514,12 +519,18 @@ def office(now=None):
     workers = [{"id": lid, "projectId": pid, "name": "Donna", "role": "Brain", "responsibility": "", "characterKey": "char-female-b",
                 "status": ls_, "assignmentId": "", "currentAction": doing, "lead": True}]
     asg = []
-    seen = {"female": 0, "male": 0}
+    seen, looks = {"female": 0, "male": 0}, {}
+    def look(name, n):  # #87: (characterKey, voice), by the name's gender when known; one look per name for the whole office
+        if name.lower() not in looks:
+            g = GENDER.get(name.split()[0].capitalize() if name else "")
+            key = LOOKS[g][seen[g] % 3] if g else KEYS[n % len(KEYS)]
+            g = g or ("female" if "female" in key else "male")
+            looks[name.lower()] = key, VOICES[g][seen[g] % 3]; seen[g] += 1
+        return looks[name.lower()]
     for n, (r, name) in enumerate(vis):
-        key = KEYS[n % len(KEYS)]
-        g = "female" if "female" in key else "male"; seen[g] += 1
+        key, voice = look(name, n)
         workers.append({"id": r["id"], "projectId": team(r), "name": name, "role": r["desc"] or "", "responsibility": "", "characterKey": key,
-                        "voice": VOICES[g][(seen[g] - 1) % 3], "status": stt(r), "assignmentId": r["id"],
+                        "voice": voice, "status": stt(r), "assignmentId": r["id"],
                         "currentAction": (r.get("cur") or action(r["act"]) or f"Hired: {r['desc'] or name}") if stt(r) == "working" else ""})  # #70: blank once done/failed  # #65; cur: a codex worker's last note (#66)
         asg.append({"id": r["id"], "projectId": team(r), "workerId": r["id"], "title": r["desc"] or name, "brief": r["prompt"], "acceptance": "", "status": stt(r),
                     "cwd": r["cwd"], **({"summary": r["summary"]} if r["summary"] else {}), "startedAt": iso(r["t0"]), **({"completedAt": iso(r["t1"])} if r["t1"] else {}),
@@ -531,9 +542,9 @@ def office(now=None):
         if o.get("kind") not in ("note", "ask") or not since <= (o.get("ts") or 0) or now - o["ts"] > 600: continue
         for n in re.findall(r"\b[A-Z][a-z]+\b", o.get("text") or ""):
             if n not in FIRST or n.lower() in named: continue
-            named.add(n.lower()); key = KEYS[(len(workers) - 1) % len(KEYS)]; g = "female" if "female" in key else "male"; seen[g] += 1
+            named.add(n.lower()); key, voice = look(n, len(workers) - 1)
             workers.append({"id": f"brief-{n}", "projectId": room(hiring(o)), "name": n, "role": "", "responsibility": "", "characterKey": key,
-                            "voice": VOICES[g][(seen[g] - 1) % 3], "status": "queued", "assignmentId": "", "currentAction": "Being briefed"})
+                            "voice": voice, "status": "queued", "assignmentId": "", "currentAction": "Being briefed"})
     sent = {e["id"]: e.get("ts") or 0 for e in hev if e.get("ev") == "task.sent" and "id" in e}
     briefings = []
     for o in says:  # contributors: the workers that started between the task and its say; workerId the first of them (the office walks that desk to Donna), else the lead
@@ -758,7 +769,8 @@ def _selfcheck_office():
         fire("PostToolUse", tool_name="Bash", tool_input={"command": "git worktree add ../p-donna-landing -b donna/landing main"}); assert D() == "Setting up a workspace"
         reply("donna", t9, "note", "Hiring Ava for the page and Ben for the diagram. Done soon."); write_office()  # skill: the note goes out before the spawn
         WS = lambda: [(w["name"], w["status"], w["currentAction"]) for w in O()["workers"][1:]]
-        assert WS() == [("Ava", "queued", "Being briefed"), ("Ben", "queued", "Being briefed")] and W(O(), "brief-Ava")["characterKey"] == KEYS[0], WS()  # "Done" is no name
+        assert WS() == [("Ava", "queued", "Being briefed"), ("Ben", "queued", "Being briefed")] and W(O(), "brief-Ava")["characterKey"] == "char-female-d", WS()  # "Done" is no name
+        assert [(W(O(), f"brief-{n}")["characterKey"], W(O(), f"brief-{n}")["voice"]) for n in ("Ava", "Ben")] == [("char-female-d", "chloe"), ("char-male-b", "jake")]  # #87: Ava a woman, Ben a man, whatever their order
         fire("PostToolUse", tool_name="Agent", tool_input={"name": "Ava", "description": "Builds the landing page", "prompt": "p", "model": "sonnet", "run_in_background": True},
              tool_response={"status": "teammate_spawned", "prompt": "p", "agentId": f"Ava@{team}"})
         assert D() == "Hiring Ava for: Builds the landing page", D()
