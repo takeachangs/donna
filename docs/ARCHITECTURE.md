@@ -40,7 +40,7 @@ Project settings use local rename/delete/restore endpoints. Deletion pauses acti
 
 ## Development and production
 
-`AGENCY_DATA_DIR` can select an isolated local data directory for manual UI checks; it defaults to `artifacts/agency`. The live office data is never used as a disposable fixture.
+`AGENCY_DATA_DIR` can select an isolated local data directory for manual UI checks; it defaults to `artifacts/agency`. The live office data is never used as a disposable fixture. `AGENCY_VAD_SILENCE_MS` sets how long Higgs waits after speech before ending the user's turn (default 800 ms; at 550 ms real speech was committed mid-sentence and the voice talked over the user).
 
 `npm run dev` starts API port 3003 and Vite port 5183 from one install. It fails clearly if either port is occupied. Frontend hot reload does not restart the execution server or interrupt active tasks.
 

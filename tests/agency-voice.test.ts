@@ -25,6 +25,7 @@ it('configures only the dynamic secretary and supplies current project memory',a
  const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);
  const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,()=>{},()=>({committed:true}),()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({goal:'Prepare launch',checkpoint:'One clear draft'}),tools:secretaryTools,voice:'eleanor'});
  await voice.connect();const socket=transport.sockets[0],session=socket.sent[0].session;
+ expect(session.audio.input.turn_detection).toEqual({type:'server_vad',threshold:.65,silence_duration_ms:800,prefix_padding_ms:300});
  expect(session.instructions).toContain(secretaryInstructions);
  expect(session.instructions).toContain('One clear draft');
  expect(session.tools.map((t:any)=>t.name)).toContain('delegate_work');
@@ -35,6 +36,14 @@ it('configures only the dynamic secretary and supplies current project memory',a
  socket.receive({type:'conversation.item.created',item:{id:request.item.id}});
  expect(socket.sent.at(-1).type).toBe('response.create');
  voice.close();
+});
+
+it('lets AGENCY_VAD_SILENCE_MS override the turn silence and keeps the threshold',async()=>{
+ vi.stubEnv('BOSON_API_KEY','offline-fixture');vi.stubEnv('AGENCY_VAD_SILENCE_MS','1000');
+ const dir=mkdtempSync(join(tmpdir(),'agency-voice-'));roots.push(dir);
+ const voice=new HiggsColleague('mara',()=> 'fixture-room',dir,()=>{},()=>({committed:true}),()=>{},()=>{},{instructions:()=>secretaryInstructions,context:()=>({goal:'Prepare launch',checkpoint:'One clear draft'}),tools:secretaryTools,voice:'eleanor'});
+ await voice.connect();
+ expect(transport.sockets[0].sent[0].session.audio.input.turn_detection).toMatchObject({threshold:.65,silence_duration_ms:1000});voice.close();
 });
 
 it('waits for the configured session rather than the initial default session',async()=>{
@@ -114,4 +123,10 @@ it('stops identical failed tool retries instead of silently burning all five rou
  }
  expect(tool).toHaveBeenCalledTimes(1);expect(socket.sent.filter((e:any)=>e.type==='response.create')).toHaveLength(2);
  expect(events.some(e=>e.type==='error'&&e.message.includes('repeated tool error'))).toBe(true);expect(voice.busy).toBe(false);voice.close();
+});
+
+it('opens with rule one and routes every tool by its own job',()=>{
+ const rule=secretaryInstructions.indexOf('RULE ONE'),follow=secretaryInstructions.indexOf('FOLLOW THROUGH'),routing=secretaryInstructions.slice(secretaryInstructions.indexOf('WHICH TOOL'),follow);
+ expect(rule).toBeGreaterThan(-1);expect(rule).toBeLessThan(follow);expect(secretaryInstructions).toContain('Reply to what the user just said');
+ for(const t of secretaryTools){expect(routing).toContain(t.name);expect(t.description).not.toMatch(/\bNOT\b/);for(const o of secretaryTools)if(o!==t)expect(t.description).not.toContain(o.name);}
 });

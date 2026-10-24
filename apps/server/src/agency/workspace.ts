@@ -60,7 +60,7 @@ export class AgencyWorkspace {
   const input=createProjectSchema.parse(value),plan=input.initial_work;
   if(plan){validateDependencies(plan.workers);if(plan.workers.some(w=>w.reuse_worker_id))throw Error('A new project needs new workers; do not reuse workers from another room.');this.engines(plan.workers.map(w=>w.provider));}
   const project=this.projects.create(input);this.syncProjects();
-  if(!plan)return {committed:true,project,executionStarted:false,note:'Empty project created. No assignment or native session has started.'};
+  if(!plan)return {committed:true,project,executionStarted:false,note:'Empty project created; nothing is queued. If the user asked for work, call delegate_work for this project now, before speaking.'};
   const result=this.delegate({...plan,project_id:project.id,goal:plan.goal||input.brief||undefined});
   return {committed:true,project,executionStarted:true,assignments:result.assignments,workers:result.workers,note:'Initial work is queued for real local execution. Do not delegate the same work again.'};
  }
